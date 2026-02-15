@@ -29,22 +29,27 @@ jobs:
           go-version-file: go.mod
 
       - name: Upgrade Go module
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
         run: |
-          go get "sigs.k8s.io/gateway-api@${{ steps.release.outputs.tag }}"
+          go get "sigs.k8s.io/gateway-api@$TAG"
           go mod tidy
 
       - name: Update test Gateway API version
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
         run: |
-          version="${{ steps.release.outputs.tag }}"
-          version="${version#v}"
+          version="${TAG#v}"
           sed -i "s/semver.MustParse(\"[^\"]*\")/semver.MustParse(\"${version}\")/" \
             internal/controller/suite_test.go
 
       - name: Download standard-install.yaml
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
         run: |
           dest=charts/cloudflare-gateway-controller/templates/standard-install.yaml
           curl -fsSL -o "$dest" \
-            "https://github.com/kubernetes-sigs/gateway-api/releases/download/${{ steps.release.outputs.tag }}/standard-install.yaml"
+            "https://github.com/kubernetes-sigs/gateway-api/releases/download/$TAG/standard-install.yaml"
           printf '%s\n%s\n%s\n' '{{- if .Values.installAPI }}' "$(cat "$dest")" '{{- end }}' > "$dest"
 
       - name: Create Pull Request
