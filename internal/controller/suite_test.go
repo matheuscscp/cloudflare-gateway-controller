@@ -8,8 +8,12 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	semver "github.com/Masterminds/semver/v3"
+	"github.com/fluxcd/cli-utils/pkg/kstatus/polling"
+	"github.com/fluxcd/pkg/ssa"
+	appsv1 "k8s.io/api/apps/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -20,6 +24,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 	cfclient "github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
 )
 
@@ -76,12 +81,19 @@ func TestMain(m *testing.M) {
 		panic(fmt.Sprintf("failed to setup GatewayClass controller: %v", err))
 	}
 
+	poller := polling.NewStatusPoller(mgr.GetClient(), mgr.GetRESTMapper(), polling.Options{})
+	resourceManager := ssa.NewResourceManager(mgr.GetClient(), poller, ssa.Owner{
+		Field: apiv1.ControllerName,
+		Group: apiv1.Group,
+	})
+
 	testMock = &mockTunnelClient{
 		createTunnelID: "test-tunnel-id",
 		tunnelToken:    "test-tunnel-token",
 	}
 	if err := (&GatewayReconciler{
-		Client: mgr.GetClient(),
+		Client:          mgr.GetClient(),
+		ResourceManager: resourceManager,
 		NewTunnelClient: func(_ cfclient.ClientConfig) (cfclient.TunnelClient, error) {
 			return testMock, nil
 		},
@@ -99,6 +111,49 @@ func TestMain(m *testing.M) {
 		fmt.Println("Starting the test environment")
 		if err := mgr.Start(testCtx); err != nil {
 			panic(fmt.Sprintf("failed to start manager: %v", err))
+		}
+	}()
+
+	// Simulate Deployment readiness since envtest has no Deployment controller.
+	go func() {
+		for {
+			select {
+			case <-testCtx.Done():
+				return
+			case <-time.After(500 * time.Millisecond):
+			}
+			var list appsv1.DeploymentList
+			if err := testClient.List(testCtx, &list); err != nil {
+				continue
+			}
+			for i := range list.Items {
+				deploy := &list.Items[i]
+				desired := int32(1)
+				if deploy.Spec.Replicas != nil {
+					desired = *deploy.Spec.Replicas
+				}
+				if deploy.Status.ReadyReplicas == desired {
+					continue
+				}
+				deploy.Status.Replicas = desired
+				deploy.Status.ReadyReplicas = desired
+				deploy.Status.AvailableReplicas = desired
+				deploy.Status.UpdatedReplicas = desired
+				deploy.Status.ObservedGeneration = deploy.Generation
+				deploy.Status.Conditions = []appsv1.DeploymentCondition{
+					{
+						Type:   appsv1.DeploymentAvailable,
+						Status: "True",
+						Reason: "MinimumReplicasAvailable",
+					},
+					{
+						Type:   appsv1.DeploymentProgressing,
+						Status: "True",
+						Reason: "NewReplicaSetAvailable",
+					},
+				}
+				_ = testClient.Status().Update(testCtx, deploy)
+			}
 		}
 	}()
 

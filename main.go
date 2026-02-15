@@ -6,6 +6,8 @@ package main
 import (
 	"os"
 
+	"github.com/fluxcd/cli-utils/pkg/kstatus/polling"
+	"github.com/fluxcd/pkg/ssa"
 	"github.com/spf13/pflag"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -19,6 +21,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 	cfclient "github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/controller"
 )
@@ -70,8 +73,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	poller := polling.NewStatusPoller(mgr.GetClient(), mgr.GetRESTMapper(), polling.Options{})
+	resourceManager := ssa.NewResourceManager(mgr.GetClient(), poller, ssa.Owner{
+		Field: apiv1.ControllerName,
+		Group: apiv1.Group,
+	})
+
 	if err := (&controller.GatewayReconciler{
 		Client:           mgr.GetClient(),
+		ResourceManager:  resourceManager,
 		NewTunnelClient:  cfclient.NewTunnelClient,
 		CloudflaredImage: *cloudflaredImage,
 	}).SetupWithManager(mgr); err != nil {

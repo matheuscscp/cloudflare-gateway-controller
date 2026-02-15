@@ -31,11 +31,22 @@ const (
 	// the default reconciliation interval. The value must be a valid
 	// Go duration string (e.g. "5m", "1h").
 	AnnotationReconcileEvery = prefix + "reconcileEvery"
+
+	// AnnotationReconcileTimeout is the annotation key used to override
+	// the default timeout for health checks after applying resources.
+	// The value must be a valid Go duration string (e.g. "5m", "1h").
+	AnnotationReconcileTimeout = prefix + "reconcileTimeout"
 )
 
-// DefaultReconcileInterval is the default interval between periodic
-// reconciliations for drift correction.
-const DefaultReconcileInterval = 10 * time.Minute
+const (
+	// DefaultReconcileInterval is the default interval between periodic
+	// reconciliations for drift correction.
+	DefaultReconcileInterval = 10 * time.Minute
+
+	// DefaultReconcileTimeout is the default timeout for health checks
+	// after applying resources.
+	DefaultReconcileTimeout = 5 * time.Minute
+)
 
 // ReconcileInterval returns the reconciliation interval for an object
 // based on its annotations. Returns 0 if reconciliation is disabled.
@@ -52,4 +63,18 @@ func ReconcileInterval(annotations map[string]string) time.Duration {
 		return DefaultReconcileInterval
 	}
 	return interval
+}
+
+// ReconcileTimeout returns the reconciliation timeout for an object
+// based on its annotations.
+func ReconcileTimeout(annotations map[string]string) time.Duration {
+	val, ok := annotations[AnnotationReconcileTimeout]
+	if !ok {
+		return DefaultReconcileTimeout
+	}
+	timeout, err := time.ParseDuration(val)
+	if err != nil {
+		return DefaultReconcileTimeout
+	}
+	return timeout
 }
