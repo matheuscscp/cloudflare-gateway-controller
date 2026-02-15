@@ -73,17 +73,9 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// Add finalizer first if it doesn't exist to avoid the race condition
 	// between init and delete.
 	if !controllerutil.ContainsFinalizer(&gw, apiv1.FinalizerGateway) {
-		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			if err := r.Get(ctx, req.NamespacedName, &gw); err != nil {
-				return err
-			}
-			if controllerutil.ContainsFinalizer(&gw, apiv1.FinalizerGateway) {
-				return nil
-			}
-			gwPatch := client.MergeFromWithOptions(gw.DeepCopy(), client.MergeFromWithOptimisticLock{})
-			controllerutil.AddFinalizer(&gw, apiv1.FinalizerGateway)
-			return r.Patch(ctx, &gw, gwPatch)
-		}); err != nil {
+		gwPatch := client.MergeFrom(gw.DeepCopy())
+		controllerutil.AddFinalizer(&gw, apiv1.FinalizerGateway)
+		if err := r.Patch(ctx, &gw, gwPatch); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: 1}, nil
@@ -369,17 +361,9 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 	}
 
 	// Remove finalizer from Gateway
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		if err := r.Get(ctx, client.ObjectKeyFromObject(gw), gw); err != nil {
-			return err
-		}
-		if !controllerutil.ContainsFinalizer(gw, apiv1.FinalizerGateway) {
-			return nil
-		}
-		gwPatch := client.MergeFromWithOptions(gw.DeepCopy(), client.MergeFromWithOptimisticLock{})
-		controllerutil.RemoveFinalizer(gw, apiv1.FinalizerGateway)
-		return r.Patch(ctx, gw, gwPatch)
-	}); err != nil {
+	gwPatch := client.MergeFrom(gw.DeepCopy())
+	controllerutil.RemoveFinalizer(gw, apiv1.FinalizerGateway)
+	if err := r.Patch(ctx, gw, gwPatch); err != nil {
 		return ctrl.Result{}, err
 	}
 
