@@ -25,7 +25,7 @@ import (
 
 // DefaultCloudflaredImage is the default cloudflared container image.
 // This value is updated automatically by the upgrade-cloudflared workflow.
-const DefaultCloudflaredImage = "cloudflare/cloudflared:latest"
+const DefaultCloudflaredImage = "ghcr.io/matheuscscp/cloudflare-gateway-controller/cloudflared:2026.2.0@sha256:404528c1cd63c3eb882c257ae524919e4376115e6fe57befca8d603656a91a4c"
 
 // GatewayReconciler reconciles Gateway objects.
 type GatewayReconciler struct {
