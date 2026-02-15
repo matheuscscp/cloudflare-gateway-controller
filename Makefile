@@ -42,8 +42,8 @@ build: fmt vet ## Build the binary.
 	CGO_ENABLED=0 go build -o ./bin/cloudflare-gateway-controller .
 
 .PHONY: run
-run: fmt vet ## Run the controller locally.
-	go run ./main.go --leader-elect=false
+run: fmt vet ## Run the controller locally against the current kubeconfig cluster.
+	go run ./main.go
 
 ##@ Dependencies
 
