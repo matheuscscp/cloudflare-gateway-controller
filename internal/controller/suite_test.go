@@ -18,11 +18,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 	cfclient "github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
@@ -45,7 +47,8 @@ func newTestScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(s))
 	utilruntime.Must(apiextensionsv1.AddToScheme(s))
-	utilruntime.Must(gatewayv1.AddToScheme(s))
+	utilruntime.Must(gatewayv1.Install(s))
+	utilruntime.Must(gatewayv1beta1.Install(s))
 	return s
 }
 
@@ -68,6 +71,10 @@ func TestMain(m *testing.M) {
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
 			BindAddress: "0",
+		},
+		NewClient: func(config *rest.Config, options client.Options) (client.Client, error) {
+			options.Cache = nil // Disable cached reads for tests
+			return client.New(config, options)
 		},
 	})
 	if err != nil {

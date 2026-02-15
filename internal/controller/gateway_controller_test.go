@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 )
@@ -330,4 +331,112 @@ func TestGatewayDeletion(t *testing.T) {
 		}
 		return gcResult.Finalizers
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).ShouldNot(ContainElement(gatewayv1.GatewayClassFinalizerGatewaysExist))
+}
+
+func TestGatewayCrossNamespaceSecret(t *testing.T) {
+	g := NewWithT(t)
+
+	// Namespace A: where the Secret lives
+	nsA := createTestNamespace(g)
+	t.Cleanup(func() { testClient.Delete(testCtx, nsA) })
+
+	// Namespace B: where the Gateway lives
+	nsB := createTestNamespace(g)
+	t.Cleanup(func() { testClient.Delete(testCtx, nsB) })
+
+	createTestSecret(g, nsA.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-cross-ns", nsA.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gateway-cross-ns",
+			Namespace: nsB.Name,
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "http",
+					Protocol: gatewayv1.HTTPProtocolType,
+					Port:     80,
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Verify the Gateway gets Accepted=False due to missing ReferenceGrant
+	gwKey := client.ObjectKeyFromObject(gw)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
+		accepted := findCondition(result.Status.Conditions, string(gatewayv1.GatewayConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.GatewayReasonInvalidParameters)))
+		g.Expect(accepted.Message).To(ContainSubstring("not allowed by any ReferenceGrant"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Create a ReferenceGrant in namespace A allowing Gateways from namespace B
+	refGrant := &gatewayv1beta1.ReferenceGrant{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "allow-gateway-secret",
+			Namespace: nsA.Name,
+		},
+		Spec: gatewayv1beta1.ReferenceGrantSpec{
+			From: []gatewayv1beta1.ReferenceGrantFrom{
+				{
+					Group:     gatewayv1beta1.Group("gateway.networking.k8s.io"),
+					Kind:      gatewayv1beta1.Kind("Gateway"),
+					Namespace: gatewayv1beta1.Namespace(nsB.Name),
+				},
+			},
+			To: []gatewayv1beta1.ReferenceGrantTo{
+				{
+					Group: gatewayv1beta1.Group(""),
+					Kind:  gatewayv1beta1.Kind("Secret"),
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, refGrant)).To(Succeed())
+	t.Cleanup(func() { testClient.Delete(testCtx, refGrant) })
+
+	// Trigger reconciliation by changing the spec (the controller uses
+	// GenerationChangedPredicate, so only spec changes increment generation
+	// and trigger a reconcile).
+	g.Eventually(func(g Gomega) {
+		var latest gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &latest)).To(Succeed())
+		latest.Spec.Listeners[0].Port = 8080
+		g.Expect(testClient.Update(testCtx, &latest)).To(Succeed())
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Verify the Gateway becomes Accepted and Programmed
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
+
+		accepted := findCondition(result.Status.Conditions, string(gatewayv1.GatewayConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
+
+		programmed := findCondition(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
+		g.Expect(programmed).NotTo(BeNil())
+		g.Expect(programmed.Status).To(Equal(metav1.ConditionTrue))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }

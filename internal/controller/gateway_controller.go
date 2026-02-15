@@ -23,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 	acgatewayv1 "sigs.k8s.io/gateway-api/applyconfiguration/apis/v1"
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
@@ -47,6 +48,7 @@ type GatewayReconciler struct {
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways/status,verbs=update;patch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;get;list;watch;update;delete
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=referencegrants,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update
 
 func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -99,7 +101,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	// Read credentials
-	cfg, err := r.readCredentials(ctx, &gc)
+	cfg, err := r.readCredentials(ctx, &gc, &gw)
 	if err != nil {
 		now := metav1.Now()
 		credMsg := fmt.Sprintf("Failed to read credentials: %v", err)
@@ -264,7 +266,7 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 	// When disabled, the user is responsible for manually cleaning up the tunnel.
 	if gw.Annotations[apiv1.AnnotationReconcile] != apiv1.ValueDisabled {
 		if tunnelID := gw.Annotations[apiv1.AnnotationTunnelID]; tunnelID != "" {
-			cfg, err := r.readCredentials(ctx, gc)
+			cfg, err := r.readCredentials(ctx, gc, gw)
 			if err != nil {
 				return ctrl.Result{}, fmt.Errorf("reading credentials for tunnel deletion: %w", err)
 			}
@@ -308,7 +310,7 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 	return ctrl.Result{}, nil
 }
 
-func (r *GatewayReconciler) readCredentials(ctx context.Context, gc *gatewayv1.GatewayClass) (cfclient.ClientConfig, error) {
+func (r *GatewayReconciler) readCredentials(ctx context.Context, gc *gatewayv1.GatewayClass, gw *gatewayv1.Gateway) (cfclient.ClientConfig, error) {
 	if gc.Spec.ParametersRef == nil {
 		return cfclient.ClientConfig{}, fmt.Errorf("gatewayclass %q has no parametersRef", gc.Name)
 	}
@@ -320,24 +322,69 @@ func (r *GatewayReconciler) readCredentials(ctx context.Context, gc *gatewayv1.G
 		return cfclient.ClientConfig{}, fmt.Errorf("parametersRef must specify a namespace")
 	}
 
+	secretNamespace := string(*ref.Namespace)
+	secretName := ref.Name
+
+	if granted, err := r.referenceGranted(ctx, gw.Namespace, secretNamespace, secretName); err != nil {
+		return cfclient.ClientConfig{}, fmt.Errorf("checking ReferenceGrant: %w", err)
+	} else if !granted {
+		return cfclient.ClientConfig{}, fmt.Errorf("cross-namespace reference to Secret %s/%s not allowed by any ReferenceGrant", secretNamespace, secretName)
+	}
+
 	var secret corev1.Secret
 	if err := r.Get(ctx, types.NamespacedName{
-		Namespace: string(*ref.Namespace),
-		Name:      ref.Name,
+		Namespace: secretNamespace,
+		Name:      secretName,
 	}, &secret); err != nil {
-		return cfclient.ClientConfig{}, fmt.Errorf("getting secret %s/%s: %w", *ref.Namespace, ref.Name, err)
+		return cfclient.ClientConfig{}, fmt.Errorf("getting secret %s/%s: %w", secretNamespace, secretName, err)
 	}
 
 	apiToken := string(secret.Data["CLOUDFLARE_API_TOKEN"])
 	accountID := string(secret.Data["CLOUDFLARE_ACCOUNT_ID"])
 	if apiToken == "" || accountID == "" {
-		return cfclient.ClientConfig{}, fmt.Errorf("secret %s/%s must contain CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID", *ref.Namespace, ref.Name)
+		return cfclient.ClientConfig{}, fmt.Errorf("secret %s/%s must contain CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID", secretNamespace, secretName)
 	}
 
 	return cfclient.ClientConfig{
 		APIToken:  apiToken,
 		AccountID: accountID,
 	}, nil
+}
+
+func (r *GatewayReconciler) referenceGranted(ctx context.Context, gatewayNamespace, secretNamespace, secretName string) (bool, error) {
+	if gatewayNamespace == secretNamespace {
+		return true, nil
+	}
+
+	var grants gatewayv1beta1.ReferenceGrantList
+	if err := r.List(ctx, &grants, client.InNamespace(secretNamespace)); err != nil {
+		return false, fmt.Errorf("listing ReferenceGrants in namespace %s: %w", secretNamespace, err)
+	}
+
+	for i := range grants.Items {
+		grant := &grants.Items[i]
+		fromMatch := false
+		for _, from := range grant.Spec.From {
+			if from.Group == gatewayv1beta1.Group("gateway.networking.k8s.io") &&
+				from.Kind == gatewayv1beta1.Kind("Gateway") &&
+				string(from.Namespace) == gatewayNamespace {
+				fromMatch = true
+				break
+			}
+		}
+		if !fromMatch {
+			continue
+		}
+		for _, to := range grant.Spec.To {
+			if to.Group == gatewayv1beta1.Group("") && to.Kind == gatewayv1beta1.Kind("Secret") {
+				if to.Name == nil || string(*to.Name) == secretName {
+					return true, nil
+				}
+			}
+		}
+	}
+
+	return false, nil
 }
 
 func buildListenerStatusPatches(gw *gatewayv1.Gateway) []*acgatewayv1.ListenerStatusApplyConfiguration {
