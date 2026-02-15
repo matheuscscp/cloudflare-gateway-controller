@@ -1,0 +1,1 @@
+installAPI: true # Whether to install the Gateway API CRDs vendored from upstream.
