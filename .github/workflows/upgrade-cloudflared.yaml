@@ -34,12 +34,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          echo "$GITHUB_TOKEN" | crane auth login ghcr.io --username="" --password-stdin
+          # Use a dedicated Docker config for GHCR so the login
+          # does not corrupt the default config used to pull from
+          # Docker Hub.
+          mkdir -p "$RUNNER_TEMP/ghcr-docker"
+          echo "$GITHUB_TOKEN" | DOCKER_CONFIG="$RUNNER_TEMP/ghcr-docker" \
+            crane auth login ghcr.io --username="" --password-stdin
 
       - name: Copy image
         id: copy
         env:
           TAG: ${{ steps.release.outputs.tag }}
+          DOCKER_CONFIG: ${{ runner.temp }}/ghcr-docker
         run: |
           dst="ghcr.io/${{ github.repository }}/cloudflared"
           crane copy "cloudflare/cloudflared:$TAG" "$dst:$TAG"
@@ -55,6 +61,7 @@ jobs:
           DST: ${{ steps.copy.outputs.dst }}
           TAG: ${{ steps.release.outputs.tag }}
           DIGEST: ${{ steps.copy.outputs.digest }}
+          DOCKER_CONFIG: ${{ runner.temp }}/ghcr-docker
         run: |
           cosign sign --yes "$DST:$TAG@$DIGEST"
 
