@@ -425,13 +425,15 @@ func TestGatewayCrossNamespaceSecret(t *testing.T) {
 	g.Expect(testClient.Create(testCtx, refGrant)).To(Succeed())
 	t.Cleanup(func() { testClient.Delete(testCtx, refGrant) })
 
-	// Trigger reconciliation by changing the spec (the controller uses
-	// GenerationChangedPredicate, so only spec changes increment generation
-	// and trigger a reconcile).
+	// Trigger reconciliation by touching an annotation (the controller watches
+	// annotation changes via AnnotationChangedPredicate).
 	g.Eventually(func(g Gomega) {
 		var latest gatewayv1.Gateway
 		g.Expect(testClient.Get(testCtx, gwKey, &latest)).To(Succeed())
-		latest.Spec.Listeners[0].Port = 8080
+		if latest.Annotations == nil {
+			latest.Annotations = make(map[string]string)
+		}
+		latest.Annotations["test"] = "trigger"
 		g.Expect(testClient.Update(testCtx, &latest)).To(Succeed())
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
