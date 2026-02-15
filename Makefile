@@ -17,6 +17,11 @@ all: test build ## Run all build and test targets.
 
 ##@ Development
 
+.PHONY: manifests
+manifests: controller-gen ## Generate RBAC manifests and wire them into the Helm chart.
+	$(CONTROLLER_GEN) rbac:roleName=manager-role paths="./..." output:rbac:artifacts:config=config/rbac
+	./hack/gen-chart-rbac.sh
+
 .PHONY: fmt
 fmt: ## Run go fmt against code.
 	go fmt ./...
@@ -53,14 +58,21 @@ $(LOCALBIN):
 	mkdir -p $(LOCALBIN)
 
 ## Tool Binaries
+CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen-$(CONTROLLER_GEN_VERSION)
 ENVTEST ?= $(LOCALBIN)/setup-envtest-$(ENVTEST_VERSION)
 
 ## Tool Versions
+CONTROLLER_GEN_VERSION ?= v0.19.0
 ENVTEST_VERSION ?= $(shell go list -m -f "{{ .Version }}" sigs.k8s.io/controller-runtime | awk -F'[v.]' '{printf "release-%d.%d", $$2, $$3}')
 
 ## Gateway API CRDs from the Go module cache
 GATEWAY_API_VERSION ?= $(shell go list -m -f '{{ .Version }}' sigs.k8s.io/gateway-api)
 GATEWAY_API_CRDS ?= $(shell go env GOMODCACHE)/sigs.k8s.io/gateway-api@$(GATEWAY_API_VERSION)/config/crd/standard
+
+.PHONY: controller-gen
+controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary.
+$(CONTROLLER_GEN): $(LOCALBIN)
+	$(call go-install-tool,$(CONTROLLER_GEN),sigs.k8s.io/controller-tools/cmd/controller-gen,$(CONTROLLER_GEN_VERSION))
 
 .PHONY: envtest
 envtest: $(ENVTEST) ## Download setup-envtest locally if necessary.

@@ -3,12 +3,13 @@
 #
 # Binaries for programs and plugins
 bin/
+config/
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
-cloudflare-gateway-controller
+/cloudflare-gateway-controller
 
 # Test binary, built with `go test -c`
 *.test
