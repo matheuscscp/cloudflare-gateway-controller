@@ -9,13 +9,14 @@ import (
 
 	semver "github.com/Masterminds/semver/v3"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	acmetav1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	acgatewayv1 "sigs.k8s.io/gateway-api/applyconfiguration/apis/v1"
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 )
@@ -46,40 +47,45 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	log.V(1).Info("Reconciling GatewayClass")
 
-	meta.SetStatusCondition(&gc.Status.Conditions, metav1.Condition{
-		Type:               string(gatewayv1.GatewayClassConditionStatusAccepted),
-		Status:             metav1.ConditionTrue,
-		ObservedGeneration: gc.Generation,
-		Reason:             string(gatewayv1.GatewayClassReasonAccepted),
-		Message:            "GatewayClass is accepted",
-	})
-
 	supportedVersion, supportedVersionMessage := r.checkSupportedVersion(ctx)
 
-	supportedVersionCondition := metav1.Condition{
-		Type:               string(gatewayv1.GatewayClassConditionStatusSupportedVersion),
-		ObservedGeneration: gc.Generation,
+	supportedVersionStatus := metav1.ConditionTrue
+	supportedVersionReason := string(gatewayv1.GatewayClassReasonSupportedVersion)
+	if !supportedVersion {
+		supportedVersionStatus = metav1.ConditionFalse
+		supportedVersionReason = string(gatewayv1.GatewayClassReasonUnsupportedVersion)
 	}
-	if supportedVersion {
-		supportedVersionCondition.Status = metav1.ConditionTrue
-		supportedVersionCondition.Reason = string(gatewayv1.GatewayClassReasonSupportedVersion)
-		supportedVersionCondition.Message = supportedVersionMessage
-	} else {
-		supportedVersionCondition.Status = metav1.ConditionFalse
-		supportedVersionCondition.Reason = string(gatewayv1.GatewayClassReasonUnsupportedVersion)
-		supportedVersionCondition.Message = supportedVersionMessage
-	}
-	meta.SetStatusCondition(&gc.Status.Conditions, supportedVersionCondition)
 
-	meta.SetStatusCondition(&gc.Status.Conditions, metav1.Condition{
-		Type:               apiv1.ReadyCondition,
-		Status:             metav1.ConditionTrue,
-		ObservedGeneration: gc.Generation,
-		Reason:             apiv1.ReadyReason,
-		Message:            "GatewayClass is ready",
-	})
+	now := metav1.Now()
+	statusPatch := acgatewayv1.GatewayClass(gc.Name).
+		WithResourceVersion(gc.ResourceVersion).
+		WithStatus(acgatewayv1.GatewayClassStatus().
+			WithConditions(
+				acmetav1.Condition().
+					WithType(string(gatewayv1.GatewayClassConditionStatusAccepted)).
+					WithStatus(metav1.ConditionTrue).
+					WithObservedGeneration(gc.Generation).
+					WithLastTransitionTime(now).
+					WithReason(string(gatewayv1.GatewayClassReasonAccepted)).
+					WithMessage("GatewayClass is accepted"),
+				acmetav1.Condition().
+					WithType(string(gatewayv1.GatewayClassConditionStatusSupportedVersion)).
+					WithStatus(supportedVersionStatus).
+					WithObservedGeneration(gc.Generation).
+					WithLastTransitionTime(now).
+					WithReason(supportedVersionReason).
+					WithMessage(supportedVersionMessage),
+				acmetav1.Condition().
+					WithType(apiv1.ReadyCondition).
+					WithStatus(metav1.ConditionTrue).
+					WithObservedGeneration(gc.Generation).
+					WithLastTransitionTime(now).
+					WithReason(apiv1.ReadyReason).
+					WithMessage("GatewayClass is ready"),
+			),
+		)
 
-	if err := r.Status().Update(ctx, &gc); err != nil {
+	if err := r.Status().Apply(ctx, statusPatch, client.FieldOwner(apiv1.ControllerName), client.ForceOwnership); err != nil {
 		return ctrl.Result{}, err
 	}
 
