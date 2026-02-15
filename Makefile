@@ -48,7 +48,7 @@ build: fmt vet ## Build the binary.
 
 .PHONY: run
 run: fmt vet ## Run the controller locally against the current kubeconfig cluster.
-	go run ./main.go
+	go run ./main.go --leader-elect=false
 
 ##@ Dependencies
 

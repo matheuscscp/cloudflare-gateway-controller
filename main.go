@@ -36,6 +36,7 @@ func init() {
 
 func main() {
 	cloudflaredImage := pflag.String("cloudflared-image", controller.DefaultCloudflaredImage, "cloudflared container image")
+	leaderElect := pflag.Bool("leader-elect", true, "enable leader election")
 	pflag.Parse()
 
 	ctrl.SetLogger(zap.New())
@@ -48,7 +49,7 @@ func main() {
 			BindAddress: ":8080",
 		},
 		HealthProbeBindAddress: ":8081",
-		LeaderElection:         true,
+		LeaderElection:         *leaderElect,
 		LeaderElectionID:       "cloudflare-gateway-controller",
 		Client: ctrlclient.Options{
 			Cache: &ctrlclient.CacheOptions{
