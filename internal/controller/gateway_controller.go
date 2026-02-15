@@ -24,8 +24,8 @@ import (
 )
 
 const (
-	gatewayFinalizer   = "gateway.cloudflare-gateway-controller.github.com/finalizer"
-	tunnelIDAnnotation = "gateway.cloudflare-gateway-controller.github.com/tunnel-id"
+	gatewayFinalizer   = "gateway.cloudflare-gateway-controller.matheuscscp.github.com/finalizer"
+	tunnelIDAnnotation = "gateway.cloudflare-gateway-controller.matheuscscp.github.com/tunnel-id"
 )
 
 // GatewayReconciler reconciles Gateway objects.
