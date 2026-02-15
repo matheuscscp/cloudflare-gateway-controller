@@ -36,3 +36,6 @@ go.work.sum
 
 # API Token
 *.token
+
+# Local run logs
+run.log
