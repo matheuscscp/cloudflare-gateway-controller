@@ -39,7 +39,7 @@ jobs:
           # Docker Hub.
           mkdir -p "$RUNNER_TEMP/ghcr-docker"
           echo "$GITHUB_TOKEN" | DOCKER_CONFIG="$RUNNER_TEMP/ghcr-docker" \
-            crane auth login ghcr.io --username="" --password-stdin
+            crane auth login ghcr.io --username=token --password-stdin
 
       - name: Copy image
         id: copy
