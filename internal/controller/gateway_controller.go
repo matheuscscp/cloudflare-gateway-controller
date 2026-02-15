@@ -343,7 +343,6 @@ func buildListenerStatusPatches(gw *gatewayv1.Gateway) []*acgatewayv1.ListenerSt
 }
 
 func buildCloudflaredDeployment(gw *gatewayv1.Gateway, tunnelToken, cloudflaredImage string) *appsv1.Deployment {
-	replicas := int32(1)
 	labels := map[string]string{
 		"app.kubernetes.io/name":       "cloudflared",
 		"app.kubernetes.io/managed-by": "cloudflare-gateway-controller",
@@ -355,7 +354,7 @@ func buildCloudflaredDeployment(gw *gatewayv1.Gateway, tunnelToken, cloudflaredI
 			Namespace: gw.Namespace,
 		},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: &replicas,
+			Replicas: new(int32(1)),
 			Selector: &metav1.LabelSelector{
 				MatchLabels: labels,
 			},
