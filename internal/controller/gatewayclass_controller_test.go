@@ -32,7 +32,7 @@ func TestGatewayClassAccepted(t *testing.T) {
 	// Wait for the controller to reconcile and set conditions.
 	var result gatewayv1.GatewayClass
 	key := types.NamespacedName{Name: gc.Name}
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		if err := testClient.Get(testCtx, key, &result); err != nil {
 			t.Fatalf("failed to get GatewayClass: %v", err)
 		}

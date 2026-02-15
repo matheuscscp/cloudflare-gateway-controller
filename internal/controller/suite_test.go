@@ -17,6 +17,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	cfclient "github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
 )
 
 var (
@@ -24,6 +26,7 @@ var (
 	testClient client.Client
 	testCtx    context.Context
 	testCancel context.CancelFunc
+	testMock   *mockTunnelClient
 )
 
 func newTestScheme() *runtime.Scheme {
@@ -61,7 +64,20 @@ func TestMain(m *testing.M) {
 	if err := (&GatewayClassReconciler{
 		Client: mgr.GetClient(),
 	}).SetupWithManager(mgr); err != nil {
-		panic(fmt.Sprintf("failed to setup controller: %v", err))
+		panic(fmt.Sprintf("failed to setup GatewayClass controller: %v", err))
+	}
+
+	testMock = &mockTunnelClient{
+		createTunnelID: "test-tunnel-id",
+		tunnelToken:    "test-tunnel-token",
+	}
+	if err := (&GatewayReconciler{
+		Client: mgr.GetClient(),
+		NewTunnelClient: func(_ cfclient.ClientConfig) (cfclient.TunnelClient, error) {
+			return testMock, nil
+		},
+	}).SetupWithManager(mgr); err != nil {
+		panic(fmt.Sprintf("failed to setup Gateway controller: %v", err))
 	}
 
 	testClient, err = client.New(cfg, client.Options{Scheme: scheme})

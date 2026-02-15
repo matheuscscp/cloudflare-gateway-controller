@@ -8,6 +8,7 @@ bin/
 *.dll
 *.so
 *.dylib
+cloudflare-gateway-controller
 
 # Test binary, built with `go test -c`
 *.test
