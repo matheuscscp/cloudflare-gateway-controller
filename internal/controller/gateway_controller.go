@@ -126,7 +126,6 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			)
 		}
 		statusPatch := acgatewayv1.Gateway(gw.Name, gw.Namespace).
-			WithResourceVersion(gw.ResourceVersion).
 			WithStatus(acgatewayv1.GatewayStatus().
 				WithConditions(conditions...).
 				WithListeners(buildListenerStatusPatches(&gw)...),
@@ -167,7 +166,6 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		// Persist tunnel ID immediately to avoid leaking tunnels on crash.
 		now := metav1.Now()
 		statusPatch := acgatewayv1.Gateway(gw.Name, gw.Namespace).
-			WithResourceVersion(gw.ResourceVersion).
 			WithStatus(acgatewayv1.GatewayStatus().
 				WithConditions(
 					acmetav1.Condition().
