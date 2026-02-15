@@ -175,12 +175,28 @@ func TestGatewayAcceptedAndProgrammed(t *testing.T) {
 		g.Expect(listenerAccepted.Status).To(Equal(metav1.ConditionTrue))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
+	// Verify tunnel token Secret created
+	var tokenSecret corev1.Secret
+	secretKey := client.ObjectKey{Name: "cloudflared-token-" + gw.Name, Namespace: gw.Namespace}
+	g.Expect(testClient.Get(testCtx, secretKey, &tokenSecret)).To(Succeed())
+	g.Expect(tokenSecret.Data).To(HaveKey("TUNNEL_TOKEN"))
+
 	// Verify Deployment created
 	var deploy appsv1.Deployment
 	deployKey := client.ObjectKey{Name: "cloudflared-" + gw.Name, Namespace: gw.Namespace}
 	g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
 	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
 	g.Expect(deploy.Spec.Template.Spec.Containers[0].Image).To(Equal(DefaultCloudflaredImage))
+
+	// Verify env uses secretKeyRef, not plain Value
+	env := deploy.Spec.Template.Spec.Containers[0].Env
+	g.Expect(env).To(HaveLen(1))
+	g.Expect(env[0].Name).To(Equal("TUNNEL_TOKEN"))
+	g.Expect(env[0].Value).To(BeEmpty())
+	g.Expect(env[0].ValueFrom).NotTo(BeNil())
+	g.Expect(env[0].ValueFrom.SecretKeyRef).NotTo(BeNil())
+	g.Expect(env[0].ValueFrom.SecretKeyRef.Name).To(Equal("cloudflared-token-" + gw.Name))
+	g.Expect(env[0].ValueFrom.SecretKeyRef.Key).To(Equal("TUNNEL_TOKEN"))
 
 	// Verify GatewayClass has the finalizer
 	var gcResult gatewayv1.GatewayClass

@@ -41,7 +41,7 @@ type GatewayReconciler struct {
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways/status,verbs=update;patch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;get;list;watch;update;delete
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update
 
 func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
@@ -192,14 +192,28 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("getting tunnel token: %w", err)
 	}
 
+	// Build and create/update tunnel token Secret
+	secret := buildTunnelTokenSecret(&gw, tunnelToken)
+	if err := controllerutil.SetControllerReference(&gw, secret, r.Scheme()); err != nil {
+		return ctrl.Result{}, fmt.Errorf("setting owner reference on secret: %w", err)
+	}
+	result, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
+		secret.Data = buildTunnelTokenSecret(&gw, tunnelToken).Data
+		return controllerutil.SetControllerReference(&gw, secret, r.Scheme())
+	})
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("creating/updating tunnel token secret: %w", err)
+	}
+	log.V(1).Info("Reconciled tunnel token Secret", "result", result)
+
 	// Build and create/update cloudflared Deployment
-	deploy := buildCloudflaredDeployment(&gw, tunnelToken, r.CloudflaredImage)
+	deploy := buildCloudflaredDeployment(&gw, r.CloudflaredImage)
 	if err := controllerutil.SetControllerReference(&gw, deploy, r.Scheme()); err != nil {
 		return ctrl.Result{}, fmt.Errorf("setting owner reference: %w", err)
 	}
-	result, err := controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
+	result, err = controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
 		// Update the spec on existing deployment
-		deploy.Spec = buildCloudflaredDeployment(&gw, tunnelToken, r.CloudflaredImage).Spec
+		deploy.Spec = buildCloudflaredDeployment(&gw, r.CloudflaredImage).Spec
 		return controllerutil.SetControllerReference(&gw, deploy, r.Scheme())
 	})
 	if err != nil {
@@ -347,7 +361,23 @@ func buildListenerStatusPatches(gw *gatewayv1.Gateway) []*acgatewayv1.ListenerSt
 	return patches
 }
 
-func buildCloudflaredDeployment(gw *gatewayv1.Gateway, tunnelToken, cloudflaredImage string) *appsv1.Deployment {
+func tunnelTokenSecretName(gw *gatewayv1.Gateway) string {
+	return fmt.Sprintf("cloudflared-token-%s", gw.Name)
+}
+
+func buildTunnelTokenSecret(gw *gatewayv1.Gateway, tunnelToken string) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      tunnelTokenSecretName(gw),
+			Namespace: gw.Namespace,
+		},
+		Data: map[string][]byte{
+			"TUNNEL_TOKEN": []byte(tunnelToken),
+		},
+	}
+}
+
+func buildCloudflaredDeployment(gw *gatewayv1.Gateway, cloudflaredImage string) *appsv1.Deployment {
 	labels := map[string]string{
 		"app.kubernetes.io/name":       "cloudflared",
 		"app.kubernetes.io/managed-by": "cloudflare-gateway-controller",
@@ -375,8 +405,15 @@ func buildCloudflaredDeployment(gw *gatewayv1.Gateway, tunnelToken, cloudflaredI
 							Args:  []string{"tunnel", "--no-autoupdate", "run"},
 							Env: []corev1.EnvVar{
 								{
-									Name:  "TUNNEL_TOKEN",
-									Value: tunnelToken,
+									Name: "TUNNEL_TOKEN",
+									ValueFrom: &corev1.EnvVarSource{
+										SecretKeyRef: &corev1.SecretKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{
+												Name: tunnelTokenSecretName(gw),
+											},
+											Key: "TUNNEL_TOKEN",
+										},
+									},
 								},
 							},
 							LivenessProbe: &corev1.Probe{
