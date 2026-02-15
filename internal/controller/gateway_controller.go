@@ -76,7 +76,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		gwPatch := client.MergeFrom(gw.DeepCopy())
 		controllerutil.AddFinalizer(&gw, apiv1.FinalizerGateway)
 		if err := r.Patch(ctx, &gw, gwPatch); err != nil {
-			return ctrl.Result{}, err
+			return ctrl.Result{}, fmt.Errorf("adding finalizer: %w", err)
 		}
 		return ctrl.Result{RequeueAfter: 1}, nil
 	}
@@ -91,7 +91,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	// Ensure GatewayClass finalizer
 	if err := r.ensureGatewayClassFinalizer(ctx, &gc); err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("ensuring GatewayClass finalizer: %w", err)
 	}
 
 	// Read credentials
@@ -131,7 +131,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				WithListeners(buildListenerStatusPatches(&gw)...),
 			)
 		if err := r.Status().Apply(ctx, statusPatch, client.FieldOwner(apiv1.ControllerName), client.ForceOwnership); err != nil {
-			return ctrl.Result{}, err
+			return ctrl.Result{}, fmt.Errorf("applying credential error status: %w", err)
 		}
 		return ctrl.Result{}, nil
 	}
@@ -269,7 +269,6 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		readyMsg = "Gateway is ready"
 	}
 	statusPatch := acgatewayv1.Gateway(gw.Name, gw.Namespace).
-		WithResourceVersion(gw.ResourceVersion).
 		WithStatus(acgatewayv1.GatewayStatus().
 			WithConditions(
 				acmetav1.Condition().
@@ -304,7 +303,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			WithListeners(buildListenerStatusPatches(&gw)...),
 		)
 	if err := r.Status().Apply(ctx, statusPatch, client.FieldOwner(apiv1.ControllerName), client.ForceOwnership); err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("applying success status: %w", err)
 	}
 
 	return ctrl.Result{RequeueAfter: apiv1.ReconcileInterval(gw.Annotations)}, nil
@@ -362,12 +361,12 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 	gwPatch := client.MergeFrom(gw.DeepCopy())
 	controllerutil.RemoveFinalizer(gw, apiv1.FinalizerGateway)
 	if err := r.Patch(ctx, gw, gwPatch); err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
 	}
 
 	// If no other Gateways reference this GatewayClass, remove its finalizer
 	if err := r.removeGatewayClassFinalizer(ctx, gc, gw); err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("removing GatewayClass finalizer: %w", err)
 	}
 
 	return ctrl.Result{}, nil
