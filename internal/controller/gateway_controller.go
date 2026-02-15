@@ -261,6 +261,7 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 	}
 
 	// Delete tunnel if annotation exists and reconciliation is not disabled.
+	// When disabled, the user is responsible for manually cleaning up the tunnel.
 	if gw.Annotations[apiv1.AnnotationReconcile] != apiv1.ValueDisabled {
 		if tunnelID := gw.Annotations[apiv1.AnnotationTunnelID]; tunnelID != "" {
 			cfg, err := r.readCredentials(ctx, gc)
