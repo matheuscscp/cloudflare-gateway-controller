@@ -15,6 +15,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 )
 
 type mockTunnelClient struct {
@@ -92,14 +94,14 @@ func createTestGatewayClass(g Gomega, name string, secretNamespace string) *gate
 	return gc
 }
 
-func waitForGatewayClassAccepted(g Gomega, gc *gatewayv1.GatewayClass) {
+func waitForGatewayClassReady(g Gomega, gc *gatewayv1.GatewayClass) {
 	key := client.ObjectKeyFromObject(gc)
 	g.Eventually(func(g Gomega) {
 		var result gatewayv1.GatewayClass
 		g.Expect(testClient.Get(testCtx, key, &result)).To(Succeed())
-		accepted := findCondition(result.Status.Conditions, string(gatewayv1.GatewayClassConditionStatusAccepted))
-		g.Expect(accepted).NotTo(BeNil())
-		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
+		ready := findCondition(result.Status.Conditions, apiv1.ReadyCondition)
+		g.Expect(ready).NotTo(BeNil())
+		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
@@ -118,7 +120,7 @@ func TestGatewayAcceptedAndProgrammed(t *testing.T) {
 		}
 	})
 
-	waitForGatewayClassAccepted(g, gc)
+	waitForGatewayClassReady(g, gc)
 
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
@@ -159,6 +161,11 @@ func TestGatewayAcceptedAndProgrammed(t *testing.T) {
 		g.Expect(programmed).NotTo(BeNil())
 		g.Expect(programmed.Status).To(Equal(metav1.ConditionTrue))
 
+		ready := findCondition(result.Status.Conditions, apiv1.ReadyCondition)
+		g.Expect(ready).NotTo(BeNil())
+		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+		g.Expect(ready.Reason).To(Equal(apiv1.ReadyReason))
+
 		// Listener status
 		g.Expect(result.Status.Listeners).To(HaveLen(1))
 		ls := result.Status.Listeners[0]
@@ -196,7 +203,7 @@ func TestGatewayUnsupportedProtocol(t *testing.T) {
 		}
 	})
 
-	waitForGatewayClassAccepted(g, gc)
+	waitForGatewayClassReady(g, gc)
 
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
@@ -256,7 +263,7 @@ func TestGatewayDeletion(t *testing.T) {
 		}
 	})
 
-	waitForGatewayClassAccepted(g, gc)
+	waitForGatewayClassReady(g, gc)
 
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{

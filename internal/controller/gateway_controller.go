@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 	cfclient "github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
 )
 
@@ -139,6 +140,13 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			Reason:             string(gatewayv1.GatewayReasonInvalidParameters),
 			Message:            fmt.Sprintf("Failed to read credentials: %v", err),
 		})
+		meta.SetStatusCondition(&gw.Status.Conditions, metav1.Condition{
+			Type:               apiv1.ReadyCondition,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: gw.Generation,
+			Reason:             apiv1.InvalidParametersNotReady,
+			Message:            fmt.Sprintf("Failed to read credentials: %v", err),
+		})
 		gw.Status.Listeners = listenerStatuses
 		if err := r.Status().Update(ctx, &gw); err != nil {
 			return ctrl.Result{}, err
@@ -204,6 +212,15 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		ObservedGeneration: gw.Generation,
 		Reason:             string(gatewayv1.GatewayReasonProgrammed),
 		Message:            "Gateway is programmed",
+	})
+
+	// Set Ready=True (kstatus)
+	meta.SetStatusCondition(&gw.Status.Conditions, metav1.Condition{
+		Type:               apiv1.ReadyCondition,
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: gw.Generation,
+		Reason:             apiv1.ReadyReason,
+		Message:            "Gateway is ready",
 	})
 
 	gw.Status.Listeners = listenerStatuses

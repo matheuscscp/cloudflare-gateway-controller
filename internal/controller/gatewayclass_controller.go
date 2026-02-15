@@ -12,6 +12,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 )
 
 const ControllerName = "github.com/matheuscscp/cloudflare-gateway-controller"
@@ -52,6 +54,14 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		ObservedGeneration: gc.Generation,
 		Reason:             string(gatewayv1.GatewayClassReasonSupportedVersion),
 		Message:            "Gateway API CRD version is supported",
+	})
+
+	meta.SetStatusCondition(&gc.Status.Conditions, metav1.Condition{
+		Type:               apiv1.ReadyCondition,
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: gc.Generation,
+		Reason:             apiv1.ReadyReason,
+		Message:            "GatewayClass is ready",
 	})
 
 	if err := r.Status().Update(ctx, &gc); err != nil {

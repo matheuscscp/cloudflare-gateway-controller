@@ -11,6 +11,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 )
 
 func TestGatewayClassAccepted(t *testing.T) {
@@ -43,5 +45,10 @@ func TestGatewayClassAccepted(t *testing.T) {
 		g.Expect(supported).NotTo(BeNil())
 		g.Expect(supported.Status).To(Equal(metav1.ConditionTrue))
 		g.Expect(supported.Reason).To(Equal(string(gatewayv1.GatewayClassReasonSupportedVersion)))
+
+		ready := findCondition(result.Status.Conditions, apiv1.ReadyCondition)
+		g.Expect(ready).NotTo(BeNil())
+		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+		g.Expect(ready.Reason).To(Equal(apiv1.ReadyReason))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
