@@ -260,18 +260,20 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 		return ctrl.Result{}, nil
 	}
 
-	// Delete tunnel if annotation exists
-	if tunnelID := gw.Annotations[apiv1.AnnotationTunnelID]; tunnelID != "" {
-		cfg, err := r.readCredentials(ctx, gc)
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("reading credentials for tunnel deletion: %w", err)
-		}
-		tc, err := r.NewTunnelClient(cfg)
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("creating tunnel client for deletion: %w", err)
-		}
-		if err := tc.DeleteTunnel(ctx, tunnelID); err != nil {
-			return ctrl.Result{}, fmt.Errorf("deleting tunnel: %w", err)
+	// Delete tunnel if annotation exists and reconciliation is not disabled.
+	if gw.Annotations[apiv1.AnnotationReconcile] != apiv1.ValueDisabled {
+		if tunnelID := gw.Annotations[apiv1.AnnotationTunnelID]; tunnelID != "" {
+			cfg, err := r.readCredentials(ctx, gc)
+			if err != nil {
+				return ctrl.Result{}, fmt.Errorf("reading credentials for tunnel deletion: %w", err)
+			}
+			tc, err := r.NewTunnelClient(cfg)
+			if err != nil {
+				return ctrl.Result{}, fmt.Errorf("creating tunnel client for deletion: %w", err)
+			}
+			if err := tc.DeleteTunnel(ctx, tunnelID); err != nil {
+				return ctrl.Result{}, fmt.Errorf("deleting tunnel: %w", err)
+			}
 		}
 	}
 

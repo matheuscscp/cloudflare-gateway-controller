@@ -5,6 +5,8 @@ package cloudflare
 
 import (
 	"context"
+	"errors"
+	"net/http"
 
 	cloudflare "github.com/cloudflare/cloudflare-go/v6"
 	"github.com/cloudflare/cloudflare-go/v6/option"
@@ -57,6 +59,10 @@ func (c *tunnelClient) DeleteTunnel(ctx context.Context, tunnelID string) error 
 	_, err := c.client.ZeroTrust.Tunnels.Cloudflared.Delete(ctx, tunnelID, zero_trust.TunnelCloudflaredDeleteParams{
 		AccountID: cloudflare.String(c.accountID),
 	})
+	var apiErr *cloudflare.Error
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+		return nil
+	}
 	return err
 }
 
