@@ -16,8 +16,6 @@ import (
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 )
 
-const ControllerName = "github.com/matheuscscp/cloudflare-gateway-controller"
-
 // GatewayClassReconciler reconciles GatewayClass objects.
 type GatewayClassReconciler struct {
 	client.Client
@@ -34,7 +32,7 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	if gc.Spec.ControllerName != gatewayv1.GatewayController(ControllerName) {
+	if gc.Spec.ControllerName != gatewayv1.GatewayController(apiv1.ControllerName) {
 		return ctrl.Result{}, nil
 	}
 

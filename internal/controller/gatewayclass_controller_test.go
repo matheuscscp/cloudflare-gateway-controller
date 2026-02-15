@@ -23,7 +23,7 @@ func TestGatewayClassAccepted(t *testing.T) {
 			Name: "test-cloudflare",
 		},
 		Spec: gatewayv1.GatewayClassSpec{
-			ControllerName: gatewayv1.GatewayController(ControllerName),
+			ControllerName: gatewayv1.GatewayController(apiv1.ControllerName),
 		},
 	}
 	g.Expect(testClient.Create(testCtx, gc)).To(Succeed())

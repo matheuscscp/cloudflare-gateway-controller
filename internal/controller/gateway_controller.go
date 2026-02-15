@@ -23,11 +23,6 @@ import (
 	cfclient "github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
 )
 
-const (
-	gatewayFinalizer   = "gateway.cloudflare-gateway-controller.matheuscscp.github.com/finalizer"
-	tunnelIDAnnotation = "gateway.cloudflare-gateway-controller.matheuscscp.github.com/tunnel-id"
-)
-
 // GatewayReconciler reconciles Gateway objects.
 type GatewayReconciler struct {
 	client.Client
@@ -56,7 +51,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := r.Get(ctx, types.NamespacedName{Name: string(gw.Spec.GatewayClassName)}, &gc); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if gc.Spec.ControllerName != gatewayv1.GatewayController(ControllerName) {
+	if gc.Spec.ControllerName != gatewayv1.GatewayController(apiv1.ControllerName) {
 		return ctrl.Result{}, nil
 	}
 
@@ -64,12 +59,12 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	// 3. Deletion path
 	if gw.DeletionTimestamp != nil {
-		if !controllerutil.ContainsFinalizer(&gw, gatewayFinalizer) {
+		if !controllerutil.ContainsFinalizer(&gw, apiv1.GatewayFinalizer) {
 			return ctrl.Result{}, nil
 		}
 
 		// Delete tunnel if annotation exists
-		if tunnelID := gw.Annotations[tunnelIDAnnotation]; tunnelID != "" {
+		if tunnelID := gw.Annotations[apiv1.TunnelIDAnnotation]; tunnelID != "" {
 			cfg, err := r.readCredentials(ctx, &gc)
 			if err != nil {
 				return ctrl.Result{}, fmt.Errorf("reading credentials for tunnel deletion: %w", err)
@@ -84,7 +79,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 
 		// Remove finalizer from Gateway
-		controllerutil.RemoveFinalizer(&gw, gatewayFinalizer)
+		controllerutil.RemoveFinalizer(&gw, apiv1.GatewayFinalizer)
 		if err := r.Update(ctx, &gw); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -114,7 +109,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// 4. Normal path
 
 	// Ensure finalizer on Gateway
-	if controllerutil.AddFinalizer(&gw, gatewayFinalizer) {
+	if controllerutil.AddFinalizer(&gw, apiv1.GatewayFinalizer) {
 		if err := r.Update(ctx, &gw); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -173,19 +168,19 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if gw.Annotations == nil {
 		gw.Annotations = make(map[string]string)
 	}
-	if gw.Annotations[tunnelIDAnnotation] == "" {
+	if gw.Annotations[apiv1.TunnelIDAnnotation] == "" {
 		tunnelID, err := tc.CreateTunnel(ctx, fmt.Sprintf("%s-%s", gw.Namespace, gw.Name))
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("creating tunnel: %w", err)
 		}
-		gw.Annotations[tunnelIDAnnotation] = tunnelID
+		gw.Annotations[apiv1.TunnelIDAnnotation] = tunnelID
 		if err := r.Update(ctx, &gw); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
 
 	// Get tunnel token
-	tunnelToken, err := tc.GetTunnelToken(ctx, gw.Annotations[tunnelIDAnnotation])
+	tunnelToken, err := tc.GetTunnelToken(ctx, gw.Annotations[apiv1.TunnelIDAnnotation])
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("getting tunnel token: %w", err)
 	}

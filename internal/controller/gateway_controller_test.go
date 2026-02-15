@@ -81,7 +81,7 @@ func createTestGatewayClass(g Gomega, name string, secretNamespace string) *gate
 			Name: name,
 		},
 		Spec: gatewayv1.GatewayClassSpec{
-			ControllerName: gatewayv1.GatewayController(ControllerName),
+			ControllerName: gatewayv1.GatewayController(apiv1.ControllerName),
 			ParametersRef: &gatewayv1.ParametersReference{
 				Group:     "",
 				Kind:      "Secret",
