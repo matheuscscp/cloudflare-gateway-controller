@@ -182,13 +182,13 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	// Build and create/update cloudflared Deployment
-	deploy := buildCloudflaredDeployment(&gw, r.CloudflaredImage)
+	deploy := r.buildCloudflaredDeployment(&gw)
 	if err := controllerutil.SetControllerReference(&gw, deploy, r.Scheme()); err != nil {
 		return ctrl.Result{}, fmt.Errorf("setting owner reference: %w", err)
 	}
 	result, err = controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
 		currentReplicas := deploy.Spec.Replicas
-		deploy.Spec = buildCloudflaredDeployment(&gw, r.CloudflaredImage).Spec
+		deploy.Spec = r.buildCloudflaredDeployment(&gw).Spec
 		if replicas != nil {
 			deploy.Spec.Replicas = replicas
 		} else if currentReplicas != nil {
@@ -424,7 +424,7 @@ func buildTunnelTokenSecret(gw *gatewayv1.Gateway, tunnelToken string) *corev1.S
 	}
 }
 
-func buildCloudflaredDeployment(gw *gatewayv1.Gateway, cloudflaredImage string) *appsv1.Deployment {
+func (r *GatewayReconciler) buildCloudflaredDeployment(gw *gatewayv1.Gateway) *appsv1.Deployment {
 	labels := map[string]string{
 		"app.kubernetes.io/name":       "cloudflared",
 		"app.kubernetes.io/managed-by": "cloudflare-gateway-controller",
@@ -447,7 +447,7 @@ func buildCloudflaredDeployment(gw *gatewayv1.Gateway, cloudflaredImage string) 
 					Containers: []corev1.Container{
 						{
 							Name:  "cloudflared",
-							Image: cloudflaredImage,
+							Image: r.CloudflaredImage,
 							Args:  []string{"tunnel", "--no-autoupdate", "run"},
 							Env: []corev1.EnvVar{
 								{
