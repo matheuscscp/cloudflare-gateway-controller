@@ -11,8 +11,6 @@ import (
 	"time"
 
 	semver "github.com/Masterminds/semver/v3"
-	"github.com/fluxcd/cli-utils/pkg/kstatus/polling"
-	"github.com/fluxcd/pkg/ssa"
 	appsv1 "k8s.io/api/apps/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -26,7 +24,6 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
-	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 	cfclient "github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
 )
 
@@ -88,19 +85,12 @@ func TestMain(m *testing.M) {
 		panic(fmt.Sprintf("failed to setup GatewayClass controller: %v", err))
 	}
 
-	poller := polling.NewStatusPoller(mgr.GetClient(), mgr.GetRESTMapper(), polling.Options{})
-	resourceManager := ssa.NewResourceManager(mgr.GetClient(), poller, ssa.Owner{
-		Field: apiv1.ControllerName,
-		Group: apiv1.Group,
-	})
-
 	testMock = &mockTunnelClient{
 		createTunnelID: "test-tunnel-id",
 		tunnelToken:    "test-tunnel-token",
 	}
 	if err := (&GatewayReconciler{
-		Client:          mgr.GetClient(),
-		ResourceManager: resourceManager,
+		Client: mgr.GetClient(),
 		NewTunnelClient: func(_ cfclient.ClientConfig) (cfclient.TunnelClient, error) {
 			return testMock, nil
 		},

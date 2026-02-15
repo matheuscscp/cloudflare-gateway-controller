@@ -7,14 +7,10 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"time"
 
-	"github.com/fluxcd/cli-utils/pkg/object"
-	"github.com/fluxcd/pkg/ssa"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	acmetav1 "k8s.io/client-go/applyconfigurations/meta/v1"
@@ -37,7 +33,6 @@ const DefaultCloudflaredImage = "ghcr.io/matheuscscp/cloudflare-gateway-controll
 // GatewayReconciler reconciles Gateway objects.
 type GatewayReconciler struct {
 	client.Client
-	ResourceManager  *ssa.ResourceManager
 	NewTunnelClient  cfclient.TunnelClientFactory
 	CloudflaredImage string
 }
@@ -92,9 +87,9 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	log.V(1).Info("Reconciling Gateway")
 
 	// Ensure GatewayClass finalizer
-	if !controllerutil.ContainsFinalizer(&gc, gatewayv1.GatewayClassFinalizerGatewaysExist) {
+	if !controllerutil.ContainsFinalizer(&gc, apiv1.FinalizerGatewayClass) {
 		gcPatch := client.MergeFromWithOptions(gc.DeepCopy(), client.MergeFromWithOptimisticLock{})
-		controllerutil.AddFinalizer(&gc, gatewayv1.GatewayClassFinalizerGatewaysExist)
+		controllerutil.AddFinalizer(&gc, apiv1.FinalizerGatewayClass)
 		if err := r.Patch(ctx, &gc, gcPatch); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -219,21 +214,6 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 	log.V(1).Info("Reconciled cloudflared Deployment", "result", result)
 
-	// Wait for Deployment to become ready
-	if err := r.ResourceManager.WaitForSetWithContext(ctx, object.ObjMetadataSet{
-		{
-			Namespace: deploy.Namespace,
-			Name:      deploy.Name,
-			GroupKind: schema.GroupKind{Group: "apps", Kind: "Deployment"},
-		},
-	}, ssa.WaitOptions{
-		Interval: 5 * time.Second,
-		Timeout:  apiv1.ReconcileTimeout(gw.Annotations),
-		FailFast: true,
-	}); err != nil {
-		return ctrl.Result{}, fmt.Errorf("waiting for cloudflared deployment to become ready: %w", err)
-	}
-
 	// Apply status
 	now := metav1.Now()
 	statusPatch := acgatewayv1.Gateway(gw.Name, gw.Namespace).
@@ -320,9 +300,9 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 			break
 		}
 	}
-	if !hasOtherGateways && controllerutil.ContainsFinalizer(gc, gatewayv1.GatewayClassFinalizerGatewaysExist) {
+	if !hasOtherGateways && controllerutil.ContainsFinalizer(gc, apiv1.FinalizerGatewayClass) {
 		gcPatch := client.MergeFromWithOptions(gc.DeepCopy(), client.MergeFromWithOptimisticLock{})
-		controllerutil.RemoveFinalizer(gc, gatewayv1.GatewayClassFinalizerGatewaysExist)
+		controllerutil.RemoveFinalizer(gc, apiv1.FinalizerGatewayClass)
 		if err := r.Patch(ctx, gc, gcPatch); err != nil {
 			return ctrl.Result{}, err
 		}

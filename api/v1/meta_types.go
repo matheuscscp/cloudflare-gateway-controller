@@ -3,7 +3,11 @@
 
 package v1
 
-import "time"
+import (
+	"time"
+
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+)
 
 const (
 	// ValueEnabled is the annotation value used to enable a feature.
@@ -20,6 +24,10 @@ const (
 	// the Cloudflare tunnel is deleted before the Gateway is removed.
 	FinalizerGateway = prefix + "finalizer"
 
+	// FinalizerGatewayClass is the finalizer added to GatewayClass resources
+	// to ensure the GatewayClass is not deleted while Gateways reference it.
+	FinalizerGatewayClass = gatewayv1.GatewayClassFinalizerGatewaysExist + "/finalizer"
+
 	// AnnotationReconcile is the annotation key used to enable or disable
 	// reconciliation. Set to "disabled" to pause reconciliation.
 	AnnotationReconcile = prefix + "reconcile"
@@ -28,11 +36,6 @@ const (
 	// the default reconciliation interval. The value must be a valid
 	// Go duration string (e.g. "5m", "1h").
 	AnnotationReconcileEvery = prefix + "reconcileEvery"
-
-	// AnnotationReconcileTimeout is the annotation key used to override
-	// the default timeout for health checks after applying resources.
-	// The value must be a valid Go duration string (e.g. "5m", "1h").
-	AnnotationReconcileTimeout = prefix + "reconcileTimeout"
 
 	// AnnotationTunnelName is the annotation key used to override the
 	// default Cloudflare tunnel name. When absent, the Gateway UID is used.
@@ -48,10 +51,6 @@ const (
 	// DefaultReconcileInterval is the default interval between periodic
 	// reconciliations for drift correction.
 	DefaultReconcileInterval = 10 * time.Minute
-
-	// DefaultReconcileTimeout is the default timeout for health checks
-	// after applying resources.
-	DefaultReconcileTimeout = 5 * time.Minute
 )
 
 // ReconcileInterval returns the reconciliation interval for an object
@@ -69,18 +68,4 @@ func ReconcileInterval(annotations map[string]string) time.Duration {
 		return DefaultReconcileInterval
 	}
 	return interval
-}
-
-// ReconcileTimeout returns the reconciliation timeout for an object
-// based on its annotations.
-func ReconcileTimeout(annotations map[string]string) time.Duration {
-	val, ok := annotations[AnnotationReconcileTimeout]
-	if !ok {
-		return DefaultReconcileTimeout
-	}
-	timeout, err := time.ParseDuration(val)
-	if err != nil {
-		return DefaultReconcileTimeout
-	}
-	return timeout
 }
