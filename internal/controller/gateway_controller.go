@@ -23,10 +23,15 @@ import (
 	cfclient "github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
 )
 
+// DefaultCloudflaredImage is the default cloudflared container image.
+// This value is updated automatically by the upgrade-cloudflared workflow.
+const DefaultCloudflaredImage = "cloudflare/cloudflared:latest"
+
 // GatewayReconciler reconciles Gateway objects.
 type GatewayReconciler struct {
 	client.Client
-	NewTunnelClient cfclient.TunnelClientFactory
+	NewTunnelClient  cfclient.TunnelClientFactory
+	CloudflaredImage string
 }
 
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gatewayclasses,verbs=get;list;watch;update
@@ -186,13 +191,13 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	// Build and create/update cloudflared Deployment
-	deploy := buildCloudflaredDeployment(&gw, tunnelToken)
+	deploy := buildCloudflaredDeployment(&gw, tunnelToken, r.CloudflaredImage)
 	if err := controllerutil.SetControllerReference(&gw, deploy, r.Scheme()); err != nil {
 		return ctrl.Result{}, fmt.Errorf("setting owner reference: %w", err)
 	}
 	result, err := controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
 		// Update the spec on existing deployment
-		deploy.Spec = buildCloudflaredDeployment(&gw, tunnelToken).Spec
+		deploy.Spec = buildCloudflaredDeployment(&gw, tunnelToken, r.CloudflaredImage).Spec
 		return controllerutil.SetControllerReference(&gw, deploy, r.Scheme())
 	})
 	if err != nil {
@@ -326,7 +331,7 @@ func validateListeners(gw *gatewayv1.Gateway) []gatewayv1.ListenerStatus {
 	return statuses
 }
 
-func buildCloudflaredDeployment(gw *gatewayv1.Gateway, tunnelToken string) *appsv1.Deployment {
+func buildCloudflaredDeployment(gw *gatewayv1.Gateway, tunnelToken, cloudflaredImage string) *appsv1.Deployment {
 	replicas := int32(1)
 	labels := map[string]string{
 		"app.kubernetes.io/name":       "cloudflared",
@@ -351,7 +356,7 @@ func buildCloudflaredDeployment(gw *gatewayv1.Gateway, tunnelToken string) *apps
 					Containers: []corev1.Container{
 						{
 							Name:  "cloudflared",
-							Image: "cloudflare/cloudflared:latest",
+							Image: cloudflaredImage,
 							Args:  []string{"tunnel", "--no-autoupdate", "run"},
 							Env: []corev1.EnvVar{
 								{

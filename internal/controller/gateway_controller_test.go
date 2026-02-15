@@ -180,7 +180,7 @@ func TestGatewayAcceptedAndProgrammed(t *testing.T) {
 	deployKey := client.ObjectKey{Name: "cloudflared-" + gw.Name, Namespace: gw.Namespace}
 	g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
 	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
-	g.Expect(deploy.Spec.Template.Spec.Containers[0].Image).To(Equal("cloudflare/cloudflared:latest"))
+	g.Expect(deploy.Spec.Template.Spec.Containers[0].Image).To(Equal(DefaultCloudflaredImage))
 
 	// Verify GatewayClass has the finalizer
 	var gcResult gatewayv1.GatewayClass

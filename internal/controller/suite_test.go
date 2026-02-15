@@ -85,6 +85,7 @@ func TestMain(m *testing.M) {
 		NewTunnelClient: func(_ cfclient.ClientConfig) (cfclient.TunnelClient, error) {
 			return testMock, nil
 		},
+		CloudflaredImage: DefaultCloudflaredImage,
 	}).SetupWithManager(mgr); err != nil {
 		panic(fmt.Sprintf("failed to setup Gateway controller: %v", err))
 	}

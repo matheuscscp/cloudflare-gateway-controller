@@ -6,6 +6,7 @@ package main
 import (
 	"os"
 
+	"github.com/spf13/pflag"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -29,6 +30,9 @@ func init() {
 }
 
 func main() {
+	cloudflaredImage := pflag.String("cloudflared-image", controller.DefaultCloudflaredImage, "cloudflared container image")
+	pflag.Parse()
+
 	ctrl.SetLogger(zap.New())
 
 	setupLog := ctrl.Log.WithName("setup")
@@ -56,8 +60,9 @@ func main() {
 	}
 
 	if err := (&controller.GatewayReconciler{
-		Client:          mgr.GetClient(),
-		NewTunnelClient: cfclient.NewTunnelClient,
+		Client:           mgr.GetClient(),
+		NewTunnelClient:  cfclient.NewTunnelClient,
+		CloudflaredImage: *cloudflaredImage,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Gateway")
 		os.Exit(1)
