@@ -211,8 +211,34 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 	log.V(1).Info("Reconciled cloudflared Deployment", "result", result)
 
+	// Check Deployment readiness
+	if err := r.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
+		return ctrl.Result{}, fmt.Errorf("getting cloudflared deployment status: %w", err)
+	}
+	deployReady := false
+	for _, c := range deploy.Status.Conditions {
+		if c.Type == appsv1.DeploymentAvailable && c.Status == "True" {
+			deployReady = true
+			break
+		}
+	}
+
 	// Apply status
 	now := metav1.Now()
+	programmedStatus := metav1.ConditionFalse
+	programmedReason := string(gatewayv1.GatewayReasonPending)
+	programmedMsg := "Waiting for cloudflared deployment to become ready"
+	readyStatus := metav1.ConditionFalse
+	readyReason := apiv1.NotReadyReason
+	readyMsg := "Waiting for cloudflared deployment to become ready"
+	if deployReady {
+		programmedStatus = metav1.ConditionTrue
+		programmedReason = string(gatewayv1.GatewayReasonProgrammed)
+		programmedMsg = "Gateway is programmed"
+		readyStatus = metav1.ConditionTrue
+		readyReason = apiv1.ReadyReason
+		readyMsg = "Gateway is ready"
+	}
 	statusPatch := acgatewayv1.Gateway(gw.Name, gw.Namespace).
 		WithResourceVersion(gw.ResourceVersion).
 		WithStatus(acgatewayv1.GatewayStatus().
@@ -226,18 +252,18 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 					WithMessage("Gateway is accepted"),
 				acmetav1.Condition().
 					WithType(string(gatewayv1.GatewayConditionProgrammed)).
-					WithStatus(metav1.ConditionTrue).
+					WithStatus(programmedStatus).
 					WithObservedGeneration(gw.Generation).
 					WithLastTransitionTime(now).
-					WithReason(string(gatewayv1.GatewayReasonProgrammed)).
-					WithMessage("Gateway is programmed"),
+					WithReason(programmedReason).
+					WithMessage(programmedMsg),
 				acmetav1.Condition().
 					WithType(apiv1.ReadyCondition).
-					WithStatus(metav1.ConditionTrue).
+					WithStatus(readyStatus).
 					WithObservedGeneration(gw.Generation).
 					WithLastTransitionTime(now).
-					WithReason(apiv1.ReadyReason).
-					WithMessage("Gateway is ready"),
+					WithReason(readyReason).
+					WithMessage(readyMsg),
 				acmetav1.Condition().
 					WithType(apiv1.ConditionTunnelID).
 					WithStatus(metav1.ConditionTrue).
