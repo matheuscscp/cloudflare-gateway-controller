@@ -5,7 +5,6 @@ package main
 
 import (
 	"os"
-	"runtime/debug"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -29,19 +28,6 @@ func init() {
 	utilruntime.Must(gatewayv1.Install(scheme))
 }
 
-func gatewayAPIVersion() string {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return ""
-	}
-	for _, dep := range info.Deps {
-		if dep.Path == "sigs.k8s.io/gateway-api" {
-			return dep.Version
-		}
-	}
-	return ""
-}
-
 func main() {
 	ctrl.SetLogger(zap.New())
 
@@ -63,7 +49,7 @@ func main() {
 
 	if err := (&controller.GatewayClassReconciler{
 		Client:            mgr.GetClient(),
-		GatewayAPIVersion: gatewayAPIVersion(),
+		GatewayAPIVersion: controller.GatewayAPIVersion(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GatewayClass")
 		os.Exit(1)

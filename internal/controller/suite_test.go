@@ -9,6 +9,7 @@ import (
 	"os"
 	"testing"
 
+	semver "github.com/Masterminds/semver/v3"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -21,6 +22,11 @@ import (
 
 	cfclient "github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
 )
+
+// testGatewayAPIVersion must match the major.minor version of the
+// sigs.k8s.io/gateway-api dependency in go.mod. This is updated
+// automatically by the upgrade-gateway-api workflow.
+var testGatewayAPIVersion = semver.MustParse("1.4.0")
 
 var (
 	testEnv    *envtest.Environment
@@ -65,7 +71,7 @@ func TestMain(m *testing.M) {
 
 	if err := (&GatewayClassReconciler{
 		Client:            mgr.GetClient(),
-		GatewayAPIVersion: "v1.4.1",
+		GatewayAPIVersion: testGatewayAPIVersion,
 	}).SetupWithManager(mgr); err != nil {
 		panic(fmt.Sprintf("failed to setup GatewayClass controller: %v", err))
 	}

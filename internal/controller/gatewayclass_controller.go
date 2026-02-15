@@ -6,6 +6,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 
 	semver "github.com/Masterminds/semver/v3"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -23,10 +24,29 @@ import (
 
 const bundleVersionAnnotation = "gateway.networking.k8s.io/bundle-version"
 
+// GatewayAPIVersion returns the parsed semver version of the
+// sigs.k8s.io/gateway-api module dependency from the build info.
+func GatewayAPIVersion() *semver.Version {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return nil
+	}
+	for _, dep := range info.Deps {
+		if dep.Path == "sigs.k8s.io/gateway-api" {
+			v, err := semver.NewVersion(dep.Version)
+			if err != nil {
+				return nil
+			}
+			return v
+		}
+	}
+	return nil
+}
+
 // GatewayClassReconciler reconciles GatewayClass objects.
 type GatewayClassReconciler struct {
 	client.Client
-	GatewayAPIVersion string
+	GatewayAPIVersion *semver.Version
 }
 
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gatewayclasses,verbs=get;list;watch
@@ -95,6 +115,10 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 func (r *GatewayClassReconciler) checkSupportedVersion(ctx context.Context) (bool, string) {
 	log := log.FromContext(ctx)
 
+	if r.GatewayAPIVersion == nil {
+		return false, "Binary Gateway API version is unknown"
+	}
+
 	var crd apiextensionsv1.CustomResourceDefinition
 	if err := r.Get(ctx, types.NamespacedName{Name: "gatewayclasses.gateway.networking.k8s.io"}, &crd); err != nil {
 		log.Error(err, "Failed to get Gateway API CRD")
@@ -111,14 +135,9 @@ func (r *GatewayClassReconciler) checkSupportedVersion(ctx context.Context) (boo
 		return false, fmt.Sprintf("Failed to parse CRD bundle version %q: %v", bundleVersion, err)
 	}
 
-	binaryVersion, err := semver.NewVersion(r.GatewayAPIVersion)
-	if err != nil {
-		return false, fmt.Sprintf("Failed to parse binary Gateway API version %q: %v", r.GatewayAPIVersion, err)
-	}
-
-	if crdVersion.Major() != binaryVersion.Major() || crdVersion.Minor() != binaryVersion.Minor() {
+	if crdVersion.Major() != r.GatewayAPIVersion.Major() || crdVersion.Minor() != r.GatewayAPIVersion.Minor() {
 		return false, fmt.Sprintf("Gateway API CRD version %q does not match binary version %q (major.minor mismatch)",
-			bundleVersion, r.GatewayAPIVersion)
+			bundleVersion, r.GatewayAPIVersion.Original())
 	}
 
 	return true, fmt.Sprintf("Gateway API CRD version %q is supported", bundleVersion)

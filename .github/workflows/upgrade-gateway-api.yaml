@@ -33,6 +33,13 @@ jobs:
           go get "sigs.k8s.io/gateway-api@${{ steps.release.outputs.tag }}"
           go mod tidy
 
+      - name: Update test Gateway API version
+        run: |
+          version="${{ steps.release.outputs.tag }}"
+          version="${version#v}"
+          sed -i "s/semver.MustParse(\"[^\"]*\")/semver.MustParse(\"${version}\")/" \
+            internal/controller/suite_test.go
+
       - name: Download standard-install.yaml
         run: |
           dest=charts/cloudflare-gateway-controller/templates/standard-install.yaml
