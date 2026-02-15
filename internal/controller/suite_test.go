@@ -26,7 +26,7 @@ import (
 // testGatewayAPIVersion must match the major.minor version of the
 // sigs.k8s.io/gateway-api dependency in go.mod. This is updated
 // automatically by the upgrade-gateway-api workflow.
-var testGatewayAPIVersion = semver.MustParse("1.4.0")
+var testGatewayAPIVersion = semver.MustParse("1.4.1")
 
 var (
 	testEnv    *envtest.Environment
