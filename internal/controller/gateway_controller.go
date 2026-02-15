@@ -7,9 +7,11 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -76,7 +78,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if err := r.Patch(ctx, &gw, gwPatch); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: 1}, nil
 	}
 
 	// Skip reconciliation if the object is suspended.
@@ -286,9 +288,34 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 		return ctrl.Result{}, nil
 	}
 
-	// Delete tunnel if it exists and reconciliation is not disabled.
-	// When disabled, the user is responsible for manually cleaning up the tunnel.
+	// Delete managed resources if reconciliation is not disabled.
+	// When disabled, the user is responsible for manually cleaning up.
 	if gw.Annotations[apiv1.AnnotationReconcile] != apiv1.ValueDisabled {
+		// Delete the cloudflared Deployment and wait for it to be gone
+		// before deleting the tunnel, so there are no active connections.
+		deploy := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      cloudflaredDeploymentName(gw),
+				Namespace: gw.Namespace,
+			},
+		}
+		if err := r.Delete(ctx, deploy); client.IgnoreNotFound(err) != nil {
+			return ctrl.Result{}, fmt.Errorf("deleting cloudflared deployment: %w", err)
+		}
+		deployKey := client.ObjectKeyFromObject(deploy)
+		for {
+			if err := r.Get(ctx, deployKey, deploy); apierrors.IsNotFound(err) {
+				break
+			} else if err != nil {
+				return ctrl.Result{}, fmt.Errorf("waiting for cloudflared deployment deletion: %w", err)
+			}
+			select {
+			case <-ctx.Done():
+				return ctrl.Result{}, ctx.Err()
+			case <-time.After(time.Second):
+			}
+		}
+
 		if tunnelID := tunnelIDFromStatus(gw); tunnelID != "" {
 			cfg, err := r.readCredentials(ctx, gc, gw)
 			if err != nil {
@@ -514,6 +541,10 @@ func buildListenerStatusPatches(gw *gatewayv1.Gateway) []*acgatewayv1.ListenerSt
 	return patches
 }
 
+func cloudflaredDeploymentName(gw *gatewayv1.Gateway) string {
+	return fmt.Sprintf("cloudflared-%s", gw.Name)
+}
+
 func tunnelTokenSecretName(gw *gatewayv1.Gateway) string {
 	return fmt.Sprintf("cloudflared-token-%s", gw.Name)
 }
@@ -538,7 +569,7 @@ func (r *GatewayReconciler) buildCloudflaredDeployment(gw *gatewayv1.Gateway) *a
 	}
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("cloudflared-%s", gw.Name),
+			Name:      cloudflaredDeploymentName(gw),
 			Namespace: gw.Namespace,
 		},
 		Spec: appsv1.DeploymentSpec{
