@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	acmetav1 "k8s.io/client-go/applyconfigurations/meta/v1"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -87,12 +88,8 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	log.V(1).Info("Reconciling Gateway")
 
 	// Ensure GatewayClass finalizer
-	if !controllerutil.ContainsFinalizer(&gc, apiv1.FinalizerGatewayClass) {
-		gcPatch := client.MergeFromWithOptions(gc.DeepCopy(), client.MergeFromWithOptimisticLock{})
-		controllerutil.AddFinalizer(&gc, apiv1.FinalizerGatewayClass)
-		if err := r.Patch(ctx, &gc, gcPatch); err != nil {
-			return ctrl.Result{}, err
-		}
+	if err := r.ensureGatewayClassFinalizer(ctx, &gc); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// Read credentials
@@ -289,26 +286,49 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 	}
 
 	// If no other Gateways reference this GatewayClass, remove its finalizer
-	var gwList gatewayv1.GatewayList
-	if err := r.List(ctx, &gwList); err != nil {
+	if err := r.removeGatewayClassFinalizer(ctx, gc, gw); err != nil {
 		return ctrl.Result{}, err
-	}
-	hasOtherGateways := false
-	for i := range gwList.Items {
-		if gwList.Items[i].UID != gw.UID && string(gwList.Items[i].Spec.GatewayClassName) == gc.Name {
-			hasOtherGateways = true
-			break
-		}
-	}
-	if !hasOtherGateways && controllerutil.ContainsFinalizer(gc, apiv1.FinalizerGatewayClass) {
-		gcPatch := client.MergeFromWithOptions(gc.DeepCopy(), client.MergeFromWithOptimisticLock{})
-		controllerutil.RemoveFinalizer(gc, apiv1.FinalizerGatewayClass)
-		if err := r.Patch(ctx, gc, gcPatch); err != nil {
-			return ctrl.Result{}, err
-		}
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *GatewayReconciler) ensureGatewayClassFinalizer(ctx context.Context, gc *gatewayv1.GatewayClass) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := r.Get(ctx, types.NamespacedName{Name: gc.Name}, gc); err != nil {
+			return err
+		}
+		if controllerutil.ContainsFinalizer(gc, apiv1.FinalizerGatewayClass) {
+			return nil
+		}
+		gcPatch := client.MergeFromWithOptions(gc.DeepCopy(), client.MergeFromWithOptimisticLock{})
+		controllerutil.AddFinalizer(gc, apiv1.FinalizerGatewayClass)
+		return r.Patch(ctx, gc, gcPatch)
+	})
+}
+
+func (r *GatewayReconciler) removeGatewayClassFinalizer(ctx context.Context, gc *gatewayv1.GatewayClass, gw *gatewayv1.Gateway) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var gwList gatewayv1.GatewayList
+		if err := r.List(ctx, &gwList); err != nil {
+			return err
+		}
+		for i := range gwList.Items {
+			item := &gwList.Items[i]
+			if item.UID != gw.UID && item.DeletionTimestamp.IsZero() && string(item.Spec.GatewayClassName) == gc.Name {
+				return nil
+			}
+		}
+		if err := r.Get(ctx, types.NamespacedName{Name: gc.Name}, gc); err != nil {
+			return err
+		}
+		if !controllerutil.ContainsFinalizer(gc, apiv1.FinalizerGatewayClass) {
+			return nil
+		}
+		gcPatch := client.MergeFromWithOptions(gc.DeepCopy(), client.MergeFromWithOptimisticLock{})
+		controllerutil.RemoveFinalizer(gc, apiv1.FinalizerGatewayClass)
+		return r.Patch(ctx, gc, gcPatch)
+	})
 }
 
 func (r *GatewayReconciler) readCredentials(ctx context.Context, gc *gatewayv1.GatewayClass, gw *gatewayv1.Gateway) (cfclient.ClientConfig, error) {
