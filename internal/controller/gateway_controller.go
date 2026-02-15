@@ -46,13 +46,11 @@ type GatewayReconciler struct {
 func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 
-	// 1. Fetch Gateway
 	var gw gatewayv1.Gateway
 	if err := r.Get(ctx, req.NamespacedName, &gw); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// 2. Fetch GatewayClass
 	var gc gatewayv1.GatewayClass
 	if err := r.Get(ctx, types.NamespacedName{Name: string(gw.Spec.GatewayClassName)}, &gc); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
@@ -61,72 +59,34 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	log.V(1).Info("Reconciling Gateway")
+	// Prune managed resources if the object is under deletion.
+	if !gw.DeletionTimestamp.IsZero() {
+		return r.finalize(ctx, &gw, &gc)
+	}
 
-	// 3. Deletion path
-	if gw.DeletionTimestamp != nil {
-		if !controllerutil.ContainsFinalizer(&gw, apiv1.GatewayFinalizer) {
-			return ctrl.Result{}, nil
-		}
-
-		// Delete tunnel if annotation exists
-		if tunnelID := gw.Annotations[apiv1.TunnelIDAnnotation]; tunnelID != "" {
-			cfg, err := r.readCredentials(ctx, &gc)
-			if err != nil {
-				return ctrl.Result{}, fmt.Errorf("reading credentials for tunnel deletion: %w", err)
-			}
-			tc, err := r.NewTunnelClient(cfg)
-			if err != nil {
-				return ctrl.Result{}, fmt.Errorf("creating tunnel client for deletion: %w", err)
-			}
-			if err := tc.DeleteTunnel(ctx, tunnelID); err != nil {
-				return ctrl.Result{}, fmt.Errorf("deleting tunnel: %w", err)
-			}
-		}
-
-		// Remove finalizer from Gateway
+	// Add finalizer first if it doesn't exist to avoid the race condition
+	// between init and delete.
+	if !controllerutil.ContainsFinalizer(&gw, apiv1.FinalizerGateway) {
 		gwPatch := client.MergeFromWithOptions(gw.DeepCopy(), client.MergeFromWithOptimisticLock{})
-		controllerutil.RemoveFinalizer(&gw, apiv1.GatewayFinalizer)
+		controllerutil.AddFinalizer(&gw, apiv1.FinalizerGateway)
 		if err := r.Patch(ctx, &gw, gwPatch); err != nil {
 			return ctrl.Result{}, err
 		}
+		return ctrl.Result{Requeue: true}, nil
+	}
 
-		// If no other Gateways reference this GatewayClass, remove its finalizer
-		var gwList gatewayv1.GatewayList
-		if err := r.List(ctx, &gwList); err != nil {
-			return ctrl.Result{}, err
-		}
-		hasOtherGateways := false
-		for i := range gwList.Items {
-			if gwList.Items[i].UID != gw.UID && string(gwList.Items[i].Spec.GatewayClassName) == gc.Name {
-				hasOtherGateways = true
-				break
-			}
-		}
-		if !hasOtherGateways && controllerutil.ContainsFinalizer(&gc, gatewayv1.GatewayClassFinalizerGatewaysExist) {
-			gcPatch := client.MergeFromWithOptions(gc.DeepCopy(), client.MergeFromWithOptimisticLock{})
-			controllerutil.RemoveFinalizer(&gc, gatewayv1.GatewayClassFinalizerGatewaysExist)
-			if err := r.Patch(ctx, &gc, gcPatch); err != nil {
-				return ctrl.Result{}, err
-			}
-		}
-
+	// Skip reconciliation if the object is suspended.
+	if gw.Annotations[apiv1.AnnotationReconcile] == apiv1.ValueDisabled {
+		log.V(1).Info("Reconciliation is disabled")
 		return ctrl.Result{}, nil
 	}
 
-	// 4. Normal path
-
-	// Ensure finalizer on Gateway
-	gwPatch := client.MergeFromWithOptions(gw.DeepCopy(), client.MergeFromWithOptimisticLock{})
-	if controllerutil.AddFinalizer(&gw, apiv1.GatewayFinalizer) {
-		if err := r.Patch(ctx, &gw, gwPatch); err != nil {
-			return ctrl.Result{}, err
-		}
-	}
+	log.V(1).Info("Reconciling Gateway")
 
 	// Ensure GatewayClass finalizer
-	gcPatch := client.MergeFromWithOptions(gc.DeepCopy(), client.MergeFromWithOptimisticLock{})
-	if controllerutil.AddFinalizer(&gc, gatewayv1.GatewayClassFinalizerGatewaysExist) {
+	if !controllerutil.ContainsFinalizer(&gc, gatewayv1.GatewayClassFinalizerGatewaysExist) {
+		gcPatch := client.MergeFromWithOptions(gc.DeepCopy(), client.MergeFromWithOptimisticLock{})
+		controllerutil.AddFinalizer(&gc, gatewayv1.GatewayClassFinalizerGatewaysExist)
 		if err := r.Patch(ctx, &gc, gcPatch); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -174,20 +134,20 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if gw.Annotations == nil {
 		gw.Annotations = make(map[string]string)
 	}
-	if gw.Annotations[apiv1.TunnelIDAnnotation] == "" {
+	if gw.Annotations[apiv1.AnnotationTunnelID] == "" {
 		tunnelID, err := tc.CreateTunnel(ctx, fmt.Sprintf("%s-%s", gw.Namespace, gw.Name))
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("creating tunnel: %w", err)
 		}
 		annPatch := client.MergeFromWithOptions(gw.DeepCopy(), client.MergeFromWithOptimisticLock{})
-		gw.Annotations[apiv1.TunnelIDAnnotation] = tunnelID
+		gw.Annotations[apiv1.AnnotationTunnelID] = tunnelID
 		if err := r.Patch(ctx, &gw, annPatch); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
 
 	// Get tunnel token
-	tunnelToken, err := tc.GetTunnelToken(ctx, gw.Annotations[apiv1.TunnelIDAnnotation])
+	tunnelToken, err := tc.GetTunnelToken(ctx, gw.Annotations[apiv1.AnnotationTunnelID])
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("getting tunnel token: %w", err)
 	}
@@ -253,6 +213,56 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		)
 	if err := r.Status().Apply(ctx, statusPatch, client.FieldOwner(apiv1.ControllerName), client.ForceOwnership); err != nil {
 		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{RequeueAfter: apiv1.ReconcileInterval(gw.Annotations)}, nil
+}
+
+func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway, gc *gatewayv1.GatewayClass) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(gw, apiv1.FinalizerGateway) {
+		return ctrl.Result{}, nil
+	}
+
+	// Delete tunnel if annotation exists
+	if tunnelID := gw.Annotations[apiv1.AnnotationTunnelID]; tunnelID != "" {
+		cfg, err := r.readCredentials(ctx, gc)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("reading credentials for tunnel deletion: %w", err)
+		}
+		tc, err := r.NewTunnelClient(cfg)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("creating tunnel client for deletion: %w", err)
+		}
+		if err := tc.DeleteTunnel(ctx, tunnelID); err != nil {
+			return ctrl.Result{}, fmt.Errorf("deleting tunnel: %w", err)
+		}
+	}
+
+	// Remove finalizer from Gateway
+	gwPatch := client.MergeFromWithOptions(gw.DeepCopy(), client.MergeFromWithOptimisticLock{})
+	controllerutil.RemoveFinalizer(gw, apiv1.FinalizerGateway)
+	if err := r.Patch(ctx, gw, gwPatch); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// If no other Gateways reference this GatewayClass, remove its finalizer
+	var gwList gatewayv1.GatewayList
+	if err := r.List(ctx, &gwList); err != nil {
+		return ctrl.Result{}, err
+	}
+	hasOtherGateways := false
+	for i := range gwList.Items {
+		if gwList.Items[i].UID != gw.UID && string(gwList.Items[i].Spec.GatewayClassName) == gc.Name {
+			hasOtherGateways = true
+			break
+		}
+	}
+	if !hasOtherGateways && controllerutil.ContainsFinalizer(gc, gatewayv1.GatewayClassFinalizerGatewaysExist) {
+		gcPatch := client.MergeFromWithOptions(gc.DeepCopy(), client.MergeFromWithOptimisticLock{})
+		controllerutil.RemoveFinalizer(gc, gatewayv1.GatewayClassFinalizerGatewaysExist)
+		if err := r.Patch(ctx, gc, gcPatch); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	return ctrl.Result{}, nil

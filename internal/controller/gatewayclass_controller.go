@@ -65,6 +65,16 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, nil
 	}
 
+	if !gc.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, nil
+	}
+
+	// Skip reconciliation if the object is suspended.
+	if gc.Annotations[apiv1.AnnotationReconcile] == apiv1.ValueDisabled {
+		log.V(1).Info("Reconciliation is disabled")
+		return ctrl.Result{}, nil
+	}
+
 	log.V(1).Info("Reconciling GatewayClass")
 
 	supportedVersion, supportedVersionMessage := r.checkSupportedVersion(ctx)
@@ -109,7 +119,7 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: apiv1.ReconcileInterval(gc.Annotations)}, nil
 }
 
 func (r *GatewayClassReconciler) checkSupportedVersion(ctx context.Context) (bool, string) {
