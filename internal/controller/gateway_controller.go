@@ -213,10 +213,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 	log.V(1).Info("Reconciled cloudflared Deployment", "result", result)
 
-	// Check Deployment readiness
-	if err := r.Get(ctx, client.ObjectKeyFromObject(deploy), deploy); err != nil {
-		return ctrl.Result{}, fmt.Errorf("getting cloudflared deployment status: %w", err)
-	}
+	// Check Deployment readiness (deploy is already populated by CreateOrUpdate)
 	deployReady := false
 	for _, c := range deploy.Status.Conditions {
 		if c.Type == appsv1.DeploymentAvailable && c.Status == "True" {
