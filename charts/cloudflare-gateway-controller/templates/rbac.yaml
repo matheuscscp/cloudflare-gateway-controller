@@ -1,19 +1,14 @@
+{{- if not .Values.rbac.serviceAccountName }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: {{ .Release.Name }}-controller
   namespace: {{ .Release.Namespace }}
-  labels:
-    app.kubernetes.io/name: cloudflare-gateway-controller
-    app.kubernetes.io/instance: {{ .Release.Name }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: {{ .Release.Name }}-controller
-  labels:
-    app.kubernetes.io/name: cloudflare-gateway-controller
-    app.kubernetes.io/instance: {{ .Release.Name }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -22,3 +17,4 @@ subjects:
 - kind: ServiceAccount
   name: {{ .Release.Name }}-controller
   namespace: {{ .Release.Namespace }}
+{{- end }}
