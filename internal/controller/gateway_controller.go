@@ -59,7 +59,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	log.Info("Reconciling Gateway")
+	log.V(1).Info("Reconciling Gateway")
 
 	// 3. Deletion path
 	if gw.DeletionTimestamp != nil {
@@ -195,7 +195,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("creating/updating cloudflared deployment: %w", err)
 	}
-	log.Info("Reconciled cloudflared Deployment", "result", result)
+	log.V(1).Info("Reconciled cloudflared Deployment", "result", result)
 
 	// Set Programmed=True
 	meta.SetStatusCondition(&gw.Status.Conditions, metav1.Condition{

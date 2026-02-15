@@ -36,7 +36,7 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, nil
 	}
 
-	log.Info("Reconciling GatewayClass")
+	log.V(1).Info("Reconciling GatewayClass")
 
 	meta.SetStatusCondition(&gc.Status.Conditions, metav1.Condition{
 		Type:               string(gatewayv1.GatewayClassConditionStatusAccepted),
