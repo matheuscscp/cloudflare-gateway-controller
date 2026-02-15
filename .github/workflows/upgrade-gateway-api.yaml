@@ -43,14 +43,18 @@ jobs:
           sed -i "s/semver.MustParse(\"[^\"]*\")/semver.MustParse(\"${version}\")/" \
             internal/controller/suite_test.go
 
-      - name: Download standard-install.yaml
+      - name: Download YAMLs
         env:
           TAG: ${{ steps.release.outputs.tag }}
         run: |
-          dest=charts/cloudflare-gateway-controller/templates/standard-install.yaml
+          dest=charts/cloudflare-gateway-controller/templates/standard-api.yaml
           curl -fsSL -o "$dest" \
             "https://github.com/kubernetes-sigs/gateway-api/releases/download/$TAG/standard-install.yaml"
-          printf '%s\n%s\n%s\n' '{{- if .Values.installAPI }}' "$(cat "$dest")" '{{- end }}' > "$dest"
+          printf '%s\n%s\n%s\n' '{{- if eq .Values.api.channel "standard" }}' "$(cat "$dest")" '{{- end }}' > "$dest"
+          dest=charts/cloudflare-gateway-controller/templates/experimental-api.yaml
+          curl -fsSL -o "$dest" \
+            "https://github.com/kubernetes-sigs/gateway-api/releases/download/$TAG/experimental-install.yaml"
+          printf '%s\n%s\n%s\n' '{{- if eq .Values.api.channel "experimental" }}' "$(cat "$dest")" '{{- end }}' > "$dest"
 
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@5e914681df9dc83aa4e4905692ca88beb2f9e91f # v7.0.5

@@ -1,4 +1,5 @@
-installAPI: true # Whether to install the Gateway API CRDs vendored from upstream.
+api:
+  channel: standard # Gateway API channel to install: standard, experimental, or none.
 
 rbac:
   serviceAccountName: "" # When set, skip creating ServiceAccount, ClusterRole and ClusterRoleBinding.

@@ -21,7 +21,7 @@ cat > "$CHART_CLUSTERROLE" <<'HEADER'
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ .Release.Name }}-controller
+  name: {{ .Release.Name }}
 HEADER
 
 echo "$RULES" >> "$CHART_CLUSTERROLE"
