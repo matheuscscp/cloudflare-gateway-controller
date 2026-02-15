@@ -4,18 +4,63 @@
 package controller
 
 import (
+	"context"
+
 	appsv1 "k8s.io/api/apps/v1"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 )
 
 func (r *GatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&gatewayv1.Gateway{}, builder.WithPredicates(
-			predicate.Or(predicate.GenerationChangedPredicate{}, predicate.AnnotationChangedPredicate{}),
+			debugPredicate("Gateway",
+				predicate.Or(predicate.GenerationChangedPredicate{}, predicate.AnnotationChangedPredicate{}),
+			),
 		)).
-		Owns(&appsv1.Deployment{}, builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
+		Owns(&appsv1.Deployment{}, builder.WithPredicates(
+			debugPredicate("Deployment", predicate.ResourceVersionChangedPredicate{}),
+		)).
+		Watches(&gatewayv1.HTTPRoute{}, handler.EnqueueRequestsFromMapFunc(mapHTTPRouteToGateway),
+			builder.WithPredicates(debugPredicate("HTTPRoute", predicate.ResourceVersionChangedPredicate{})),
+		).
 		Complete(r)
+}
+
+// mapHTTPRouteToGateway maps an HTTPRoute event to reconcile requests for its
+// parent Gateways, so the Gateway controller can update AttachedRoutes counts
+// and rebuild tunnel ingress configuration.
+func mapHTTPRouteToGateway(_ context.Context, obj client.Object) []reconcile.Request {
+	route, ok := obj.(*gatewayv1.HTTPRoute)
+	if !ok {
+		return nil
+	}
+	var requests []reconcile.Request
+	for _, ref := range route.Spec.ParentRefs {
+		if ref.Group != nil && *ref.Group != gatewayv1.Group(gatewayv1.GroupName) {
+			continue
+		}
+		if ref.Kind != nil && *ref.Kind != gatewayv1.Kind(apiv1.KindGateway) {
+			continue
+		}
+		ns := route.Namespace
+		if ref.Namespace != nil {
+			ns = string(*ref.Namespace)
+		}
+		requests = append(requests, reconcile.Request{
+			NamespacedName: types.NamespacedName{
+				Namespace: ns,
+				Name:      string(ref.Name),
+			},
+		})
+	}
+	return requests
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"strconv"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -16,6 +17,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	acappsv1 "k8s.io/client-go/applyconfigurations/apps/v1"
+	accorev1 "k8s.io/client-go/applyconfigurations/core/v1"
 	acmetav1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -23,7 +26,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
-	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 	acgatewayv1 "sigs.k8s.io/gateway-api/applyconfiguration/apis/v1"
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
@@ -73,9 +75,9 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	// Add finalizer first if it doesn't exist to avoid the race condition
 	// between init and delete.
-	if !controllerutil.ContainsFinalizer(&gw, apiv1.FinalizerGateway) {
+	if !controllerutil.ContainsFinalizer(&gw, apiv1.Finalizer) {
 		gwPatch := client.MergeFrom(gw.DeepCopy())
-		controllerutil.AddFinalizer(&gw, apiv1.FinalizerGateway)
+		controllerutil.AddFinalizer(&gw, apiv1.Finalizer)
 		if err := r.Patch(ctx, &gw, gwPatch); err != nil {
 			return ctrl.Result{}, fmt.Errorf("adding finalizer: %w", err)
 		}
@@ -90,13 +92,19 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	log.V(1).Info("Reconciling Gateway")
 
+	// Count attached HTTPRoutes per listener.
+	attachedRoutes, err := countAttachedRoutes(ctx, r.Client, &gw)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("counting attached routes: %w", err)
+	}
+
 	// Ensure GatewayClass finalizer
 	if err := r.ensureGatewayClassFinalizer(ctx, &gc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring GatewayClass finalizer: %w", err)
 	}
 
 	// Read credentials
-	cfg, err := r.readCredentials(ctx, &gc, &gw)
+	cfg, err := readCredentials(ctx, r.Client, &gc, &gw)
 	if err != nil {
 		now := metav1.Now()
 		credMsg := fmt.Sprintf("Failed to read credentials: %v", err)
@@ -109,11 +117,11 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				WithReason(string(gatewayv1.GatewayReasonInvalidParameters)).
 				WithMessage(credMsg),
 			acmetav1.Condition().
-				WithType(apiv1.ReadyCondition).
+				WithType(apiv1.ConditionReady).
 				WithStatus(metav1.ConditionFalse).
 				WithObservedGeneration(gw.Generation).
 				WithLastTransitionTime(now).
-				WithReason(apiv1.InvalidParametersNotReady).
+				WithReason(apiv1.ReasonInvalidParams).
 				WithMessage(credMsg),
 		}
 		if existingTunnelID := tunnelIDFromStatus(&gw); existingTunnelID != "" {
@@ -122,14 +130,14 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				WithStatus(metav1.ConditionTrue).
 				WithObservedGeneration(gw.Generation).
 				WithLastTransitionTime(now).
-				WithReason(apiv1.TunnelIDCreated).
+				WithReason(apiv1.ReasonTunnelCreated).
 				WithMessage(existingTunnelID),
 			)
 		}
 		statusPatch := acgatewayv1.Gateway(gw.Name, gw.Namespace).
 			WithStatus(acgatewayv1.GatewayStatus().
 				WithConditions(conditions...).
-				WithListeners(buildListenerStatusPatches(&gw)...),
+				WithListeners(buildListenerStatusPatches(&gw, attachedRoutes)...),
 			)
 		if err := r.Status().Apply(ctx, statusPatch, client.FieldOwner(apiv1.ControllerName), client.ForceOwnership); err != nil {
 			return ctrl.Result{}, fmt.Errorf("applying credential error status: %w", err)
@@ -174,7 +182,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 						WithStatus(metav1.ConditionTrue).
 						WithObservedGeneration(gw.Generation).
 						WithLastTransitionTime(now).
-						WithReason(apiv1.TunnelIDCreated).
+						WithReason(apiv1.ReasonTunnelCreated).
 						WithMessage(tunnelID),
 				),
 			)
@@ -225,40 +233,44 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
-	// Build and create/update cloudflared Deployment, retrying on conflict
-	// to handle races with HPA or other controllers updating the Deployment.
-	deploy := r.buildCloudflaredDeployment(&gw)
-	if err := controllerutil.SetControllerReference(&gw, deploy, r.Scheme()); err != nil {
-		return ctrl.Result{}, fmt.Errorf("setting owner reference: %w", err)
+	// Apply cloudflared Deployment via Server-Side Apply. Only the fields we
+	// declare are managed; Kubernetes-defaulted fields (strategy, replicas when
+	// unset, container defaults, etc.) are left untouched, avoiding spurious
+	// updates that would trigger a watch loop.
+	deployApply := r.buildCloudflaredDeploymentApply(&gw, replicas)
+	if err := r.Apply(ctx, deployApply, client.FieldOwner(apiv1.ControllerName), client.ForceOwnership); err != nil {
+		return ctrl.Result{}, fmt.Errorf("applying cloudflared deployment: %w", err)
 	}
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		result, err = controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
-			currentReplicas := deploy.Spec.Replicas
-			desired := r.buildCloudflaredDeployment(&gw)
-			deploy.Labels = desired.Labels
-			deploy.Annotations = desired.Annotations
-			deploy.Spec = desired.Spec
-			if replicas != nil {
-				deploy.Spec.Replicas = replicas
-			} else if currentReplicas != nil {
-				deploy.Spec.Replicas = currentReplicas
-			} else {
-				deploy.Spec.Replicas = new(int32(1))
-			}
-			return controllerutil.SetControllerReference(&gw, deploy, r.Scheme())
-		})
-		return err
-	}); err != nil {
-		return ctrl.Result{}, fmt.Errorf("creating/updating cloudflared deployment: %w", err)
-	}
-	log.V(1).Info("Reconciled cloudflared Deployment", "result", result)
+	log.V(1).Info("Reconciled cloudflared Deployment")
 
-	// Check Deployment readiness (deploy is already populated by CreateOrUpdate)
+	// List all HTTPRoutes for this Gateway and update tunnel ingress configuration.
+	gatewayRoutes, deniedRoutes, err := listGatewayRoutes(ctx, r.Client, &gw)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if len(deniedRoutes) > 0 {
+		log.Info("HTTPRoutes denied due to missing or failed ReferenceGrant checks", "count", len(deniedRoutes))
+	}
+	ingress, deniedBackendRefs := buildIngressRules(ctx, r.Client, gatewayRoutes)
+	if len(deniedBackendRefs) > 0 {
+		log.Info("BackendRefs denied due to missing or failed ReferenceGrant checks", "count", len(deniedBackendRefs))
+	}
+	if err := tc.UpdateTunnelConfiguration(ctx, tunnelID, ingress); err != nil {
+		return ctrl.Result{}, fmt.Errorf("updating tunnel configuration: %w", err)
+	}
+
+	// Check Deployment readiness.
+	var deploy appsv1.Deployment
 	deployReady := false
-	for _, c := range deploy.Status.Conditions {
-		if c.Type == appsv1.DeploymentAvailable && c.Status == "True" {
-			deployReady = true
-			break
+	if err := r.Get(ctx, client.ObjectKey{
+		Namespace: gw.Namespace,
+		Name:      cloudflaredDeploymentName(&gw),
+	}, &deploy); err == nil {
+		for _, c := range deploy.Status.Conditions {
+			if c.Type == appsv1.DeploymentAvailable && c.Status == "True" {
+				deployReady = true
+				break
+			}
 		}
 	}
 
@@ -268,49 +280,52 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	programmedReason := string(gatewayv1.GatewayReasonPending)
 	programmedMsg := "Waiting for cloudflared deployment to become ready"
 	readyStatus := metav1.ConditionFalse
-	readyReason := apiv1.NotReadyReason
+	readyReason := apiv1.ReasonFailed
 	readyMsg := "Waiting for cloudflared deployment to become ready"
 	if deployReady {
 		programmedStatus = metav1.ConditionTrue
 		programmedReason = string(gatewayv1.GatewayReasonProgrammed)
 		programmedMsg = "Gateway is programmed"
 		readyStatus = metav1.ConditionTrue
-		readyReason = apiv1.ReadyReason
+		readyReason = apiv1.ReasonReconciled
 		readyMsg = "Gateway is ready"
 	}
+	conditions := []*acmetav1.ConditionApplyConfiguration{
+		acmetav1.Condition().
+			WithType(string(gatewayv1.GatewayConditionAccepted)).
+			WithStatus(metav1.ConditionTrue).
+			WithObservedGeneration(gw.Generation).
+			WithLastTransitionTime(now).
+			WithReason(string(gatewayv1.GatewayReasonAccepted)).
+			WithMessage("Gateway is accepted"),
+		acmetav1.Condition().
+			WithType(string(gatewayv1.GatewayConditionProgrammed)).
+			WithStatus(programmedStatus).
+			WithObservedGeneration(gw.Generation).
+			WithLastTransitionTime(now).
+			WithReason(programmedReason).
+			WithMessage(programmedMsg),
+		acmetav1.Condition().
+			WithType(apiv1.ConditionReady).
+			WithStatus(readyStatus).
+			WithObservedGeneration(gw.Generation).
+			WithLastTransitionTime(now).
+			WithReason(readyReason).
+			WithMessage(readyMsg),
+		acmetav1.Condition().
+			WithType(apiv1.ConditionTunnelID).
+			WithStatus(metav1.ConditionTrue).
+			WithObservedGeneration(gw.Generation).
+			WithLastTransitionTime(now).
+			WithReason(apiv1.ReasonTunnelCreated).
+			WithMessage(tunnelID),
+	}
+	conditions = append(conditions, routeReferenceGrantsCondition(gw.Generation, now, deniedRoutes))
+	conditions = append(conditions, backendReferenceGrantsCondition(gw.Generation, now, deniedBackendRefs))
 	statusPatch := acgatewayv1.Gateway(gw.Name, gw.Namespace).
 		WithStatus(acgatewayv1.GatewayStatus().
-			WithConditions(
-				acmetav1.Condition().
-					WithType(string(gatewayv1.GatewayConditionAccepted)).
-					WithStatus(metav1.ConditionTrue).
-					WithObservedGeneration(gw.Generation).
-					WithLastTransitionTime(now).
-					WithReason(string(gatewayv1.GatewayReasonAccepted)).
-					WithMessage("Gateway is accepted"),
-				acmetav1.Condition().
-					WithType(string(gatewayv1.GatewayConditionProgrammed)).
-					WithStatus(programmedStatus).
-					WithObservedGeneration(gw.Generation).
-					WithLastTransitionTime(now).
-					WithReason(programmedReason).
-					WithMessage(programmedMsg),
-				acmetav1.Condition().
-					WithType(apiv1.ReadyCondition).
-					WithStatus(readyStatus).
-					WithObservedGeneration(gw.Generation).
-					WithLastTransitionTime(now).
-					WithReason(readyReason).
-					WithMessage(readyMsg),
-				acmetav1.Condition().
-					WithType(apiv1.ConditionTunnelID).
-					WithStatus(metav1.ConditionTrue).
-					WithObservedGeneration(gw.Generation).
-					WithLastTransitionTime(now).
-					WithReason(apiv1.TunnelIDCreated).
-					WithMessage(tunnelID),
-			).
-			WithListeners(buildListenerStatusPatches(&gw)...),
+			WithConditions(conditions...).
+			WithListeners(buildListenerStatusPatches(&gw, attachedRoutes)...),
 		)
 	if err := r.Status().Apply(ctx, statusPatch, client.FieldOwner(apiv1.ControllerName), client.ForceOwnership); err != nil {
 		return ctrl.Result{}, fmt.Errorf("applying success status: %w", err)
@@ -319,8 +334,10 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	return ctrl.Result{RequeueAfter: apiv1.ReconcileInterval(gw.Annotations)}, nil
 }
 
+// finalize cleans up managed resources (cloudflared Deployment and Cloudflare tunnel)
+// before allowing the Gateway to be deleted, then removes the finalizer.
 func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway, gc *gatewayv1.GatewayClass) (ctrl.Result, error) {
-	if !controllerutil.ContainsFinalizer(gw, apiv1.FinalizerGateway) {
+	if !controllerutil.ContainsFinalizer(gw, apiv1.Finalizer) {
 		return ctrl.Result{}, nil
 	}
 
@@ -353,7 +370,7 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 		}
 
 		if tunnelID := tunnelIDFromStatus(gw); tunnelID != "" {
-			cfg, err := r.readCredentials(ctx, gc, gw)
+			cfg, err := readCredentials(ctx, r.Client, gc, gw)
 			if err != nil {
 				return ctrl.Result{}, fmt.Errorf("reading credentials for tunnel deletion: %w", err)
 			}
@@ -369,7 +386,7 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 
 	// Remove finalizer from Gateway
 	gwPatch := client.MergeFrom(gw.DeepCopy())
-	controllerutil.RemoveFinalizer(gw, apiv1.FinalizerGateway)
+	controllerutil.RemoveFinalizer(gw, apiv1.Finalizer)
 	if err := r.Patch(ctx, gw, gwPatch); err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
 	}
@@ -382,6 +399,8 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 	return ctrl.Result{}, nil
 }
 
+// ensureGatewayClassFinalizer adds the GatewayClass finalizer if not already present,
+// preventing the GatewayClass from being deleted while Gateways reference it.
 func (r *GatewayReconciler) ensureGatewayClassFinalizer(ctx context.Context, gc *gatewayv1.GatewayClass) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		if err := r.Get(ctx, types.NamespacedName{Name: gc.Name}, gc); err != nil {
@@ -396,6 +415,8 @@ func (r *GatewayReconciler) ensureGatewayClassFinalizer(ctx context.Context, gc 
 	})
 }
 
+// removeGatewayClassFinalizer removes the GatewayClass finalizer if no other
+// non-deleting Gateways reference the class.
 func (r *GatewayReconciler) removeGatewayClassFinalizer(ctx context.Context, gc *gatewayv1.GatewayClass, gw *gatewayv1.Gateway) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var gwList gatewayv1.GatewayList
@@ -420,12 +441,15 @@ func (r *GatewayReconciler) removeGatewayClassFinalizer(ctx context.Context, gc 
 	})
 }
 
-func (r *GatewayReconciler) readCredentials(ctx context.Context, gc *gatewayv1.GatewayClass, gw *gatewayv1.Gateway) (cfclient.ClientConfig, error) {
+// readCredentials reads the Cloudflare API credentials from the Secret referenced
+// by the Gateway's infrastructure parametersRef or the GatewayClass parametersRef.
+// Cross-namespace references are validated against ReferenceGrants.
+func readCredentials(ctx context.Context, r client.Reader, gc *gatewayv1.GatewayClass, gw *gatewayv1.Gateway) (cfclient.ClientConfig, error) {
 	var secretNamespace, secretName string
 
 	if gw.Spec.Infrastructure != nil && gw.Spec.Infrastructure.ParametersRef != nil {
 		ref := gw.Spec.Infrastructure.ParametersRef
-		if string(ref.Kind) != "Secret" || (ref.Group != "" && ref.Group != "core" && ref.Group != gatewayv1.Group("")) {
+		if string(ref.Kind) != apiv1.KindSecret || (ref.Group != "" && ref.Group != "core" && ref.Group != gatewayv1.Group("")) {
 			return cfclient.ClientConfig{}, fmt.Errorf("infrastructure parametersRef must reference a core/v1 Secret")
 		}
 		secretNamespace = gw.Namespace
@@ -435,7 +459,7 @@ func (r *GatewayReconciler) readCredentials(ctx context.Context, gc *gatewayv1.G
 			return cfclient.ClientConfig{}, fmt.Errorf("gatewayclass %q has no parametersRef", gc.Name)
 		}
 		ref := gc.Spec.ParametersRef
-		if string(ref.Kind) != "Secret" || (ref.Group != "" && ref.Group != "core" && ref.Group != gatewayv1.Group("")) {
+		if string(ref.Kind) != apiv1.KindSecret || (ref.Group != "" && ref.Group != "core" && ref.Group != gatewayv1.Group("")) {
 			return cfclient.ClientConfig{}, fmt.Errorf("parametersRef must reference a core/v1 Secret")
 		}
 		if ref.Namespace == nil {
@@ -444,7 +468,7 @@ func (r *GatewayReconciler) readCredentials(ctx context.Context, gc *gatewayv1.G
 		secretNamespace = string(*ref.Namespace)
 		secretName = ref.Name
 
-		if granted, err := r.referenceGranted(ctx, gw.Namespace, secretNamespace, secretName); err != nil {
+		if granted, err := secretReferenceGranted(ctx, r, gw.Namespace, secretNamespace, secretName); err != nil {
 			return cfclient.ClientConfig{}, fmt.Errorf("checking ReferenceGrant: %w", err)
 		} else if !granted {
 			return cfclient.ClientConfig{}, fmt.Errorf("cross-namespace reference to Secret %s/%s not allowed by any ReferenceGrant", secretNamespace, secretName)
@@ -471,52 +495,20 @@ func (r *GatewayReconciler) readCredentials(ctx context.Context, gc *gatewayv1.G
 	}, nil
 }
 
-func (r *GatewayReconciler) referenceGranted(ctx context.Context, gatewayNamespace, secretNamespace, secretName string) (bool, error) {
-	if gatewayNamespace == secretNamespace {
-		return true, nil
-	}
-
-	var grants gatewayv1beta1.ReferenceGrantList
-	if err := r.List(ctx, &grants, client.InNamespace(secretNamespace)); err != nil {
-		return false, fmt.Errorf("listing ReferenceGrants in namespace %s: %w", secretNamespace, err)
-	}
-
-	for i := range grants.Items {
-		grant := &grants.Items[i]
-		fromMatch := false
-		for _, from := range grant.Spec.From {
-			if from.Group == gatewayv1beta1.Group("gateway.networking.k8s.io") &&
-				from.Kind == gatewayv1beta1.Kind("Gateway") &&
-				string(from.Namespace) == gatewayNamespace {
-				fromMatch = true
-				break
-			}
-		}
-		if !fromMatch {
-			continue
-		}
-		for _, to := range grant.Spec.To {
-			if to.Group == gatewayv1beta1.Group("") && to.Kind == gatewayv1beta1.Kind("Secret") {
-				if to.Name == nil || string(*to.Name) == secretName {
-					return true, nil
-				}
-			}
-		}
-	}
-
-	return false, nil
-}
-
+// tunnelIDFromStatus extracts the Cloudflare tunnel ID stored in the Gateway's
+// TunnelID status condition message. Returns empty if no tunnel has been created.
 func tunnelIDFromStatus(gw *gatewayv1.Gateway) string {
 	for _, c := range gw.Status.Conditions {
-		if c.Type == apiv1.ConditionTunnelID && c.Reason == apiv1.TunnelIDCreated {
+		if c.Type == apiv1.ConditionTunnelID && c.Reason == apiv1.ReasonTunnelCreated {
 			return c.Message
 		}
 	}
 	return ""
 }
 
-func buildListenerStatusPatches(gw *gatewayv1.Gateway) []*acgatewayv1.ListenerStatusApplyConfiguration {
+// buildListenerStatusPatches builds SSA apply configurations for each Gateway listener,
+// setting Accepted/Programmed conditions based on protocol support and the attached route count.
+func buildListenerStatusPatches(gw *gatewayv1.Gateway, attachedRoutes map[gatewayv1.SectionName]int32) []*acgatewayv1.ListenerStatusApplyConfiguration {
 	now := metav1.Now()
 	patches := make([]*acgatewayv1.ListenerStatusApplyConfiguration, 0, len(gw.Spec.Listeners))
 	for _, l := range gw.Spec.Listeners {
@@ -560,9 +552,9 @@ func buildListenerStatusPatches(gw *gatewayv1.Gateway) []*acgatewayv1.ListenerSt
 			WithSupportedKinds(
 				acgatewayv1.RouteGroupKind().
 					WithGroup(gatewayv1.Group(gatewayv1.GroupVersion.Group)).
-					WithKind("HTTPRoute"),
+					WithKind(apiv1.KindHTTPRoute),
 			).
-			WithAttachedRoutes(0).
+			WithAttachedRoutes(attachedRoutes[l.Name]).
 			WithConditions(
 				acceptedCond,
 				programmedCond,
@@ -587,6 +579,203 @@ func buildListenerStatusPatches(gw *gatewayv1.Gateway) []*acgatewayv1.ListenerSt
 	return patches
 }
 
+// routeReferenceGrantsCondition builds a Gateway status condition reporting whether
+// all cross-namespace HTTPRoutes have valid ReferenceGrants. When denied routes exist,
+// the condition lists each one in a multi-line message.
+func routeReferenceGrantsCondition(generation int64, now metav1.Time, deniedRoutes []*gatewayv1.HTTPRoute) *acmetav1.ConditionApplyConfiguration {
+	if len(deniedRoutes) == 0 {
+		return acmetav1.Condition().
+			WithType(apiv1.ConditionRouteReferenceGrants).
+			WithStatus(metav1.ConditionTrue).
+			WithObservedGeneration(generation).
+			WithLastTransitionTime(now).
+			WithReason(apiv1.ReasonReferencesAllowed).
+			WithMessage("All HTTPRoutes have valid references")
+	}
+	var lines []string
+	for _, hr := range deniedRoutes {
+		lines = append(lines, fmt.Sprintf("- %s/%s", hr.Namespace, hr.Name))
+	}
+	msg := fmt.Sprintf("HTTPRoutes denied due to missing or failed ReferenceGrant:\n%s", strings.Join(lines, "\n"))
+	return acmetav1.Condition().
+		WithType(apiv1.ConditionRouteReferenceGrants).
+		WithStatus(metav1.ConditionFalse).
+		WithObservedGeneration(generation).
+		WithLastTransitionTime(now).
+		WithReason(apiv1.ReasonReferencesDenied).
+		WithMessage(msg)
+}
+
+// backendReferenceGrantsCondition builds a Gateway status condition reporting whether
+// all cross-namespace backendRefs have valid ReferenceGrants. When denied refs exist,
+// the condition lists each one in a multi-line message.
+func backendReferenceGrantsCondition(generation int64, now metav1.Time, denied []deniedBackendRef) *acmetav1.ConditionApplyConfiguration {
+	if len(denied) == 0 {
+		return acmetav1.Condition().
+			WithType(apiv1.ConditionBackendReferenceGrants).
+			WithStatus(metav1.ConditionTrue).
+			WithObservedGeneration(generation).
+			WithLastTransitionTime(now).
+			WithReason(apiv1.ReasonReferencesAllowed).
+			WithMessage("All backendRefs have valid references")
+	}
+	var lines []string
+	for _, d := range denied {
+		lines = append(lines, fmt.Sprintf("- HTTPRoute %s/%s → Service %s/%s", d.routeNamespace, d.routeName, d.serviceNamespace, d.serviceName))
+	}
+	msg := fmt.Sprintf("BackendRefs denied due to missing or failed ReferenceGrant:\n%s", strings.Join(lines, "\n"))
+	return acmetav1.Condition().
+		WithType(apiv1.ConditionBackendReferenceGrants).
+		WithStatus(metav1.ConditionFalse).
+		WithObservedGeneration(generation).
+		WithLastTransitionTime(now).
+		WithReason(apiv1.ReasonReferencesDenied).
+		WithMessage(msg)
+}
+
+// listGatewayRoutes lists all non-deleting HTTPRoutes that reference the given Gateway.
+// Cross-namespace routes are only included if a ReferenceGrant in the Gateway's namespace
+// permits the reference. Routes denied due to missing or failed ReferenceGrant checks are
+// returned separately so the caller can report them without blocking reconciliation.
+func listGatewayRoutes(ctx context.Context, r client.Reader, gw *gatewayv1.Gateway) (allowed, denied []*gatewayv1.HTTPRoute, err error) {
+	var allRoutes gatewayv1.HTTPRouteList
+	if err := r.List(ctx, &allRoutes); err != nil {
+		return nil, nil, fmt.Errorf("listing HTTPRoutes: %w", err)
+	}
+	for i := range allRoutes.Items {
+		hr := &allRoutes.Items[i]
+		if !hr.DeletionTimestamp.IsZero() {
+			continue
+		}
+		matches := false
+		for _, ref := range hr.Spec.ParentRefs {
+			if parentRefMatches(ref, gw, hr.Namespace) {
+				matches = true
+				break
+			}
+		}
+		if !matches {
+			continue
+		}
+		granted, grantErr := httpRouteReferenceGranted(ctx, r, hr.Namespace, gw)
+		if grantErr != nil || !granted {
+			denied = append(denied, hr)
+			continue
+		}
+		allowed = append(allowed, hr)
+	}
+	return allowed, denied, nil
+}
+
+// deniedBackendRef holds information about a backendRef that was denied due to a
+// missing or failed cross-namespace ReferenceGrant check.
+type deniedBackendRef struct {
+	routeNamespace   string
+	routeName        string
+	serviceNamespace string
+	serviceName      string
+}
+
+// buildIngressRules converts a list of HTTPRoutes into Cloudflare tunnel ingress rules.
+// For each rule in each route it takes the first backendRef and maps every hostname to
+// http://<service>.<namespace>.svc.cluster.local:<port>, optionally with a path prefix.
+// Only the first backendRef per rule is used because additional backendRefs represent
+// traffic splitting (weighted load balancing), which Cloudflare tunnel ingress does not
+// support — use a Kubernetes Service for that instead.
+// Cross-namespace backendRefs are validated against ReferenceGrants. Denied refs are
+// returned separately so the caller can report them without blocking reconciliation.
+// A catch-all 404 rule is appended.
+func buildIngressRules(ctx context.Context, r client.Reader, routes []*gatewayv1.HTTPRoute) ([]cfclient.IngressRule, []deniedBackendRef) {
+	var rules []cfclient.IngressRule
+	var denied []deniedBackendRef
+	for _, route := range routes {
+		for _, rule := range route.Spec.Rules {
+			if len(rule.BackendRefs) == 0 {
+				continue
+			}
+			ref := rule.BackendRefs[0]
+			ns := route.Namespace
+			if ref.Namespace != nil {
+				ns = string(*ref.Namespace)
+			}
+			granted, err := backendReferenceGranted(ctx, r, route.Namespace, ns, string(ref.Name))
+			if err != nil || !granted {
+				denied = append(denied, deniedBackendRef{
+					routeNamespace:   route.Namespace,
+					routeName:        route.Name,
+					serviceNamespace: ns,
+					serviceName:      string(ref.Name),
+				})
+				continue
+			}
+			port := int32(80)
+			if ref.Port != nil {
+				port = int32(*ref.Port)
+			}
+			service := fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", string(ref.Name), ns, port)
+			path := pathFromMatches(rule.Matches)
+			for _, hostname := range route.Spec.Hostnames {
+				rules = append(rules, cfclient.IngressRule{
+					Hostname: string(hostname),
+					Service:  service,
+					Path:     path,
+				})
+			}
+		}
+	}
+	// Append catch-all rule.
+	rules = append(rules, cfclient.IngressRule{
+		Service: "http_status:404",
+	})
+	return rules, denied
+}
+
+// pathFromMatches extracts a path prefix from the first HTTPRouteMatch that has
+// a PathPrefix match. Returns empty string if no path match is specified.
+func pathFromMatches(matches []gatewayv1.HTTPRouteMatch) string {
+	for _, m := range matches {
+		if m.Path == nil {
+			continue
+		}
+		if m.Path.Type == nil || *m.Path.Type == gatewayv1.PathMatchPathPrefix {
+			if m.Path.Value != nil {
+				return *m.Path.Value
+			}
+		}
+	}
+	return ""
+}
+
+// countAttachedRoutes counts the number of non-deleting HTTPRoutes attached to each
+// listener of the given Gateway. Routes without a sectionName count toward all listeners.
+func countAttachedRoutes(ctx context.Context, r client.Reader, gw *gatewayv1.Gateway) (map[gatewayv1.SectionName]int32, error) {
+	var routes gatewayv1.HTTPRouteList
+	if err := r.List(ctx, &routes); err != nil {
+		return nil, fmt.Errorf("listing HTTPRoutes: %w", err)
+	}
+	counts := make(map[gatewayv1.SectionName]int32)
+	for i := range routes.Items {
+		hr := &routes.Items[i]
+		if !hr.DeletionTimestamp.IsZero() {
+			continue
+		}
+		for _, ref := range hr.Spec.ParentRefs {
+			if !parentRefMatches(ref, gw, hr.Namespace) {
+				continue
+			}
+			if ref.SectionName != nil {
+				counts[*ref.SectionName]++
+			} else {
+				// Attach to all listeners.
+				for _, l := range gw.Spec.Listeners {
+					counts[l.Name]++
+				}
+			}
+		}
+	}
+	return counts, nil
+}
+
 func cloudflaredDeploymentName(gw *gatewayv1.Gateway) string {
 	return fmt.Sprintf("cloudflared-%s", gw.Name)
 }
@@ -596,92 +785,102 @@ func tunnelTokenSecretName(gw *gatewayv1.Gateway) string {
 }
 
 func buildTunnelTokenSecret(gw *gatewayv1.Gateway, tunnelToken string) *corev1.Secret {
-	secret := &corev1.Secret{
+	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      tunnelTokenSecretName(gw),
-			Namespace: gw.Namespace,
+			Name:        tunnelTokenSecretName(gw),
+			Namespace:   gw.Namespace,
+			Labels:      infrastructureLabels(gw.Spec.Infrastructure),
+			Annotations: infrastructureAnnotations(gw.Spec.Infrastructure),
 		},
 		Data: map[string][]byte{
 			"TUNNEL_TOKEN": []byte(tunnelToken),
 		},
 	}
-	mergeInfrastructureMetadata(&secret.ObjectMeta, gw.Spec.Infrastructure)
-	return secret
 }
 
-func (r *GatewayReconciler) buildCloudflaredDeployment(gw *gatewayv1.Gateway) *appsv1.Deployment {
+func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gateway, replicas *int32) *acappsv1.DeploymentApplyConfiguration {
 	selectorLabels := map[string]string{
 		"app.kubernetes.io/name":       "cloudflared",
 		"app.kubernetes.io/managed-by": "cloudflare-gateway-controller",
 		"app.kubernetes.io/instance":   gw.Name,
 	}
-	templateLabels := make(map[string]string, len(selectorLabels))
-	maps.Copy(templateLabels, selectorLabels)
-	deploy := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      cloudflaredDeploymentName(gw),
-			Namespace: gw.Namespace,
-		},
-		Spec: appsv1.DeploymentSpec{
-			Selector: &metav1.LabelSelector{
-				MatchLabels: selectorLabels,
-			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: templateLabels,
-				},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:  "cloudflared",
-							Image: r.CloudflaredImage,
-							Args:  []string{"tunnel", "--no-autoupdate", "--metrics", "0.0.0.0:2000", "run"},
-							Env: []corev1.EnvVar{
-								{
-									Name: "TUNNEL_TOKEN",
-									ValueFrom: &corev1.EnvVarSource{
-										SecretKeyRef: &corev1.SecretKeySelector{
-											LocalObjectReference: corev1.LocalObjectReference{
-												Name: tunnelTokenSecretName(gw),
-											},
-											Key: "TUNNEL_TOKEN",
-										},
-									},
-								},
-							},
-							LivenessProbe: &corev1.Probe{
-								ProbeHandler: corev1.ProbeHandler{
-									HTTPGet: &corev1.HTTPGetAction{
-										Path: "/ready",
-										Port: intstr.FromInt32(2000),
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
+	templateLabels := maps.Clone(selectorLabels)
+
+	deployLabels := infrastructureLabels(gw.Spec.Infrastructure)
+	deployAnnotations := infrastructureAnnotations(gw.Spec.Infrastructure)
+	maps.Copy(templateLabels, deployLabels)
+	templateAnnotations := infrastructureAnnotations(gw.Spec.Infrastructure)
+
+	deploy := acappsv1.Deployment(cloudflaredDeploymentName(gw), gw.Namespace).
+		WithLabels(deployLabels).
+		WithAnnotations(deployAnnotations).
+		WithOwnerReferences(acmetav1.OwnerReference().
+			WithAPIVersion(gatewayv1.GroupVersion.String()).
+			WithKind(apiv1.KindGateway).
+			WithName(gw.Name).
+			WithUID(gw.UID).
+			WithBlockOwnerDeletion(true).
+			WithController(true),
+		).
+		WithSpec(acappsv1.DeploymentSpec().
+			WithSelector(acmetav1.LabelSelector().
+				WithMatchLabels(selectorLabels),
+			).
+			WithTemplate(accorev1.PodTemplateSpec().
+				WithLabels(templateLabels).
+				WithAnnotations(templateAnnotations).
+				WithSpec(accorev1.PodSpec().
+					WithContainers(accorev1.Container().
+						WithName("cloudflared").
+						WithImage(r.CloudflaredImage).
+						WithArgs("tunnel", "--no-autoupdate", "--metrics", "0.0.0.0:2000", "run").
+						WithEnv(accorev1.EnvVar().
+							WithName("TUNNEL_TOKEN").
+							WithValueFrom(accorev1.EnvVarSource().
+								WithSecretKeyRef(accorev1.SecretKeySelector().
+									WithName(tunnelTokenSecretName(gw)).
+									WithKey("TUNNEL_TOKEN"),
+								),
+							),
+						).
+						WithLivenessProbe(accorev1.Probe().
+							WithHTTPGet(accorev1.HTTPGetAction().
+								WithPath("/ready").
+								WithPort(intstr.FromInt32(2000)),
+							),
+						),
+					),
+				),
+			),
+		)
+
+	if replicas != nil {
+		deploy.Spec.WithReplicas(*replicas)
 	}
-	mergeInfrastructureMetadata(&deploy.ObjectMeta, gw.Spec.Infrastructure)
-	mergeInfrastructureMetadata(&deploy.Spec.Template.ObjectMeta, gw.Spec.Infrastructure)
+
 	return deploy
 }
 
-func mergeInfrastructureMetadata(meta *metav1.ObjectMeta, infra *gatewayv1.GatewayInfrastructure) {
+// infrastructureLabels returns the labels from the Gateway's infrastructure spec.
+func infrastructureLabels(infra *gatewayv1.GatewayInfrastructure) map[string]string {
 	if infra == nil {
-		return
+		return nil
 	}
+	labels := make(map[string]string, len(infra.Labels))
 	for k, v := range infra.Labels {
-		if meta.Labels == nil {
-			meta.Labels = make(map[string]string)
-		}
-		meta.Labels[string(k)] = string(v)
+		labels[string(k)] = string(v)
 	}
+	return labels
+}
+
+// infrastructureAnnotations returns the annotations from the Gateway's infrastructure spec.
+func infrastructureAnnotations(infra *gatewayv1.GatewayInfrastructure) map[string]string {
+	if infra == nil {
+		return nil
+	}
+	annotations := make(map[string]string, len(infra.Annotations))
 	for k, v := range infra.Annotations {
-		if meta.Annotations == nil {
-			meta.Annotations = make(map[string]string)
-		}
-		meta.Annotations[string(k)] = string(v)
+		annotations[string(k)] = string(v)
 	}
+	return annotations
 }

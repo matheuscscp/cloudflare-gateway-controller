@@ -46,9 +46,9 @@ func TestGatewayClassAccepted(t *testing.T) {
 		g.Expect(supported.Status).To(Equal(metav1.ConditionTrue))
 		g.Expect(supported.Reason).To(Equal(string(gatewayv1.GatewayClassReasonSupportedVersion)))
 
-		ready := findCondition(result.Status.Conditions, apiv1.ReadyCondition)
+		ready := findCondition(result.Status.Conditions, apiv1.ConditionReady)
 		g.Expect(ready).NotTo(BeNil())
 		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
-		g.Expect(ready.Reason).To(Equal(apiv1.ReadyReason))
+		g.Expect(ready.Reason).To(Equal(apiv1.ReasonReconciled))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }

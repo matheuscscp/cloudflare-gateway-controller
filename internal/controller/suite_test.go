@@ -99,6 +99,15 @@ func TestMain(m *testing.M) {
 		panic(fmt.Sprintf("failed to setup Gateway controller: %v", err))
 	}
 
+	if err := (&HTTPRouteReconciler{
+		Client: mgr.GetClient(),
+		NewTunnelClient: func(_ cfclient.ClientConfig) (cfclient.TunnelClient, error) {
+			return testMock, nil
+		},
+	}).SetupWithManager(mgr); err != nil {
+		panic(fmt.Sprintf("failed to setup HTTPRoute controller: %v", err))
+	}
+
 	testClient, err = client.New(cfg, client.Options{Scheme: scheme})
 	if err != nil {
 		panic(fmt.Sprintf("failed to create test client: %v", err))

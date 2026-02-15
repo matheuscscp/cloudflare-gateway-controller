@@ -18,6 +18,7 @@ import (
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
+	cfclient "github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
 )
 
 type mockTunnelClient struct {
@@ -25,6 +26,19 @@ type mockTunnelClient struct {
 	tunnelToken    string
 	deleteCalled   bool
 	deletedID      string
+
+	// HTTPRoute-related tracking
+	lastTunnelConfigID      string
+	lastTunnelConfigIngress []cfclient.IngressRule
+	ensureDNSCalls          []mockDNSCall
+	deleteDNSCalls          []mockDNSCall
+	zones                   map[string]string // hostname -> zoneID
+}
+
+type mockDNSCall struct {
+	ZoneID   string
+	Hostname string
+	Target   string
 }
 
 func (m *mockTunnelClient) CreateTunnel(_ context.Context, _ string) (string, error) {
@@ -51,6 +65,31 @@ func (m *mockTunnelClient) DeleteTunnel(_ context.Context, tunnelID string) erro
 
 func (m *mockTunnelClient) GetTunnelToken(_ context.Context, _ string) (string, error) {
 	return m.tunnelToken, nil
+}
+
+func (m *mockTunnelClient) UpdateTunnelConfiguration(_ context.Context, tunnelID string, ingress []cfclient.IngressRule) error {
+	m.lastTunnelConfigID = tunnelID
+	m.lastTunnelConfigIngress = ingress
+	return nil
+}
+
+func (m *mockTunnelClient) FindZoneIDByHostname(_ context.Context, hostname string) (string, error) {
+	if m.zones != nil {
+		if zoneID, ok := m.zones[hostname]; ok {
+			return zoneID, nil
+		}
+	}
+	return "test-zone-id", nil
+}
+
+func (m *mockTunnelClient) EnsureDNSCNAME(_ context.Context, zoneID, hostname, target string) error {
+	m.ensureDNSCalls = append(m.ensureDNSCalls, mockDNSCall{ZoneID: zoneID, Hostname: hostname, Target: target})
+	return nil
+}
+
+func (m *mockTunnelClient) DeleteDNSCNAME(_ context.Context, zoneID, hostname string) error {
+	m.deleteDNSCalls = append(m.deleteDNSCalls, mockDNSCall{ZoneID: zoneID, Hostname: hostname})
+	return nil
 }
 
 func findCondition(conditions []metav1.Condition, conditionType string) *metav1.Condition {
@@ -112,7 +151,7 @@ func waitForGatewayClassReady(g Gomega, gc *gatewayv1.GatewayClass) {
 	g.Eventually(func(g Gomega) {
 		var result gatewayv1.GatewayClass
 		g.Expect(testClient.Get(testCtx, key, &result)).To(Succeed())
-		ready := findCondition(result.Status.Conditions, apiv1.ReadyCondition)
+		ready := findCondition(result.Status.Conditions, apiv1.ConditionReady)
 		g.Expect(ready).NotTo(BeNil())
 		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
@@ -174,15 +213,15 @@ func TestGatewayAcceptedAndProgrammed(t *testing.T) {
 		g.Expect(programmed).NotTo(BeNil())
 		g.Expect(programmed.Status).To(Equal(metav1.ConditionTrue))
 
-		ready := findCondition(result.Status.Conditions, apiv1.ReadyCondition)
+		ready := findCondition(result.Status.Conditions, apiv1.ConditionReady)
 		g.Expect(ready).NotTo(BeNil())
 		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
-		g.Expect(ready.Reason).To(Equal(apiv1.ReadyReason))
+		g.Expect(ready.Reason).To(Equal(apiv1.ReasonReconciled))
 
 		tunnelIDCond := findCondition(result.Status.Conditions, apiv1.ConditionTunnelID)
 		g.Expect(tunnelIDCond).NotTo(BeNil())
 		g.Expect(tunnelIDCond.Status).To(Equal(metav1.ConditionTrue))
-		g.Expect(tunnelIDCond.Reason).To(Equal(apiv1.TunnelIDCreated))
+		g.Expect(tunnelIDCond.Reason).To(Equal(apiv1.ReasonTunnelCreated))
 		g.Expect(tunnelIDCond.Message).To(Equal("test-tunnel-id"))
 
 		// Listener status
@@ -465,7 +504,7 @@ func TestGatewayCrossNamespaceSecret(t *testing.T) {
 		tunnelIDCond := findCondition(result.Status.Conditions, apiv1.ConditionTunnelID)
 		g.Expect(tunnelIDCond).NotTo(BeNil())
 		g.Expect(tunnelIDCond.Status).To(Equal(metav1.ConditionTrue))
-		g.Expect(tunnelIDCond.Reason).To(Equal(apiv1.TunnelIDCreated))
+		g.Expect(tunnelIDCond.Reason).To(Equal(apiv1.ReasonTunnelCreated))
 		g.Expect(tunnelIDCond.Message).To(Equal("test-tunnel-id"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }

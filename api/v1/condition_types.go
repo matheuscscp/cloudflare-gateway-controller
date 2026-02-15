@@ -3,23 +3,41 @@
 
 package v1
 
-// Condition type for kstatus compatibility.
-const ReadyCondition = "Ready"
+// Condition types.
+const (
+	// ConditionReady is a kstatus-compatible condition type indicating
+	// whether the resource has been successfully reconciled.
+	ConditionReady = "Ready"
 
-// ReadyReason is set when the resource has been successfully reconciled.
-const ReadyReason = "ReconciliationSucceeded"
+	// ConditionTunnelID is a Gateway condition that stores the Cloudflare
+	// tunnel ID in its Message field.
+	ConditionTunnelID = "TunnelID"
 
-// NotReadyReason is set when the reconciliation has failed.
-const NotReadyReason = "ReconciliationFailed"
+	// ConditionRouteReferenceGrants is a Gateway condition that reports
+	// HTTPRoutes denied due to missing or failed cross-namespace
+	// ReferenceGrant checks.
+	ConditionRouteReferenceGrants = "RouteReferenceGrants"
 
-// InvalidParametersNotReady is set when the GatewayClass parametersRef
-// Secret is missing or contains invalid credentials.
-const InvalidParametersNotReady = "InvalidParameters"
+	// ConditionBackendReferenceGrants is a Gateway condition that reports
+	// HTTPRoute backendRefs denied due to missing or failed cross-namespace
+	// ReferenceGrant checks.
+	ConditionBackendReferenceGrants = "BackendReferenceGrants"
+)
 
-// ConditionTunnelID is a Gateway status condition type that stores the
-// Cloudflare tunnel ID in its Message field.
-const ConditionTunnelID = "TunnelID"
+// Reasons for the Ready condition.
+const (
+	ReasonReconciled    = "ReconciliationSucceeded"
+	ReasonFailed        = "ReconciliationFailed"
+	ReasonInvalidParams = "InvalidParameters"
+)
 
-// TunnelIDCreated is the reason for the TunnelID condition when a tunnel
-// has been created.
-const TunnelIDCreated = "Created"
+// Reasons for the TunnelID condition.
+const (
+	ReasonTunnelCreated = "Created"
+)
+
+// Reasons for the RouteReferenceGrants condition.
+const (
+	ReasonReferencesAllowed = "ReferencesAllowed"
+	ReasonReferencesDenied  = "ReferencesDenied"
+)

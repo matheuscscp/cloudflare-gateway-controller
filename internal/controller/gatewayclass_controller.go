@@ -106,11 +106,11 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 					WithReason(supportedVersionReason).
 					WithMessage(supportedVersionMessage),
 				acmetav1.Condition().
-					WithType(apiv1.ReadyCondition).
+					WithType(apiv1.ConditionReady).
 					WithStatus(metav1.ConditionTrue).
 					WithObservedGeneration(gc.Generation).
 					WithLastTransitionTime(now).
-					WithReason(apiv1.ReadyReason).
+					WithReason(apiv1.ReasonReconciled).
 					WithMessage("GatewayClass is ready"),
 			),
 		)
@@ -122,6 +122,9 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	return ctrl.Result{RequeueAfter: apiv1.ReconcileInterval(gc.Annotations)}, nil
 }
 
+// checkSupportedVersion verifies that the installed Gateway API CRD major.minor
+// version matches the version this binary was compiled against. Returns false
+// with a human-readable reason if the versions are incompatible.
 func (r *GatewayClassReconciler) checkSupportedVersion(ctx context.Context) (bool, string) {
 	log := log.FromContext(ctx)
 

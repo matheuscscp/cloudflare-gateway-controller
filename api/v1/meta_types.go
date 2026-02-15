@@ -9,44 +9,52 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
+// Gateway API kind constants (not exported by the upstream package).
 const (
-	// ValueEnabled is the annotation value used to enable a feature.
-	ValueEnabled = "enabled"
-	// ValueDisabled is the annotation value used to disable a feature.
+	KindGateway   = "Gateway"
+	KindHTTPRoute = "HTTPRoute"
+	KindSecret    = "Secret"
+	KindService   = "Service"
+)
+
+// Annotation values.
+const (
+	ValueEnabled  = "enabled"
 	ValueDisabled = "disabled"
 )
 
-const prefix = Group + "/"
-const prefixGateway = "gateway." + prefix
-
+// Finalizers.
 const (
-	// FinalizerGateway is the finalizer added to Gateway resources to ensure
-	// the Cloudflare tunnel is deleted before the Gateway is removed.
-	FinalizerGateway = prefix + "finalizer"
+	// Finalizer is the finalizer added to resources managed by this controller
+	// to ensure cleanup is performed before the resource is removed.
+	Finalizer = prefix + "finalizer"
 
 	// FinalizerGatewayClass is the finalizer added to GatewayClass resources
 	// to ensure the GatewayClass is not deleted while Gateways reference it.
 	FinalizerGatewayClass = gatewayv1.GatewayClassFinalizerGatewaysExist + "/finalizer"
+)
 
-	// AnnotationReconcile is the annotation key used to enable or disable
-	// reconciliation. Set to "disabled" to pause reconciliation.
+// Annotations.
+const (
+	// AnnotationReconcile enables or disables reconciliation.
+	// Set to "disabled" to pause reconciliation.
 	AnnotationReconcile = prefix + "reconcile"
 
-	// AnnotationReconcileEvery is the annotation key used to override
-	// the default reconciliation interval. The value must be a valid
-	// Go duration string (e.g. "5m", "1h").
+	// AnnotationReconcileEvery overrides the default reconciliation interval.
+	// The value must be a valid Go duration string (e.g. "5m", "1h").
 	AnnotationReconcileEvery = prefix + "reconcileEvery"
 
-	// AnnotationTunnelName is the annotation key used to override the
-	// default Cloudflare tunnel name. When absent, the Gateway UID is used.
+	// AnnotationTunnelName overrides the default Cloudflare tunnel name.
+	// When absent, the Gateway UID is used.
 	AnnotationTunnelName = prefixGateway + "tunnelName"
 
-	// AnnotationReplicas is the annotation key used to set the number
-	// of cloudflared replicas. When absent on create, defaults to 1.
+	// AnnotationReplicas sets the number of cloudflared replicas.
+	// When absent on create, defaults to 1.
 	// When absent on update, the current value is preserved.
 	AnnotationReplicas = prefixGateway + "replicas"
 )
 
+// Reconciliation defaults.
 const (
 	// DefaultReconcileInterval is the default interval between periodic
 	// reconciliations for drift correction.

@@ -4,6 +4,7 @@
 package main
 
 import (
+	"flag"
 	"os"
 
 	"github.com/spf13/pflag"
@@ -36,9 +37,14 @@ func init() {
 func main() {
 	cloudflaredImage := pflag.String("cloudflared-image", controller.DefaultCloudflaredImage, "cloudflared container image")
 	leaderElect := pflag.Bool("leader-elect", true, "enable leader election")
+
+	zapOpts := zap.Options{}
+	goflags := flag.NewFlagSet("", flag.ExitOnError)
+	zapOpts.BindFlags(goflags)
+	pflag.CommandLine.AddGoFlagSet(goflags)
 	pflag.Parse()
 
-	ctrl.SetLogger(zap.New())
+	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zapOpts)))
 
 	setupLog := ctrl.Log.WithName("setup")
 
@@ -79,6 +85,14 @@ func main() {
 		CloudflaredImage: *cloudflaredImage,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Gateway")
+		os.Exit(1)
+	}
+
+	if err := (&controller.HTTPRouteReconciler{
+		Client:          mgr.GetClient(),
+		NewTunnelClient: cfclient.NewTunnelClient,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "HTTPRoute")
 		os.Exit(1)
 	}
 
