@@ -85,8 +85,9 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 
 		// Remove finalizer from Gateway
+		gwPatch := client.MergeFromWithOptions(gw.DeepCopy(), client.MergeFromWithOptimisticLock{})
 		controllerutil.RemoveFinalizer(&gw, apiv1.GatewayFinalizer)
-		if err := r.Update(ctx, &gw); err != nil {
+		if err := r.Patch(ctx, &gw, gwPatch); err != nil {
 			return ctrl.Result{}, err
 		}
 
@@ -103,8 +104,9 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			}
 		}
 		if !hasOtherGateways && controllerutil.ContainsFinalizer(&gc, gatewayv1.GatewayClassFinalizerGatewaysExist) {
+			gcPatch := client.MergeFromWithOptions(gc.DeepCopy(), client.MergeFromWithOptimisticLock{})
 			controllerutil.RemoveFinalizer(&gc, gatewayv1.GatewayClassFinalizerGatewaysExist)
-			if err := r.Update(ctx, &gc); err != nil {
+			if err := r.Patch(ctx, &gc, gcPatch); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
@@ -115,15 +117,17 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// 4. Normal path
 
 	// Ensure finalizer on Gateway
+	gwPatch := client.MergeFromWithOptions(gw.DeepCopy(), client.MergeFromWithOptimisticLock{})
 	if controllerutil.AddFinalizer(&gw, apiv1.GatewayFinalizer) {
-		if err := r.Update(ctx, &gw); err != nil {
+		if err := r.Patch(ctx, &gw, gwPatch); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
 
 	// Ensure GatewayClass finalizer
+	gcPatch := client.MergeFromWithOptions(gc.DeepCopy(), client.MergeFromWithOptimisticLock{})
 	if controllerutil.AddFinalizer(&gc, gatewayv1.GatewayClassFinalizerGatewaysExist) {
-		if err := r.Update(ctx, &gc); err != nil {
+		if err := r.Patch(ctx, &gc, gcPatch); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -175,8 +179,9 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("creating tunnel: %w", err)
 		}
+		annPatch := client.MergeFromWithOptions(gw.DeepCopy(), client.MergeFromWithOptimisticLock{})
 		gw.Annotations[apiv1.TunnelIDAnnotation] = tunnelID
-		if err := r.Update(ctx, &gw); err != nil {
+		if err := r.Patch(ctx, &gw, annPatch); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
