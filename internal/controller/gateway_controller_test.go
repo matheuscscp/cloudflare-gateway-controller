@@ -167,6 +167,12 @@ func TestGatewayAcceptedAndProgrammed(t *testing.T) {
 		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
 		g.Expect(ready.Reason).To(Equal(apiv1.ReadyReason))
 
+		tunnelIDCond := findCondition(result.Status.Conditions, apiv1.ConditionTunnelID)
+		g.Expect(tunnelIDCond).NotTo(BeNil())
+		g.Expect(tunnelIDCond.Status).To(Equal(metav1.ConditionTrue))
+		g.Expect(tunnelIDCond.Reason).To(Equal(apiv1.TunnelIDCreated))
+		g.Expect(tunnelIDCond.Message).To(Equal("test-tunnel-id"))
+
 		// Listener status
 		g.Expect(result.Status.Listeners).To(HaveLen(1))
 		ls := result.Status.Listeners[0]
@@ -389,6 +395,9 @@ func TestGatewayCrossNamespaceSecret(t *testing.T) {
 		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
 		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.GatewayReasonInvalidParameters)))
 		g.Expect(accepted.Message).To(ContainSubstring("not allowed by any ReferenceGrant"))
+
+		tunnelIDCond := findCondition(result.Status.Conditions, apiv1.ConditionTunnelID)
+		g.Expect(tunnelIDCond).To(BeNil())
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
 	// Create a ReferenceGrant in namespace A allowing Gateways from namespace B
@@ -438,5 +447,11 @@ func TestGatewayCrossNamespaceSecret(t *testing.T) {
 		programmed := findCondition(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
 		g.Expect(programmed).NotTo(BeNil())
 		g.Expect(programmed.Status).To(Equal(metav1.ConditionTrue))
+
+		tunnelIDCond := findCondition(result.Status.Conditions, apiv1.ConditionTunnelID)
+		g.Expect(tunnelIDCond).NotTo(BeNil())
+		g.Expect(tunnelIDCond.Status).To(Equal(metav1.ConditionTrue))
+		g.Expect(tunnelIDCond.Reason).To(Equal(apiv1.TunnelIDCreated))
+		g.Expect(tunnelIDCond.Message).To(Equal("test-tunnel-id"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }

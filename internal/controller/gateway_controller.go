@@ -105,25 +105,36 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err != nil {
 		now := metav1.Now()
 		credMsg := fmt.Sprintf("Failed to read credentials: %v", err)
+		conditions := []*acmetav1.ConditionApplyConfiguration{
+			acmetav1.Condition().
+				WithType(string(gatewayv1.GatewayConditionAccepted)).
+				WithStatus(metav1.ConditionFalse).
+				WithObservedGeneration(gw.Generation).
+				WithLastTransitionTime(now).
+				WithReason(string(gatewayv1.GatewayReasonInvalidParameters)).
+				WithMessage(credMsg),
+			acmetav1.Condition().
+				WithType(apiv1.ReadyCondition).
+				WithStatus(metav1.ConditionFalse).
+				WithObservedGeneration(gw.Generation).
+				WithLastTransitionTime(now).
+				WithReason(apiv1.InvalidParametersNotReady).
+				WithMessage(credMsg),
+		}
+		if existingTunnelID := tunnelIDFromStatus(&gw); existingTunnelID != "" {
+			conditions = append(conditions, acmetav1.Condition().
+				WithType(apiv1.ConditionTunnelID).
+				WithStatus(metav1.ConditionTrue).
+				WithObservedGeneration(gw.Generation).
+				WithLastTransitionTime(now).
+				WithReason(apiv1.TunnelIDCreated).
+				WithMessage(existingTunnelID),
+			)
+		}
 		statusPatch := acgatewayv1.Gateway(gw.Name, gw.Namespace).
 			WithResourceVersion(gw.ResourceVersion).
 			WithStatus(acgatewayv1.GatewayStatus().
-				WithConditions(
-					acmetav1.Condition().
-						WithType(string(gatewayv1.GatewayConditionAccepted)).
-						WithStatus(metav1.ConditionFalse).
-						WithObservedGeneration(gw.Generation).
-						WithLastTransitionTime(now).
-						WithReason(string(gatewayv1.GatewayReasonInvalidParameters)).
-						WithMessage(credMsg),
-					acmetav1.Condition().
-						WithType(apiv1.ReadyCondition).
-						WithStatus(metav1.ConditionFalse).
-						WithObservedGeneration(gw.Generation).
-						WithLastTransitionTime(now).
-						WithReason(apiv1.InvalidParametersNotReady).
-						WithMessage(credMsg),
-				).
+				WithConditions(conditions...).
 				WithListeners(buildListenerStatusPatches(&gw)...),
 			)
 		if err := r.Status().Apply(ctx, statusPatch, client.FieldOwner(apiv1.ControllerName), client.ForceOwnership); err != nil {
@@ -139,23 +150,16 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	// Create tunnel if not yet created
-	if gw.Annotations == nil {
-		gw.Annotations = make(map[string]string)
-	}
-	if gw.Annotations[apiv1.AnnotationTunnelID] == "" {
-		tunnelID, err := tc.CreateTunnel(ctx, fmt.Sprintf("%s-%s", gw.Namespace, gw.Name))
+	tunnelID := tunnelIDFromStatus(&gw)
+	if tunnelID == "" {
+		tunnelID, err = tc.CreateTunnel(ctx, fmt.Sprintf("%s-%s", gw.Namespace, gw.Name))
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("creating tunnel: %w", err)
-		}
-		annPatch := client.MergeFromWithOptions(gw.DeepCopy(), client.MergeFromWithOptimisticLock{})
-		gw.Annotations[apiv1.AnnotationTunnelID] = tunnelID
-		if err := r.Patch(ctx, &gw, annPatch); err != nil {
-			return ctrl.Result{}, err
 		}
 	}
 
 	// Get tunnel token
-	tunnelToken, err := tc.GetTunnelToken(ctx, gw.Annotations[apiv1.AnnotationTunnelID])
+	tunnelToken, err := tc.GetTunnelToken(ctx, tunnelID)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("getting tunnel token: %w", err)
 	}
@@ -247,6 +251,13 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 					WithLastTransitionTime(now).
 					WithReason(apiv1.ReadyReason).
 					WithMessage("Gateway is ready"),
+				acmetav1.Condition().
+					WithType(apiv1.ConditionTunnelID).
+					WithStatus(metav1.ConditionTrue).
+					WithObservedGeneration(gw.Generation).
+					WithLastTransitionTime(now).
+					WithReason(apiv1.TunnelIDCreated).
+					WithMessage(tunnelID),
 			).
 			WithListeners(buildListenerStatusPatches(&gw)...),
 		)
@@ -262,10 +273,10 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 		return ctrl.Result{}, nil
 	}
 
-	// Delete tunnel if annotation exists and reconciliation is not disabled.
+	// Delete tunnel if it exists and reconciliation is not disabled.
 	// When disabled, the user is responsible for manually cleaning up the tunnel.
 	if gw.Annotations[apiv1.AnnotationReconcile] != apiv1.ValueDisabled {
-		if tunnelID := gw.Annotations[apiv1.AnnotationTunnelID]; tunnelID != "" {
+		if tunnelID := tunnelIDFromStatus(gw); tunnelID != "" {
 			cfg, err := r.readCredentials(ctx, gc, gw)
 			if err != nil {
 				return ctrl.Result{}, fmt.Errorf("reading credentials for tunnel deletion: %w", err)
@@ -385,6 +396,15 @@ func (r *GatewayReconciler) referenceGranted(ctx context.Context, gatewayNamespa
 	}
 
 	return false, nil
+}
+
+func tunnelIDFromStatus(gw *gatewayv1.Gateway) string {
+	for _, c := range gw.Status.Conditions {
+		if c.Type == apiv1.ConditionTunnelID && c.Reason == apiv1.TunnelIDCreated {
+			return c.Message
+		}
+	}
+	return ""
 }
 
 func buildListenerStatusPatches(gw *gatewayv1.Gateway) []*acgatewayv1.ListenerStatusApplyConfiguration {

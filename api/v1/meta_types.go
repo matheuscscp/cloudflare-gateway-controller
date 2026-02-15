@@ -19,10 +19,6 @@ const (
 	// the Cloudflare tunnel is deleted before the Gateway is removed.
 	FinalizerGateway = prefix + "finalizer"
 
-	// AnnotationTunnelID is the annotation key used to store the Cloudflare
-	// tunnel ID on a Gateway resource.
-	AnnotationTunnelID = prefix + "tunnel-id"
-
 	// AnnotationReconcile is the annotation key used to enable or disable
 	// reconciliation. Set to "disabled" to pause reconciliation.
 	AnnotationReconcile = prefix + "reconcile"

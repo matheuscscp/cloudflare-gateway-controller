@@ -15,3 +15,11 @@ const NotReadyReason = "ReconciliationFailed"
 // InvalidParametersNotReady is set when the GatewayClass parametersRef
 // Secret is missing or contains invalid credentials.
 const InvalidParametersNotReady = "InvalidParameters"
+
+// ConditionTunnelID is a Gateway status condition type that stores the
+// Cloudflare tunnel ID in its Message field.
+const ConditionTunnelID = "TunnelID"
+
+// TunnelIDCreated is the reason for the TunnelID condition when a tunnel
+// has been created.
+const TunnelIDCreated = "Created"
