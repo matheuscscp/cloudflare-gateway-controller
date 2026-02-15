@@ -6,6 +6,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/fluxcd/cli-utils/pkg/object"
@@ -171,14 +172,30 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 	log.V(1).Info("Reconciled tunnel token Secret", "result", result)
 
+	// Parse replicas annotation
+	var replicas *int32
+	if v, ok := gw.Annotations[apiv1.AnnotationReplicas]; ok {
+		n, err := strconv.ParseInt(v, 10, 32)
+		if err == nil {
+			replicas = new(int32(n))
+		}
+	}
+
 	// Build and create/update cloudflared Deployment
 	deploy := buildCloudflaredDeployment(&gw, r.CloudflaredImage)
 	if err := controllerutil.SetControllerReference(&gw, deploy, r.Scheme()); err != nil {
 		return ctrl.Result{}, fmt.Errorf("setting owner reference: %w", err)
 	}
 	result, err = controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
-		// Update the spec on existing deployment
+		currentReplicas := deploy.Spec.Replicas
 		deploy.Spec = buildCloudflaredDeployment(&gw, r.CloudflaredImage).Spec
+		if replicas != nil {
+			deploy.Spec.Replicas = replicas
+		} else if currentReplicas != nil {
+			deploy.Spec.Replicas = currentReplicas
+		} else {
+			deploy.Spec.Replicas = new(int32(1))
+		}
 		return controllerutil.SetControllerReference(&gw, deploy, r.Scheme())
 	})
 	if err != nil {
@@ -419,7 +436,6 @@ func buildCloudflaredDeployment(gw *gatewayv1.Gateway, cloudflaredImage string) 
 			Namespace: gw.Namespace,
 		},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: new(int32(1)),
 			Selector: &metav1.LabelSelector{
 				MatchLabels: labels,
 			},

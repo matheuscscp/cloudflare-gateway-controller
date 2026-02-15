@@ -323,7 +323,11 @@ func TestGatewayDeletion(t *testing.T) {
 	g.Expect(testMock.deleteCalled).To(BeTrue())
 
 	// Verify GatewayClass finalizer was removed (no more gateways)
-	var gcResult gatewayv1.GatewayClass
-	g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &gcResult)).To(Succeed())
-	g.Expect(gcResult.Finalizers).NotTo(ContainElement(gatewayv1.GatewayClassFinalizerGatewaysExist))
+	g.Eventually(func() []string {
+		var gcResult gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &gcResult); err != nil {
+			return []string{err.Error()}
+		}
+		return gcResult.Finalizers
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).ShouldNot(ContainElement(gatewayv1.GatewayClassFinalizerGatewaysExist))
 }

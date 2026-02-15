@@ -36,6 +36,11 @@ const (
 	// the default timeout for health checks after applying resources.
 	// The value must be a valid Go duration string (e.g. "5m", "1h").
 	AnnotationReconcileTimeout = prefix + "reconcileTimeout"
+
+	// AnnotationReplicas is the annotation key used to set the number
+	// of cloudflared replicas. When absent on create, defaults to 1.
+	// When absent on update, the current value is preserved.
+	AnnotationReplicas = prefix + "replicas"
 )
 
 const (
