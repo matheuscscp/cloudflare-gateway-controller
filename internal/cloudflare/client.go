@@ -6,6 +6,7 @@ package cloudflare
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 
 	cloudflare "github.com/cloudflare/cloudflare-go/v6"
@@ -22,9 +23,17 @@ type ClientConfig struct {
 // TunnelClient abstracts Cloudflare tunnel operations.
 type TunnelClient interface {
 	CreateTunnel(ctx context.Context, name string) (tunnelID string, err error)
+	GetTunnelIDByName(ctx context.Context, name string) (tunnelID string, err error)
+	GetTunnelName(ctx context.Context, tunnelID string) (name string, err error)
 	UpdateTunnel(ctx context.Context, tunnelID, name string) error
 	DeleteTunnel(ctx context.Context, tunnelID string) error
 	GetTunnelToken(ctx context.Context, tunnelID string) (token string, err error)
+}
+
+// IsConflict reports whether the error is a 409 Conflict from the Cloudflare API.
+func IsConflict(err error) bool {
+	var apiErr *cloudflare.Error
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict
 }
 
 // TunnelClientFactory creates a TunnelClient from a ClientConfig.
@@ -54,6 +63,34 @@ func (c *tunnelClient) CreateTunnel(ctx context.Context, name string) (string, e
 		return "", err
 	}
 	return tunnel.ID, nil
+}
+
+func (c *tunnelClient) GetTunnelIDByName(ctx context.Context, name string) (string, error) {
+	pager := c.client.ZeroTrust.Tunnels.Cloudflared.ListAutoPaging(ctx, zero_trust.TunnelCloudflaredListParams{
+		AccountID: cloudflare.String(c.accountID),
+		Name:      cloudflare.String(name),
+		IsDeleted: cloudflare.Bool(false),
+	})
+	for pager.Next() {
+		tunnel := pager.Current()
+		if tunnel.Name == name {
+			return tunnel.ID, nil
+		}
+	}
+	if err := pager.Err(); err != nil {
+		return "", fmt.Errorf("listing tunnels by name %q: %w", name, err)
+	}
+	return "", fmt.Errorf("tunnel with name %q not found", name)
+}
+
+func (c *tunnelClient) GetTunnelName(ctx context.Context, tunnelID string) (string, error) {
+	tunnel, err := c.client.ZeroTrust.Tunnels.Cloudflared.Get(ctx, tunnelID, zero_trust.TunnelCloudflaredGetParams{
+		AccountID: cloudflare.String(c.accountID),
+	})
+	if err != nil {
+		return "", err
+	}
+	return tunnel.Name, nil
 }
 
 func (c *tunnelClient) UpdateTunnel(ctx context.Context, tunnelID, name string) error {

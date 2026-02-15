@@ -154,11 +154,43 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if tunnelID == "" {
 		tunnelID, err = tc.CreateTunnel(ctx, tunnelName)
 		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("creating tunnel: %w", err)
+			// A conflict is safe to ignore only when the tunnel name
+			// defaults to the gateway UID, which is globally unique.
+			if !cfclient.IsConflict(err) || tunnelName != string(gw.UID) {
+				return ctrl.Result{}, fmt.Errorf("creating tunnel: %w", err)
+			}
+			tunnelID, err = tc.GetTunnelIDByName(ctx, tunnelName)
+			if err != nil {
+				return ctrl.Result{}, fmt.Errorf("looking up existing tunnel: %w", err)
+			}
+		}
+		// Persist tunnel ID immediately to avoid leaking tunnels on crash.
+		now := metav1.Now()
+		statusPatch := acgatewayv1.Gateway(gw.Name, gw.Namespace).
+			WithResourceVersion(gw.ResourceVersion).
+			WithStatus(acgatewayv1.GatewayStatus().
+				WithConditions(
+					acmetav1.Condition().
+						WithType(apiv1.ConditionTunnelID).
+						WithStatus(metav1.ConditionTrue).
+						WithObservedGeneration(gw.Generation).
+						WithLastTransitionTime(now).
+						WithReason(apiv1.TunnelIDCreated).
+						WithMessage(tunnelID),
+				),
+			)
+		if err := r.Status().Apply(ctx, statusPatch, client.FieldOwner(apiv1.ControllerName), client.ForceOwnership); err != nil {
+			return ctrl.Result{}, fmt.Errorf("persisting tunnel ID in status: %w", err)
 		}
 	} else {
-		if err := tc.UpdateTunnel(ctx, tunnelID, tunnelName); err != nil {
-			return ctrl.Result{}, fmt.Errorf("updating tunnel name: %w", err)
+		currentName, err := tc.GetTunnelName(ctx, tunnelID)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("getting tunnel name: %w", err)
+		}
+		if currentName != tunnelName {
+			if err := tc.UpdateTunnel(ctx, tunnelID, tunnelName); err != nil {
+				return ctrl.Result{}, fmt.Errorf("updating tunnel name: %w", err)
+			}
 		}
 	}
 
