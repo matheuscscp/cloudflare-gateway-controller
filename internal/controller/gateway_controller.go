@@ -585,7 +585,7 @@ func (r *GatewayReconciler) buildCloudflaredDeployment(gw *gatewayv1.Gateway) *a
 						{
 							Name:  "cloudflared",
 							Image: r.CloudflaredImage,
-							Args:  []string{"tunnel", "--no-autoupdate", "run"},
+							Args:  []string{"tunnel", "--no-autoupdate", "--metrics", "0.0.0.0:2000", "run"},
 							Env: []corev1.EnvVar{
 								{
 									Name: "TUNNEL_TOKEN",
