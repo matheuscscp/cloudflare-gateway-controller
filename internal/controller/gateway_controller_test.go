@@ -469,3 +469,168 @@ func TestGatewayCrossNamespaceSecret(t *testing.T) {
 		g.Expect(tunnelIDCond.Message).To(Equal("test-tunnel-id"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
+
+func TestGatewayInfrastructure(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-infra", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gateway-infra",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				Labels: map[gatewayv1.LabelKey]gatewayv1.LabelValue{
+					"infra-label": "infra-label-value",
+				},
+				Annotations: map[gatewayv1.AnnotationKey]gatewayv1.AnnotationValue{
+					"infra-annotation": "infra-annotation-value",
+				},
+			},
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "http",
+					Protocol: gatewayv1.HTTPProtocolType,
+					Port:     80,
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Wait for Gateway to be Programmed
+	gwKey := client.ObjectKeyFromObject(gw)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
+		programmed := findCondition(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
+		g.Expect(programmed).NotTo(BeNil())
+		g.Expect(programmed.Status).To(Equal(metav1.ConditionTrue))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Verify Deployment has infrastructure labels/annotations
+	var deploy appsv1.Deployment
+	deployKey := client.ObjectKey{Name: "cloudflared-" + gw.Name, Namespace: gw.Namespace}
+	g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
+
+	// Deployment ObjectMeta
+	g.Expect(deploy.Labels).To(HaveKeyWithValue("infra-label", "infra-label-value"))
+	g.Expect(deploy.Annotations).To(HaveKeyWithValue("infra-annotation", "infra-annotation-value"))
+
+	// PodTemplate ObjectMeta
+	g.Expect(deploy.Spec.Template.Labels).To(HaveKeyWithValue("infra-label", "infra-label-value"))
+	g.Expect(deploy.Spec.Template.Annotations).To(HaveKeyWithValue("infra-annotation", "infra-annotation-value"))
+
+	// Selector must NOT include infrastructure labels
+	g.Expect(deploy.Spec.Selector.MatchLabels).NotTo(HaveKey("infra-label"))
+
+	// Verify Secret has infrastructure labels/annotations
+	var tokenSecret corev1.Secret
+	secretKey := client.ObjectKey{Name: "cloudflared-token-" + gw.Name, Namespace: gw.Namespace}
+	g.Expect(testClient.Get(testCtx, secretKey, &tokenSecret)).To(Succeed())
+	g.Expect(tokenSecret.Labels).To(HaveKeyWithValue("infra-label", "infra-label-value"))
+	g.Expect(tokenSecret.Annotations).To(HaveKeyWithValue("infra-annotation", "infra-annotation-value"))
+}
+
+func TestGatewayInfrastructureParametersRef(t *testing.T) {
+	g := NewWithT(t)
+
+	// Namespace A: where the GatewayClass secret lives
+	nsA := createTestNamespace(g)
+	t.Cleanup(func() { testClient.Delete(testCtx, nsA) })
+
+	// Namespace B: where the Gateway and its local secret live
+	nsB := createTestNamespace(g)
+	t.Cleanup(func() { testClient.Delete(testCtx, nsB) })
+
+	createTestSecret(g, nsA.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-infra-ref", nsA.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	// Create a local secret in namespace B for the Gateway to reference
+	localSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "local-creds",
+			Namespace: nsB.Name,
+		},
+		Data: map[string][]byte{
+			"CLOUDFLARE_API_TOKEN":  []byte("local-api-token"),
+			"CLOUDFLARE_ACCOUNT_ID": []byte("local-account-id"),
+		},
+	}
+	g.Expect(testClient.Create(testCtx, localSecret)).To(Succeed())
+
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gateway-infra-ref",
+			Namespace: nsB.Name,
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: &gatewayv1.LocalParametersReference{
+					Group: "",
+					Kind:  "Secret",
+					Name:  "local-creds",
+				},
+			},
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "http",
+					Protocol: gatewayv1.HTTPProtocolType,
+					Port:     80,
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Verify the Gateway is accepted (no ReferenceGrant needed for local ref)
+	gwKey := client.ObjectKeyFromObject(gw)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
+
+		accepted := findCondition(result.Status.Conditions, string(gatewayv1.GatewayConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
+
+		programmed := findCondition(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
+		g.Expect(programmed).NotTo(BeNil())
+		g.Expect(programmed.Status).To(Equal(metav1.ConditionTrue))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}

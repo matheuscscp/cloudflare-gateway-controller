@@ -6,6 +6,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strconv"
 	"time"
 
@@ -204,7 +205,10 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("setting owner reference on secret: %w", err)
 	}
 	result, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
-		secret.Data = buildTunnelTokenSecret(&gw, tunnelToken).Data
+		desired := buildTunnelTokenSecret(&gw, tunnelToken)
+		secret.Data = desired.Data
+		secret.Labels = desired.Labels
+		secret.Annotations = desired.Annotations
 		return controllerutil.SetControllerReference(&gw, secret, r.Scheme())
 	})
 	if err != nil {
@@ -228,7 +232,10 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 	result, err = controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
 		currentReplicas := deploy.Spec.Replicas
-		deploy.Spec = r.buildCloudflaredDeployment(&gw).Spec
+		desired := r.buildCloudflaredDeployment(&gw)
+		deploy.Labels = desired.Labels
+		deploy.Annotations = desired.Annotations
+		deploy.Spec = desired.Spec
 		if replicas != nil {
 			deploy.Spec.Replicas = replicas
 		} else if currentReplicas != nil {
@@ -411,24 +418,34 @@ func (r *GatewayReconciler) removeGatewayClassFinalizer(ctx context.Context, gc 
 }
 
 func (r *GatewayReconciler) readCredentials(ctx context.Context, gc *gatewayv1.GatewayClass, gw *gatewayv1.Gateway) (cfclient.ClientConfig, error) {
-	if gc.Spec.ParametersRef == nil {
-		return cfclient.ClientConfig{}, fmt.Errorf("gatewayclass %q has no parametersRef", gc.Name)
-	}
-	ref := gc.Spec.ParametersRef
-	if string(ref.Kind) != "Secret" || (ref.Group != "" && ref.Group != "core" && ref.Group != gatewayv1.Group("")) {
-		return cfclient.ClientConfig{}, fmt.Errorf("parametersRef must reference a core/v1 Secret")
-	}
-	if ref.Namespace == nil {
-		return cfclient.ClientConfig{}, fmt.Errorf("parametersRef must specify a namespace")
-	}
+	var secretNamespace, secretName string
 
-	secretNamespace := string(*ref.Namespace)
-	secretName := ref.Name
+	if gw.Spec.Infrastructure != nil && gw.Spec.Infrastructure.ParametersRef != nil {
+		ref := gw.Spec.Infrastructure.ParametersRef
+		if string(ref.Kind) != "Secret" || (ref.Group != "" && ref.Group != "core" && ref.Group != gatewayv1.Group("")) {
+			return cfclient.ClientConfig{}, fmt.Errorf("infrastructure parametersRef must reference a core/v1 Secret")
+		}
+		secretNamespace = gw.Namespace
+		secretName = string(ref.Name)
+	} else {
+		if gc.Spec.ParametersRef == nil {
+			return cfclient.ClientConfig{}, fmt.Errorf("gatewayclass %q has no parametersRef", gc.Name)
+		}
+		ref := gc.Spec.ParametersRef
+		if string(ref.Kind) != "Secret" || (ref.Group != "" && ref.Group != "core" && ref.Group != gatewayv1.Group("")) {
+			return cfclient.ClientConfig{}, fmt.Errorf("parametersRef must reference a core/v1 Secret")
+		}
+		if ref.Namespace == nil {
+			return cfclient.ClientConfig{}, fmt.Errorf("parametersRef must specify a namespace")
+		}
+		secretNamespace = string(*ref.Namespace)
+		secretName = ref.Name
 
-	if granted, err := r.referenceGranted(ctx, gw.Namespace, secretNamespace, secretName); err != nil {
-		return cfclient.ClientConfig{}, fmt.Errorf("checking ReferenceGrant: %w", err)
-	} else if !granted {
-		return cfclient.ClientConfig{}, fmt.Errorf("cross-namespace reference to Secret %s/%s not allowed by any ReferenceGrant", secretNamespace, secretName)
+		if granted, err := r.referenceGranted(ctx, gw.Namespace, secretNamespace, secretName); err != nil {
+			return cfclient.ClientConfig{}, fmt.Errorf("checking ReferenceGrant: %w", err)
+		} else if !granted {
+			return cfclient.ClientConfig{}, fmt.Errorf("cross-namespace reference to Secret %s/%s not allowed by any ReferenceGrant", secretNamespace, secretName)
+		}
 	}
 
 	var secret corev1.Secret
@@ -576,7 +593,7 @@ func tunnelTokenSecretName(gw *gatewayv1.Gateway) string {
 }
 
 func buildTunnelTokenSecret(gw *gatewayv1.Gateway, tunnelToken string) *corev1.Secret {
-	return &corev1.Secret{
+	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      tunnelTokenSecretName(gw),
 			Namespace: gw.Namespace,
@@ -585,26 +602,30 @@ func buildTunnelTokenSecret(gw *gatewayv1.Gateway, tunnelToken string) *corev1.S
 			"TUNNEL_TOKEN": []byte(tunnelToken),
 		},
 	}
+	mergeInfrastructureMetadata(&secret.ObjectMeta, gw.Spec.Infrastructure)
+	return secret
 }
 
 func (r *GatewayReconciler) buildCloudflaredDeployment(gw *gatewayv1.Gateway) *appsv1.Deployment {
-	labels := map[string]string{
+	selectorLabels := map[string]string{
 		"app.kubernetes.io/name":       "cloudflared",
 		"app.kubernetes.io/managed-by": "cloudflare-gateway-controller",
 		"app.kubernetes.io/instance":   gw.Name,
 	}
-	return &appsv1.Deployment{
+	templateLabels := make(map[string]string, len(selectorLabels))
+	maps.Copy(templateLabels, selectorLabels)
+	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      cloudflaredDeploymentName(gw),
 			Namespace: gw.Namespace,
 		},
 		Spec: appsv1.DeploymentSpec{
 			Selector: &metav1.LabelSelector{
-				MatchLabels: labels,
+				MatchLabels: selectorLabels,
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: labels,
+					Labels: templateLabels,
 				},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{
@@ -638,5 +659,26 @@ func (r *GatewayReconciler) buildCloudflaredDeployment(gw *gatewayv1.Gateway) *a
 				},
 			},
 		},
+	}
+	mergeInfrastructureMetadata(&deploy.ObjectMeta, gw.Spec.Infrastructure)
+	mergeInfrastructureMetadata(&deploy.Spec.Template.ObjectMeta, gw.Spec.Infrastructure)
+	return deploy
+}
+
+func mergeInfrastructureMetadata(meta *metav1.ObjectMeta, infra *gatewayv1.GatewayInfrastructure) {
+	if infra == nil {
+		return
+	}
+	for k, v := range infra.Labels {
+		if meta.Labels == nil {
+			meta.Labels = make(map[string]string)
+		}
+		meta.Labels[string(k)] = string(v)
+	}
+	for k, v := range infra.Annotations {
+		if meta.Annotations == nil {
+			meta.Annotations = make(map[string]string)
+		}
+		meta.Annotations[string(k)] = string(v)
 	}
 }
