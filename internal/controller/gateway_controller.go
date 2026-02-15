@@ -149,12 +149,22 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("creating tunnel client: %w", err)
 	}
 
-	// Create tunnel if not yet created
+	// Resolve desired tunnel name
+	tunnelName := gw.Annotations[apiv1.AnnotationTunnelName]
+	if tunnelName == "" {
+		tunnelName = string(gw.UID)
+	}
+
+	// Create or update tunnel
 	tunnelID := tunnelIDFromStatus(&gw)
 	if tunnelID == "" {
-		tunnelID, err = tc.CreateTunnel(ctx, fmt.Sprintf("%s-%s", gw.Namespace, gw.Name))
+		tunnelID, err = tc.CreateTunnel(ctx, tunnelName)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("creating tunnel: %w", err)
+		}
+	} else {
+		if err := tc.UpdateTunnel(ctx, tunnelID, tunnelName); err != nil {
+			return ctrl.Result{}, fmt.Errorf("updating tunnel name: %w", err)
 		}
 	}
 

@@ -31,6 +31,10 @@ func (m *mockTunnelClient) CreateTunnel(_ context.Context, _ string) (string, er
 	return m.createTunnelID, nil
 }
 
+func (m *mockTunnelClient) UpdateTunnel(_ context.Context, _, _ string) error {
+	return nil
+}
+
 func (m *mockTunnelClient) DeleteTunnel(_ context.Context, tunnelID string) error {
 	m.deleteCalled = true
 	m.deletedID = tunnelID

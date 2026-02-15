@@ -22,6 +22,7 @@ type ClientConfig struct {
 // TunnelClient abstracts Cloudflare tunnel operations.
 type TunnelClient interface {
 	CreateTunnel(ctx context.Context, name string) (tunnelID string, err error)
+	UpdateTunnel(ctx context.Context, tunnelID, name string) error
 	DeleteTunnel(ctx context.Context, tunnelID string) error
 	GetTunnelToken(ctx context.Context, tunnelID string) (token string, err error)
 }
@@ -53,6 +54,14 @@ func (c *tunnelClient) CreateTunnel(ctx context.Context, name string) (string, e
 		return "", err
 	}
 	return tunnel.ID, nil
+}
+
+func (c *tunnelClient) UpdateTunnel(ctx context.Context, tunnelID, name string) error {
+	_, err := c.client.ZeroTrust.Tunnels.Cloudflared.Edit(ctx, tunnelID, zero_trust.TunnelCloudflaredEditParams{
+		AccountID: cloudflare.String(c.accountID),
+		Name:      cloudflare.F(name),
+	})
+	return err
 }
 
 func (c *tunnelClient) DeleteTunnel(ctx context.Context, tunnelID string) error {

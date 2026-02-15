@@ -13,6 +13,7 @@ const (
 )
 
 const prefix = Group + "/"
+const prefixGateway = "gateway." + prefix
 
 const (
 	// FinalizerGateway is the finalizer added to Gateway resources to ensure
@@ -33,10 +34,14 @@ const (
 	// The value must be a valid Go duration string (e.g. "5m", "1h").
 	AnnotationReconcileTimeout = prefix + "reconcileTimeout"
 
+	// AnnotationTunnelName is the annotation key used to override the
+	// default Cloudflare tunnel name. When absent, the Gateway UID is used.
+	AnnotationTunnelName = prefixGateway + "tunnelName"
+
 	// AnnotationReplicas is the annotation key used to set the number
 	// of cloudflared replicas. When absent on create, defaults to 1.
 	// When absent on update, the current value is preserved.
-	AnnotationReplicas = prefix + "replicas"
+	AnnotationReplicas = prefixGateway + "replicas"
 )
 
 const (
