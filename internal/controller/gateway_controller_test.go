@@ -8,11 +8,12 @@ import (
 	"testing"
 	"time"
 
+	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/meta"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
@@ -37,24 +38,26 @@ func (m *mockTunnelClient) GetTunnelToken(_ context.Context, _ string) (string, 
 	return m.tunnelToken, nil
 }
 
-func newTestNamespace(t *testing.T) *corev1.Namespace {
-	t.Helper()
+func findCondition(conditions []metav1.Condition, conditionType string) *metav1.Condition {
+	for i := range conditions {
+		if conditions[i].Type == conditionType {
+			return &conditions[i]
+		}
+	}
+	return nil
+}
+
+func createTestNamespace(g Gomega) *corev1.Namespace {
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "test-",
 		},
 	}
-	if err := testClient.Create(testCtx, ns); err != nil {
-		t.Fatalf("failed to create namespace: %v", err)
-	}
-	t.Cleanup(func() {
-		testClient.Delete(testCtx, ns)
-	})
+	g.Expect(testClient.Create(testCtx, ns)).To(Succeed())
 	return ns
 }
 
-func newTestSecret(t *testing.T, namespace string) *corev1.Secret {
-	t.Helper()
+func createTestSecret(g Gomega, namespace string) *corev1.Secret {
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "cloudflare-creds",
@@ -65,17 +68,11 @@ func newTestSecret(t *testing.T, namespace string) *corev1.Secret {
 			"CLOUDFLARE_ACCOUNT_ID": []byte("test-account-id"),
 		},
 	}
-	if err := testClient.Create(testCtx, secret); err != nil {
-		t.Fatalf("failed to create secret: %v", err)
-	}
-	t.Cleanup(func() {
-		testClient.Delete(testCtx, secret)
-	})
+	g.Expect(testClient.Create(testCtx, secret)).To(Succeed())
 	return secret
 }
 
-func newTestGatewayClass(t *testing.T, name string, secretNamespace string) *gatewayv1.GatewayClass {
-	t.Helper()
+func createTestGatewayClass(g Gomega, name string, secretNamespace string) *gatewayv1.GatewayClass {
 	ns := gatewayv1.Namespace(secretNamespace)
 	gc := &gatewayv1.GatewayClass{
 		ObjectMeta: metav1.ObjectMeta{
@@ -91,50 +88,37 @@ func newTestGatewayClass(t *testing.T, name string, secretNamespace string) *gat
 			},
 		},
 	}
-	if err := testClient.Create(testCtx, gc); err != nil {
-		t.Fatalf("failed to create GatewayClass: %v", err)
-	}
-	t.Cleanup(func() {
-		// Re-fetch to get latest version before deleting
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, types.NamespacedName{Name: gc.Name}, &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
-		}
-	})
+	g.Expect(testClient.Create(testCtx, gc)).To(Succeed())
 	return gc
 }
 
-func waitForCondition(t *testing.T, key types.NamespacedName, conditionType string) *gatewayv1.Gateway {
-	t.Helper()
-	var result gatewayv1.Gateway
-	for i := 0; i < 50; i++ {
-		if err := testClient.Get(testCtx, key, &result); err != nil {
-			t.Fatalf("failed to get Gateway: %v", err)
-		}
-		if meta.IsStatusConditionPresentAndEqual(result.Status.Conditions, conditionType, metav1.ConditionTrue) {
-			return &result
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for condition %q on Gateway %s", conditionType, key)
-	return nil
+func waitForGatewayClassAccepted(g Gomega, gc *gatewayv1.GatewayClass) {
+	key := client.ObjectKeyFromObject(gc)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.GatewayClass
+		g.Expect(testClient.Get(testCtx, key, &result)).To(Succeed())
+		accepted := findCondition(result.Status.Conditions, string(gatewayv1.GatewayClassConditionStatusAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
 func TestGatewayAcceptedAndProgrammed(t *testing.T) {
-	ns := newTestNamespace(t)
-	newTestSecret(t, ns.Name)
-	gc := newTestGatewayClass(t, "test-gw-class-happy", ns.Name)
+	g := NewWithT(t)
 
-	// Wait for GatewayClass to be accepted
-	for i := 0; i < 50; i++ {
-		var gcResult gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, types.NamespacedName{Name: gc.Name}, &gcResult); err == nil {
-			if meta.IsStatusConditionTrue(gcResult.Status.Conditions, string(gatewayv1.GatewayClassConditionStatusAccepted)) {
-				break
-			}
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-happy", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
 		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	})
+
+	waitForGatewayClassAccepted(g, gc)
 
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
@@ -152,86 +136,67 @@ func TestGatewayAcceptedAndProgrammed(t *testing.T) {
 			},
 		},
 	}
-	if err := testClient.Create(testCtx, gw); err != nil {
-		t.Fatalf("failed to create Gateway: %v", err)
-	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, types.NamespacedName{Name: gw.Name, Namespace: gw.Namespace}, &latest); err == nil {
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
 			testClient.Delete(testCtx, &latest)
 		}
 	})
 
-	key := types.NamespacedName{Name: gw.Name, Namespace: gw.Namespace}
-	result := waitForCondition(t, key, string(gatewayv1.GatewayConditionProgrammed))
+	// Wait for Gateway to be Programmed, then verify all conditions
+	gwKey := client.ObjectKeyFromObject(gw)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
 
-	// Verify Accepted condition
-	accepted := meta.FindStatusCondition(result.Status.Conditions, string(gatewayv1.GatewayConditionAccepted))
-	if accepted == nil || accepted.Status != metav1.ConditionTrue {
-		t.Fatal("expected Accepted condition to be True")
-	}
+		// Gateway-level conditions
+		accepted := findCondition(result.Status.Conditions, string(gatewayv1.GatewayConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
 
-	// Verify Programmed condition
-	programmed := meta.FindStatusCondition(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
-	if programmed == nil || programmed.Status != metav1.ConditionTrue {
-		t.Fatal("expected Programmed condition to be True")
-	}
+		programmed := findCondition(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
+		g.Expect(programmed).NotTo(BeNil())
+		g.Expect(programmed.Status).To(Equal(metav1.ConditionTrue))
 
-	// Verify listener status
-	if len(result.Status.Listeners) != 1 {
-		t.Fatalf("expected 1 listener status, got %d", len(result.Status.Listeners))
-	}
-	ls := result.Status.Listeners[0]
-	if ls.Name != "http" {
-		t.Fatalf("expected listener name %q, got %q", "http", ls.Name)
-	}
-	listenerAccepted := meta.FindStatusCondition(ls.Conditions, string(gatewayv1.ListenerConditionAccepted))
-	if listenerAccepted == nil || listenerAccepted.Status != metav1.ConditionTrue {
-		t.Fatal("expected listener Accepted condition to be True")
-	}
+		// Listener status
+		g.Expect(result.Status.Listeners).To(HaveLen(1))
+		ls := result.Status.Listeners[0]
+		g.Expect(ls.Name).To(Equal(gatewayv1.SectionName("http")))
+		listenerAccepted := findCondition(ls.Conditions, string(gatewayv1.ListenerConditionAccepted))
+		g.Expect(listenerAccepted).NotTo(BeNil())
+		g.Expect(listenerAccepted.Status).To(Equal(metav1.ConditionTrue))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
 	// Verify Deployment created
 	var deploy appsv1.Deployment
-	deployKey := types.NamespacedName{Name: "cloudflared-" + gw.Name, Namespace: gw.Namespace}
-	if err := testClient.Get(testCtx, deployKey, &deploy); err != nil {
-		t.Fatalf("expected cloudflared Deployment to exist: %v", err)
-	}
-	if deploy.Spec.Template.Spec.Containers[0].Image != "cloudflare/cloudflared:latest" {
-		t.Fatalf("expected cloudflared image, got %q", deploy.Spec.Template.Spec.Containers[0].Image)
-	}
+	deployKey := client.ObjectKey{Name: "cloudflared-" + gw.Name, Namespace: gw.Namespace}
+	g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
+	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
+	g.Expect(deploy.Spec.Template.Spec.Containers[0].Image).To(Equal("cloudflare/cloudflared:latest"))
 
 	// Verify GatewayClass has the finalizer
 	var gcResult gatewayv1.GatewayClass
-	if err := testClient.Get(testCtx, types.NamespacedName{Name: gc.Name}, &gcResult); err != nil {
-		t.Fatalf("failed to get GatewayClass: %v", err)
-	}
-	hasFinalizer := false
-	for _, f := range gcResult.Finalizers {
-		if f == gatewayv1.GatewayClassFinalizerGatewaysExist {
-			hasFinalizer = true
-			break
-		}
-	}
-	if !hasFinalizer {
-		t.Fatal("expected GatewayClass to have GatewaysExist finalizer")
-	}
+	g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &gcResult)).To(Succeed())
+	g.Expect(gcResult.Finalizers).To(ContainElement(gatewayv1.GatewayClassFinalizerGatewaysExist))
 }
 
 func TestGatewayUnsupportedProtocol(t *testing.T) {
-	ns := newTestNamespace(t)
-	newTestSecret(t, ns.Name)
-	gc := newTestGatewayClass(t, "test-gw-class-unsupported", ns.Name)
+	g := NewWithT(t)
 
-	// Wait for GatewayClass to be accepted
-	for i := 0; i < 50; i++ {
-		var gcResult gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, types.NamespacedName{Name: gc.Name}, &gcResult); err == nil {
-			if meta.IsStatusConditionTrue(gcResult.Status.Conditions, string(gatewayv1.GatewayClassConditionStatusAccepted)) {
-				break
-			}
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-unsupported", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
 		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	})
+
+	waitForGatewayClassAccepted(g, gc)
 
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
@@ -249,52 +214,49 @@ func TestGatewayUnsupportedProtocol(t *testing.T) {
 			},
 		},
 	}
-	if err := testClient.Create(testCtx, gw); err != nil {
-		t.Fatalf("failed to create Gateway: %v", err)
-	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, types.NamespacedName{Name: gw.Name, Namespace: gw.Namespace}, &latest); err == nil {
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
 			testClient.Delete(testCtx, &latest)
 		}
 	})
 
-	// Wait for Gateway to be Programmed (the controller still programs the tunnel even for unsupported listeners)
-	key := types.NamespacedName{Name: gw.Name, Namespace: gw.Namespace}
-	result := waitForCondition(t, key, string(gatewayv1.GatewayConditionProgrammed))
+	gwKey := client.ObjectKeyFromObject(gw)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
 
-	// Verify listener Accepted=False with UnsupportedProtocol
-	if len(result.Status.Listeners) != 1 {
-		t.Fatalf("expected 1 listener status, got %d", len(result.Status.Listeners))
-	}
-	ls := result.Status.Listeners[0]
-	listenerAccepted := meta.FindStatusCondition(ls.Conditions, string(gatewayv1.ListenerConditionAccepted))
-	if listenerAccepted == nil {
-		t.Fatal("expected listener Accepted condition to exist")
-	}
-	if listenerAccepted.Status != metav1.ConditionFalse {
-		t.Fatal("expected listener Accepted condition to be False")
-	}
-	if listenerAccepted.Reason != string(gatewayv1.ListenerReasonUnsupportedProtocol) {
-		t.Fatalf("expected reason %q, got %q", gatewayv1.ListenerReasonUnsupportedProtocol, listenerAccepted.Reason)
-	}
+		// Gateway should still be Programmed
+		programmed := findCondition(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
+		g.Expect(programmed).NotTo(BeNil())
+		g.Expect(programmed.Status).To(Equal(metav1.ConditionTrue))
+
+		// Listener Accepted=False with UnsupportedProtocol
+		g.Expect(result.Status.Listeners).To(HaveLen(1))
+		listenerAccepted := findCondition(result.Status.Listeners[0].Conditions, string(gatewayv1.ListenerConditionAccepted))
+		g.Expect(listenerAccepted).NotTo(BeNil())
+		g.Expect(listenerAccepted.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(listenerAccepted.Reason).To(Equal(string(gatewayv1.ListenerReasonUnsupportedProtocol)))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
 func TestGatewayDeletion(t *testing.T) {
-	ns := newTestNamespace(t)
-	newTestSecret(t, ns.Name)
-	gc := newTestGatewayClass(t, "test-gw-class-deletion", ns.Name)
+	g := NewWithT(t)
 
-	// Wait for GatewayClass to be accepted
-	for i := 0; i < 50; i++ {
-		var gcResult gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, types.NamespacedName{Name: gc.Name}, &gcResult); err == nil {
-			if meta.IsStatusConditionTrue(gcResult.Status.Conditions, string(gatewayv1.GatewayClassConditionStatusAccepted)) {
-				break
-			}
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-deletion", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
 		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	})
+
+	waitForGatewayClassAccepted(g, gc)
 
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
@@ -312,45 +274,33 @@ func TestGatewayDeletion(t *testing.T) {
 			},
 		},
 	}
-	if err := testClient.Create(testCtx, gw); err != nil {
-		t.Fatalf("failed to create Gateway: %v", err)
-	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
 
-	// Wait for it to be programmed
-	key := types.NamespacedName{Name: gw.Name, Namespace: gw.Namespace}
-	waitForCondition(t, key, string(gatewayv1.GatewayConditionProgrammed))
+	// Wait for Gateway to be Programmed
+	gwKey := client.ObjectKeyFromObject(gw)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
+		programmed := findCondition(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
+		g.Expect(programmed).NotTo(BeNil())
+		g.Expect(programmed.Status).To(Equal(metav1.ConditionTrue))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
 	// Delete the Gateway
 	var latest gatewayv1.Gateway
-	if err := testClient.Get(testCtx, key, &latest); err != nil {
-		t.Fatalf("failed to get Gateway: %v", err)
-	}
-	if err := testClient.Delete(testCtx, &latest); err != nil {
-		t.Fatalf("failed to delete Gateway: %v", err)
-	}
+	g.Expect(testClient.Get(testCtx, gwKey, &latest)).To(Succeed())
+	g.Expect(testClient.Delete(testCtx, &latest)).To(Succeed())
 
 	// Wait for Gateway to be fully deleted
-	for i := 0; i < 50; i++ {
-		err := testClient.Get(testCtx, key, &latest)
-		if err != nil {
-			break // NotFound means it's deleted
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	g.Eventually(func() error {
+		return testClient.Get(testCtx, gwKey, &latest)
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Satisfy(apierrors.IsNotFound))
 
 	// Verify mock's DeleteTunnel was called
-	if !testMock.deleteCalled {
-		t.Fatal("expected DeleteTunnel to be called")
-	}
+	g.Expect(testMock.deleteCalled).To(BeTrue())
 
 	// Verify GatewayClass finalizer was removed (no more gateways)
 	var gcResult gatewayv1.GatewayClass
-	if err := testClient.Get(testCtx, types.NamespacedName{Name: gc.Name}, &gcResult); err != nil {
-		t.Fatalf("failed to get GatewayClass: %v", err)
-	}
-	for _, f := range gcResult.Finalizers {
-		if f == gatewayv1.GatewayClassFinalizerGatewaysExist {
-			t.Fatal("expected GatewayClass finalizer to be removed")
-		}
-	}
+	g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &gcResult)).To(Succeed())
+	g.Expect(gcResult.Finalizers).NotTo(ContainElement(gatewayv1.GatewayClassFinalizerGatewaysExist))
 }

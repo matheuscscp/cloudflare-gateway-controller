@@ -7,13 +7,15 @@ import (
 	"testing"
 	"time"
 
-	"k8s.io/apimachinery/pkg/api/meta"
+	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
 func TestGatewayClassAccepted(t *testing.T) {
+	g := NewWithT(t)
+
 	gc := &gatewayv1.GatewayClass{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-cloudflare",
@@ -22,39 +24,24 @@ func TestGatewayClassAccepted(t *testing.T) {
 			ControllerName: gatewayv1.GatewayController(ControllerName),
 		},
 	}
-	if err := testClient.Create(testCtx, gc); err != nil {
-		t.Fatalf("failed to create GatewayClass: %v", err)
-	}
+	g.Expect(testClient.Create(testCtx, gc)).To(Succeed())
 	t.Cleanup(func() {
 		testClient.Delete(testCtx, gc)
 	})
 
-	// Wait for the controller to reconcile and set conditions.
-	var result gatewayv1.GatewayClass
-	key := types.NamespacedName{Name: gc.Name}
-	for range 50 {
-		if err := testClient.Get(testCtx, key, &result); err != nil {
-			t.Fatalf("failed to get GatewayClass: %v", err)
-		}
-		if meta.IsStatusConditionTrue(result.Status.Conditions, string(gatewayv1.GatewayClassConditionStatusAccepted)) {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	key := client.ObjectKeyFromObject(gc)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.GatewayClass
+		g.Expect(testClient.Get(testCtx, key, &result)).To(Succeed())
 
-	accepted := meta.FindStatusCondition(result.Status.Conditions, string(gatewayv1.GatewayClassConditionStatusAccepted))
-	if accepted == nil || accepted.Status != metav1.ConditionTrue {
-		t.Fatal("expected Accepted condition to be True")
-	}
-	if accepted.Reason != string(gatewayv1.GatewayClassReasonAccepted) {
-		t.Fatalf("expected Accepted reason %q, got %q", gatewayv1.GatewayClassReasonAccepted, accepted.Reason)
-	}
+		accepted := findCondition(result.Status.Conditions, string(gatewayv1.GatewayClassConditionStatusAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
+		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.GatewayClassReasonAccepted)))
 
-	supported := meta.FindStatusCondition(result.Status.Conditions, string(gatewayv1.GatewayClassConditionStatusSupportedVersion))
-	if supported == nil || supported.Status != metav1.ConditionTrue {
-		t.Fatal("expected SupportedVersion condition to be True")
-	}
-	if supported.Reason != string(gatewayv1.GatewayClassReasonSupportedVersion) {
-		t.Fatalf("expected SupportedVersion reason %q, got %q", gatewayv1.GatewayClassReasonSupportedVersion, supported.Reason)
-	}
+		supported := findCondition(result.Status.Conditions, string(gatewayv1.GatewayClassConditionStatusSupportedVersion))
+		g.Expect(supported).NotTo(BeNil())
+		g.Expect(supported.Status).To(Equal(metav1.ConditionTrue))
+		g.Expect(supported.Reason).To(Equal(string(gatewayv1.GatewayClassReasonSupportedVersion)))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
