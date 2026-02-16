@@ -33,6 +33,7 @@ type mockTunnelClient struct {
 	ensureDNSCalls          []mockDNSCall
 	deleteDNSCalls          []mockDNSCall
 	zones                   map[string]string // hostname -> zoneID
+	zoneIDs                 []string          // zone IDs returned by ListZoneIDs
 	listDNSCNAMEsByTarget   []string          // hostnames returned by ListDNSCNAMEsByTarget
 }
 
@@ -64,6 +65,10 @@ func (m *mockTunnelClient) UpdateTunnelConfiguration(_ context.Context, tunnelID
 	m.lastTunnelConfigID = tunnelID
 	m.lastTunnelConfigIngress = ingress
 	return nil
+}
+
+func (m *mockTunnelClient) ListZoneIDs(_ context.Context) ([]string, error) {
+	return m.zoneIDs, nil
 }
 
 func (m *mockTunnelClient) FindZoneIDByHostname(_ context.Context, hostname string) (string, error) {
@@ -225,6 +230,12 @@ func TestGatewayAcceptedAndProgrammed(t *testing.T) {
 		g.Expect(ready).NotTo(BeNil())
 		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
 		g.Expect(ready.Reason).To(Equal(apiv1.ReasonReconciled))
+
+		// DNSManagement condition should be NotEnabled (no zoneName annotation)
+		dns := findCondition(result.Status.Conditions, apiv1.ConditionDNSManagement)
+		g.Expect(dns).NotTo(BeNil())
+		g.Expect(dns.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(dns.Reason).To(Equal(apiv1.ReasonDNSNotEnabled))
 
 		// Listener status
 		g.Expect(result.Status.Listeners).To(HaveLen(1))
@@ -757,6 +768,17 @@ func TestGatewayDNSReconciliation(t *testing.T) {
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(BeNumerically(">=", 1))
 	g.Expect(testMock.ensureDNSCalls[0].Hostname).To(Equal("app.example.com"))
 	g.Expect(testMock.ensureDNSCalls[0].Target).To(Equal("test-tunnel-id.cfargotunnel.com"))
+
+	// Verify DNSManagement condition
+	gwKey := client.ObjectKeyFromObject(gw)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
+		dns := findCondition(result.Status.Conditions, apiv1.ConditionDNSManagement)
+		g.Expect(dns).NotTo(BeNil())
+		g.Expect(dns.Status).To(Equal(metav1.ConditionTrue))
+		g.Expect(dns.Reason).To(Equal(apiv1.ReasonDNSReconciled))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
 func TestGatewayDNSStaleCleanup(t *testing.T) {
@@ -814,4 +836,124 @@ func TestGatewayDNSStaleCleanup(t *testing.T) {
 		return len(testMock.deleteDNSCalls)
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(BeNumerically(">=", 1))
 	g.Expect(testMock.deleteDNSCalls[0].Hostname).To(Equal("stale.example.com"))
+
+	// Verify DNSManagement condition
+	gwKey := client.ObjectKeyFromObject(gw)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
+		dns := findCondition(result.Status.Conditions, apiv1.ConditionDNSManagement)
+		g.Expect(dns).NotTo(BeNil())
+		g.Expect(dns.Status).To(Equal(metav1.ConditionTrue))
+		g.Expect(dns.Reason).To(Equal(apiv1.ReasonDNSReconciled))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func TestGatewayDNSSkippedHostnames(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-dns-skip", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	testMock.ensureDNSCalls = nil
+	testMock.deleteDNSCalls = nil
+	testMock.listDNSCNAMEsByTarget = nil
+
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-dns-skip",
+			Namespace: ns.Name,
+			Annotations: map[string]string{
+				apiv1.AnnotationZoneName: "example.com",
+			},
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "http",
+					Protocol: gatewayv1.HTTPProtocolType,
+					Port:     80,
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+	waitForGatewayProgrammed(g, gw)
+
+	// Reset mock tracking after Gateway is programmed
+	testMock.ensureDNSCalls = nil
+
+	port := gatewayv1.PortNumber(8080)
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-route-dns-skip",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{Name: gatewayv1.ObjectName(gw.Name)},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"app.other.com"},
+			Rules: []gatewayv1.HTTPRouteRule{
+				{
+					BackendRefs: []gatewayv1.HTTPBackendRef{
+						{BackendRef: gatewayv1.BackendRef{
+							BackendObjectReference: gatewayv1.BackendObjectReference{
+								Name: "my-service", Port: &port,
+							},
+						}},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.HTTPRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Verify DNSManagement condition shows PartialFailure with skipped hostname
+	gwKey := client.ObjectKeyFromObject(gw)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
+		dns := findCondition(result.Status.Conditions, apiv1.ConditionDNSManagement)
+		g.Expect(dns).NotTo(BeNil())
+		g.Expect(dns.Status).To(Equal(metav1.ConditionTrue))
+		g.Expect(dns.Reason).To(Equal(apiv1.ReasonDNSPartialFailure))
+		g.Expect(dns.Message).To(ContainSubstring("app.other.com"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Verify EnsureDNSCNAME was NOT called for the skipped hostname
+	g.Consistently(func() bool {
+		for _, call := range testMock.ensureDNSCalls {
+			if call.Hostname == "app.other.com" {
+				return true
+			}
+		}
+		return false
+	}).WithTimeout(2 * time.Second).WithPolling(100 * time.Millisecond).Should(BeFalse())
 }

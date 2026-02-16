@@ -18,6 +18,10 @@ const (
 	// HTTPRoute backendRefs denied due to missing or failed cross-namespace
 	// ReferenceGrant checks.
 	ConditionBackendReferenceGrants = "BackendReferenceGrants"
+
+	// ConditionDNSManagement is a Gateway condition that reports the state
+	// of DNS CNAME record management for the Gateway's zone.
+	ConditionDNSManagement = "DNSManagement"
 )
 
 // Reasons for the Ready condition.
@@ -31,4 +35,11 @@ const (
 const (
 	ReasonReferencesAllowed = "ReferencesAllowed"
 	ReasonReferencesDenied  = "ReferencesDenied"
+)
+
+// Reasons for the DNSManagement condition.
+const (
+	ReasonDNSReconciled     = "Reconciled"
+	ReasonDNSNotEnabled     = "NotEnabled"
+	ReasonDNSPartialFailure = "PartialFailure"
 )

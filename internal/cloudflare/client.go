@@ -37,6 +37,7 @@ type TunnelClient interface {
 	DeleteTunnel(ctx context.Context, tunnelID string) error
 	GetTunnelToken(ctx context.Context, tunnelID string) (token string, err error)
 	UpdateTunnelConfiguration(ctx context.Context, tunnelID string, ingress []IngressRule) error
+	ListZoneIDs(ctx context.Context) ([]string, error)
 	FindZoneIDByHostname(ctx context.Context, hostname string) (string, error)
 	EnsureDNSCNAME(ctx context.Context, zoneID, hostname, target string) error
 	DeleteDNSCNAME(ctx context.Context, zoneID, hostname string) error
@@ -136,6 +137,18 @@ func (c *tunnelClient) UpdateTunnelConfiguration(ctx context.Context, tunnelID s
 		}),
 	})
 	return err
+}
+
+func (c *tunnelClient) ListZoneIDs(ctx context.Context) ([]string, error) {
+	pager := c.client.Zones.ListAutoPaging(ctx, zones.ZoneListParams{})
+	var ids []string
+	for pager.Next() {
+		ids = append(ids, pager.Current().ID)
+	}
+	if err := pager.Err(); err != nil {
+		return nil, fmt.Errorf("listing zones: %w", err)
+	}
+	return ids, nil
 }
 
 func (c *tunnelClient) FindZoneIDByHostname(ctx context.Context, hostname string) (string, error) {
