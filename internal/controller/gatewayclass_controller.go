@@ -22,8 +22,6 @@ import (
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 )
 
-const bundleVersionAnnotation = "gateway.networking.k8s.io/bundle-version"
-
 // GatewayAPIVersion returns the parsed semver version of the
 // sigs.k8s.io/gateway-api module dependency from the build info.
 func GatewayAPIVersion() *semver.Version {
@@ -79,11 +77,23 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	supportedVersion, supportedVersionMessage := r.checkSupportedVersion(ctx)
 
+	acceptedStatus := metav1.ConditionTrue
+	acceptedReason := string(gatewayv1.GatewayClassReasonAccepted)
+	acceptedMessage := "GatewayClass is accepted"
 	supportedVersionStatus := metav1.ConditionTrue
 	supportedVersionReason := string(gatewayv1.GatewayClassReasonSupportedVersion)
+	readyStatus := metav1.ConditionTrue
+	readyReason := apiv1.ReasonReconciled
+	readyMessage := "GatewayClass is ready"
 	if !supportedVersion {
+		acceptedStatus = metav1.ConditionFalse
+		acceptedReason = string(gatewayv1.GatewayClassReasonUnsupportedVersion)
+		acceptedMessage = supportedVersionMessage
 		supportedVersionStatus = metav1.ConditionFalse
 		supportedVersionReason = string(gatewayv1.GatewayClassReasonUnsupportedVersion)
+		readyStatus = metav1.ConditionFalse
+		readyReason = apiv1.ReasonFailed
+		readyMessage = supportedVersionMessage
 	}
 
 	now := metav1.Now()
@@ -93,11 +103,11 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			WithConditions(
 				acmetav1.Condition().
 					WithType(string(gatewayv1.GatewayClassConditionStatusAccepted)).
-					WithStatus(metav1.ConditionTrue).
+					WithStatus(acceptedStatus).
 					WithObservedGeneration(gc.Generation).
 					WithLastTransitionTime(now).
-					WithReason(string(gatewayv1.GatewayClassReasonAccepted)).
-					WithMessage("GatewayClass is accepted"),
+					WithReason(acceptedReason).
+					WithMessage(acceptedMessage),
 				acmetav1.Condition().
 					WithType(string(gatewayv1.GatewayClassConditionStatusSupportedVersion)).
 					WithStatus(supportedVersionStatus).
@@ -107,11 +117,11 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 					WithMessage(supportedVersionMessage),
 				acmetav1.Condition().
 					WithType(apiv1.ConditionReady).
-					WithStatus(metav1.ConditionTrue).
+					WithStatus(readyStatus).
 					WithObservedGeneration(gc.Generation).
 					WithLastTransitionTime(now).
-					WithReason(apiv1.ReasonReconciled).
-					WithMessage("GatewayClass is ready"),
+					WithReason(readyReason).
+					WithMessage(readyMessage),
 			),
 		)
 
@@ -132,15 +142,16 @@ func (r *GatewayClassReconciler) checkSupportedVersion(ctx context.Context) (boo
 		return false, "Binary Gateway API version is unknown"
 	}
 
-	var crd apiextensionsv1.CustomResourceDefinition
-	if err := r.Get(ctx, types.NamespacedName{Name: "gatewayclasses.gateway.networking.k8s.io"}, &crd); err != nil {
+	crd := &metav1.PartialObjectMetadata{}
+	crd.SetGroupVersionKind(apiextensionsv1.SchemeGroupVersion.WithKind("CustomResourceDefinition"))
+	if err := r.Get(ctx, types.NamespacedName{Name: apiv1.CRDGatewayClass}, crd); err != nil {
 		log.Error(err, "Failed to get Gateway API CRD")
 		return false, fmt.Sprintf("Failed to get Gateway API CRD: %v", err)
 	}
 
-	bundleVersion, ok := crd.Annotations[bundleVersionAnnotation]
+	bundleVersion, ok := crd.Annotations[apiv1.AnnotationBundleVersion]
 	if !ok {
-		return false, fmt.Sprintf("Gateway API CRD is missing %s annotation", bundleVersionAnnotation)
+		return false, fmt.Sprintf("Gateway API CRD is missing %s annotation", apiv1.AnnotationBundleVersion)
 	}
 
 	crdVersion, err := semver.NewVersion(bundleVersion)

@@ -10,6 +10,11 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
+// Gateway CRD names.
+const (
+	CRDGatewayClass = "gatewayclasses.gateway.networking.k8s.io"
+)
+
 // Gateway API kind constants (not exported by the upstream package).
 const (
 	KindGateway   = "Gateway"
@@ -37,6 +42,10 @@ const (
 
 // Annotations.
 const (
+	// AnnotationBundleVersion is the annotation used to track the version of the Gateway API
+	// that the controller is compatible with.
+	AnnotationBundleVersion = "gateway.networking.k8s.io/bundle-version"
+
 	// AnnotationReconcile enables or disables reconciliation.
 	// Set to "disabled" to pause reconciliation.
 	AnnotationReconcile = prefix + "reconcile"
