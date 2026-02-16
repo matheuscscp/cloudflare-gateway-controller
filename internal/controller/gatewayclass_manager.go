@@ -21,7 +21,7 @@ import (
 )
 
 func (r *GatewayClassReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	gatewayClassCRDChanged := predicate.Funcs{
+	gatewayClassCRDChangedPredicate := predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
 			return e.Object.GetName() == apiv1.CRDGatewayClass
 		},
@@ -39,19 +39,18 @@ func (r *GatewayClassReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&gatewayv1.GatewayClass{}, builder.WithPredicates(
-			debugPredicate(apiv1.KindGatewayClass, predicate.Or(
+		For(&gatewayv1.GatewayClass{},
+			builder.WithPredicates(debugPredicate(apiv1.KindGatewayClass, predicate.Or(
 				predicate.GenerationChangedPredicate{},
-				predicate.AnnotationChangedPredicate{})),
-		)).
-		WatchesMetadata(
-			&apiextensionsv1.CustomResourceDefinition{},
+				predicate.AnnotationChangedPredicate{})))).
+		WatchesMetadata(&apiextensionsv1.CustomResourceDefinition{},
 			handler.EnqueueRequestsFromMapFunc(r.managedGatewayClasses),
-			builder.WithPredicates(debugPredicate(apiv1.KindCustomResourceDefinition, gatewayClassCRDChanged))).
-		WatchesMetadata(
-			&corev1.Secret{},
+			builder.WithPredicates(debugPredicate(apiv1.KindCustomResourceDefinition,
+				gatewayClassCRDChangedPredicate))).
+		WatchesMetadata(&corev1.Secret{},
 			handler.EnqueueRequestsFromMapFunc(r.managedGatewayClasses),
-			builder.WithPredicates(debugPredicate(apiv1.KindSecret, predicate.ResourceVersionChangedPredicate{}))).
+			builder.WithPredicates(debugPredicate(apiv1.KindSecret,
+				predicate.ResourceVersionChangedPredicate{}))).
 		Complete(r)
 }
 

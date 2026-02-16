@@ -8,14 +8,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 )
 
 func (r *HTTPRouteReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&gatewayv1.HTTPRoute{}, builder.WithPredicates(
-			debugPredicate("HTTPRoute",
-				predicate.Or(predicate.GenerationChangedPredicate{}, predicate.AnnotationChangedPredicate{}),
-			),
-		)).
+		For(&gatewayv1.HTTPRoute{},
+			builder.WithPredicates(debugPredicate(apiv1.KindHTTPRoute, predicate.Or(
+				predicate.GenerationChangedPredicate{},
+				predicate.AnnotationChangedPredicate{})))).
 		Complete(r)
 }

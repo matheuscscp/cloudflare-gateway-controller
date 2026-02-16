@@ -570,7 +570,7 @@ func (r *GatewayReconciler) cleanupAllDNS(ctx context.Context, tc cfclient.Tunne
 			if err := tc.DeleteDNSCNAME(ctx, zoneID, h); err != nil {
 				return fmt.Errorf("deleting DNS CNAME %q in zone %s: %w", h, zoneID, err)
 			}
-			log.V(1).Info("Deleted DNS CNAME (zoneName removed)", "hostname", h, "zoneID", zoneID)
+			log.V(1).Info("Deleted DNS CNAME (zoneName removed or object deleted)", "hostname", h, "zoneID", zoneID)
 		}
 	}
 

@@ -21,17 +21,17 @@ import (
 
 func (r *GatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&gatewayv1.Gateway{}, builder.WithPredicates(
-			debugPredicate(apiv1.KindGateway,
-				predicate.Or(predicate.GenerationChangedPredicate{}, predicate.AnnotationChangedPredicate{}),
-			),
-		)).
-		Owns(&appsv1.Deployment{}, builder.WithPredicates(
-			debugPredicate(apiv1.KindDeployment, predicate.ResourceVersionChangedPredicate{}),
-		)).
-		Watches(&gatewayv1.HTTPRoute{}, handler.EnqueueRequestsFromMapFunc(mapHTTPRouteToGateway),
-			builder.WithPredicates(debugPredicate(apiv1.KindHTTPRoute, predicate.ResourceVersionChangedPredicate{})),
-		).
+		For(&gatewayv1.Gateway{},
+			builder.WithPredicates(debugPredicate(apiv1.KindGateway, predicate.Or(
+				predicate.GenerationChangedPredicate{},
+				predicate.AnnotationChangedPredicate{})))).
+		Owns(&appsv1.Deployment{},
+			builder.WithPredicates(debugPredicate(apiv1.KindDeployment,
+				predicate.ResourceVersionChangedPredicate{}))).
+		Watches(&gatewayv1.HTTPRoute{},
+			handler.EnqueueRequestsFromMapFunc(mapHTTPRouteToGateway),
+			builder.WithPredicates(debugPredicate(apiv1.KindHTTPRoute,
+				predicate.ResourceVersionChangedPredicate{}))).
 		Complete(r)
 }
 

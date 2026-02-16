@@ -157,8 +157,6 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 // version matches the version this binary was compiled against. Returns false
 // with a human-readable reason if the versions are incompatible.
 func (r *GatewayClassReconciler) checkSupportedVersion(ctx context.Context) (bool, string) {
-	log := log.FromContext(ctx)
-
 	if r.GatewayAPIVersion == nil {
 		return false, "Binary Gateway API version is unknown"
 	}
@@ -166,7 +164,6 @@ func (r *GatewayClassReconciler) checkSupportedVersion(ctx context.Context) (boo
 	crd := &metav1.PartialObjectMetadata{}
 	crd.SetGroupVersionKind(apiextensionsv1.SchemeGroupVersion.WithKind(apiv1.KindCustomResourceDefinition))
 	if err := r.Get(ctx, types.NamespacedName{Name: apiv1.CRDGatewayClass}, crd); err != nil {
-		log.Error(err, "Failed to get Gateway API CRD")
 		return false, fmt.Sprintf("Failed to get Gateway API CRD: %v", err)
 	}
 
