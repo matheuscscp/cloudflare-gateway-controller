@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	acgatewayv1 "sigs.k8s.io/gateway-api/applyconfiguration/apis/v1"
+	"sigs.k8s.io/gateway-api/pkg/features"
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 )
@@ -122,6 +123,13 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 					WithLastTransitionTime(now).
 					WithReason(readyReason).
 					WithMessage(readyMessage),
+			).
+			// Sorted alphabetically by name as required by the spec.
+			WithSupportedFeatures(
+				acgatewayv1.SupportedFeature().WithName(gatewayv1.FeatureName(features.SupportGateway)),
+				acgatewayv1.SupportedFeature().WithName(gatewayv1.FeatureName(features.SupportGatewayInfrastructurePropagation)),
+				acgatewayv1.SupportedFeature().WithName(gatewayv1.FeatureName(features.SupportHTTPRoute)),
+				acgatewayv1.SupportedFeature().WithName(gatewayv1.FeatureName(features.SupportReferenceGrant)),
 			),
 		)
 
