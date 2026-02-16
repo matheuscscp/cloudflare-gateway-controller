@@ -94,15 +94,6 @@ func (m *mockTunnelClient) ListDNSCNAMEsByTarget(_ context.Context, _, _ string)
 	return m.listDNSCNAMEsByTarget, nil
 }
 
-func findCondition(conditions []metav1.Condition, conditionType string) *metav1.Condition {
-	for i := range conditions {
-		if conditions[i].Type == conditionType {
-			return &conditions[i]
-		}
-	}
-	return nil
-}
-
 func createTestNamespace(g Gomega) *corev1.Namespace {
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
@@ -935,7 +926,7 @@ func TestGatewayDNSSkippedHostnames(t *testing.T) {
 		}
 	})
 
-	// Verify DNSManagement condition shows PartialFailure with skipped hostname
+	// Verify DNSManagement condition shows Reconciled with skipped hostname details
 	gwKey := client.ObjectKeyFromObject(gw)
 	g.Eventually(func(g Gomega) {
 		var result gatewayv1.Gateway
@@ -943,8 +934,9 @@ func TestGatewayDNSSkippedHostnames(t *testing.T) {
 		dns := findCondition(result.Status.Conditions, apiv1.ConditionDNSManagement)
 		g.Expect(dns).NotTo(BeNil())
 		g.Expect(dns.Status).To(Equal(metav1.ConditionTrue))
-		g.Expect(dns.Reason).To(Equal(apiv1.ReasonDNSPartialFailure))
+		g.Expect(dns.Reason).To(Equal(apiv1.ReasonDNSReconciled))
 		g.Expect(dns.Message).To(ContainSubstring("app.other.com"))
+		g.Expect(dns.Message).To(ContainSubstring("HTTPRoute " + ns.Name + "/test-route-dns-skip"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
 	// Verify EnsureDNSCNAME was NOT called for the skipped hostname

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -218,9 +219,9 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("updating tunnel configuration: %w", err)
 	}
 
-	// Reconcile DNS CNAME records. The condition captures success, partial
-	// failure (skipped hostnames), errors, or "not enabled" state.
-	dnsCondition := r.reconcileDNS(ctx, tc, tunnelID, gw.Annotations[apiv1.AnnotationZoneName], gw.Generation, gatewayRoutes)
+	// Reconcile DNS CNAME records. The condition captures success, errors,
+	// or "not enabled" state.
+	dnsCondition := r.reconcileDNS(ctx, tc, tunnelID, gw.Annotations[apiv1.AnnotationZoneName], gw.Generation, gw.Status.Conditions, gatewayRoutes)
 
 	// Check Deployment readiness.
 	var deploy appsv1.Deployment
@@ -365,56 +366,58 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 }
 
 // reconcileDNS reconciles DNS CNAME records for the Gateway's zone and returns
-// a DNSManagement condition reflecting the result. When zoneName is empty, all
-// CNAME records pointing to the tunnel across all account zones are deleted.
-// DNS errors are captured in the condition rather than failing the whole
-// reconciliation.
-func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cfclient.TunnelClient, tunnelID, zoneName string, generation int64, routes []*gatewayv1.HTTPRoute) *acmetav1.ConditionApplyConfiguration {
-	now := metav1.Now()
+// a DNSManagement condition reflecting the result. When zoneName is empty and
+// DNS was previously enabled (condition was True), all CNAME records pointing
+// to the tunnel across all account zones are deleted. DNS errors are captured
+// in the condition rather than failing the whole reconciliation.
+func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cfclient.TunnelClient, tunnelID, zoneName string, generation int64, existingConditions []metav1.Condition, routes []*gatewayv1.HTTPRoute) *acmetav1.ConditionApplyConfiguration {
 	log := log.FromContext(ctx)
 
 	if zoneName == "" {
-		// Clean up DNS records across all zones in the account.
-		if err := r.cleanupAllDNS(ctx, tc, tunnelID); err != nil {
-			return acmetav1.Condition().
-				WithType(apiv1.ConditionDNSManagement).
-				WithStatus(metav1.ConditionFalse).
-				WithObservedGeneration(generation).
-				WithLastTransitionTime(now).
-				WithReason(apiv1.ReasonFailed).
-				WithMessage(fmt.Sprintf("Failed to clean up DNS records: %v", err))
+		// Only clean up if DNS was previously enabled (condition was True,
+		// meaning records may exist). Skip API calls otherwise.
+		prev := findCondition(existingConditions, apiv1.ConditionDNSManagement)
+		if prev != nil && prev.Status == metav1.ConditionTrue {
+			if err := r.cleanupAllDNS(ctx, tc, tunnelID); err != nil {
+				return dnsCondition(metav1.ConditionFalse, generation, existingConditions,
+					apiv1.ReasonFailed, fmt.Sprintf("Failed to clean up DNS records: %v", err))
+			}
 		}
-		return acmetav1.Condition().
-			WithType(apiv1.ConditionDNSManagement).
-			WithStatus(metav1.ConditionFalse).
-			WithObservedGeneration(generation).
-			WithLastTransitionTime(now).
-			WithReason(apiv1.ReasonDNSNotEnabled).
-			WithMessage("DNS management is not enabled (set the zoneName annotation to enable)")
+		return dnsCondition(metav1.ConditionFalse, generation, existingConditions,
+			apiv1.ReasonDNSNotEnabled, "DNS management is not enabled.\n\n"+
+				"Set the "+apiv1.AnnotationZoneName+" annotation to a subdomain to enable.\n\n"+
+				"For example, if the subdomain is example.com, the Gateway will create and reconcile CNAME records for\n\n"+
+				"hostnames like myapp.example.com that point to the tunnel.")
 	}
 
 	zoneID, err := tc.FindZoneIDByHostname(ctx, zoneName)
 	if err != nil {
-		return acmetav1.Condition().
-			WithType(apiv1.ConditionDNSManagement).
-			WithStatus(metav1.ConditionFalse).
-			WithObservedGeneration(generation).
-			WithLastTransitionTime(now).
-			WithReason(apiv1.ReasonFailed).
-			WithMessage(fmt.Sprintf("Failed to find zone ID for %q: %v", zoneName, err))
+		return dnsCondition(metav1.ConditionFalse, generation, existingConditions,
+			apiv1.ReasonFailed, fmt.Sprintf("Failed to find zone ID for %q: %v", zoneName, err))
 	}
 
 	// Compute desired hostnames from all attached HTTPRoutes.
 	desired := make(map[string]struct{})
-	var skipped []string
+	type skippedRoute struct {
+		key       string
+		hostnames []string
+	}
+	var skippedRoutes []skippedRoute
 	for _, route := range routes {
+		var routeSkipped []string
 		for _, h := range route.Spec.Hostnames {
 			hostname := string(h)
 			if hostname != zoneName && !strings.HasSuffix(hostname, "."+zoneName) {
-				skipped = append(skipped, hostname)
+				routeSkipped = append(routeSkipped, hostname)
 				continue
 			}
 			desired[hostname] = struct{}{}
+		}
+		if len(routeSkipped) > 0 {
+			skippedRoutes = append(skippedRoutes, skippedRoute{
+				key:       route.Namespace + "/" + route.Name,
+				hostnames: routeSkipped,
+			})
 		}
 	}
 
@@ -422,13 +425,8 @@ func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cfclient.Tunnel
 	tunnelTarget := tunnelID + ".cfargotunnel.com"
 	actual, err := tc.ListDNSCNAMEsByTarget(ctx, zoneID, tunnelTarget)
 	if err != nil {
-		return acmetav1.Condition().
-			WithType(apiv1.ConditionDNSManagement).
-			WithStatus(metav1.ConditionFalse).
-			WithObservedGeneration(generation).
-			WithLastTransitionTime(now).
-			WithReason(apiv1.ReasonFailed).
-			WithMessage(fmt.Sprintf("Failed to list DNS CNAMEs: %v", err))
+		return dnsCondition(metav1.ConditionFalse, generation, existingConditions,
+			apiv1.ReasonFailed, fmt.Sprintf("Failed to list DNS CNAMEs: %v", err))
 	}
 	actualSet := make(map[string]struct{}, len(actual))
 	for _, h := range actual {
@@ -439,13 +437,8 @@ func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cfclient.Tunnel
 	for h := range desired {
 		if _, ok := actualSet[h]; !ok {
 			if err := tc.EnsureDNSCNAME(ctx, zoneID, h, tunnelTarget); err != nil {
-				return acmetav1.Condition().
-					WithType(apiv1.ConditionDNSManagement).
-					WithStatus(metav1.ConditionFalse).
-					WithObservedGeneration(generation).
-					WithLastTransitionTime(now).
-					WithReason(apiv1.ReasonFailed).
-					WithMessage(fmt.Sprintf("Failed to ensure DNS CNAME for %q: %v", h, err))
+				return dnsCondition(metav1.ConditionFalse, generation, existingConditions,
+					apiv1.ReasonFailed, fmt.Sprintf("Failed to ensure DNS CNAME for %q: %v", h, err))
 			}
 			log.V(1).Info("Created DNS CNAME", "hostname", h)
 		}
@@ -455,35 +448,41 @@ func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cfclient.Tunnel
 	for h := range actualSet {
 		if _, ok := desired[h]; !ok {
 			if err := tc.DeleteDNSCNAME(ctx, zoneID, h); err != nil {
-				return acmetav1.Condition().
-					WithType(apiv1.ConditionDNSManagement).
-					WithStatus(metav1.ConditionFalse).
-					WithObservedGeneration(generation).
-					WithLastTransitionTime(now).
-					WithReason(apiv1.ReasonFailed).
-					WithMessage(fmt.Sprintf("Failed to delete stale DNS CNAME for %q: %v", h, err))
+				return dnsCondition(metav1.ConditionFalse, generation, existingConditions,
+					apiv1.ReasonFailed, fmt.Sprintf("Failed to delete stale DNS CNAME for %q: %v", h, err))
 			}
 			log.V(1).Info("Deleted stale DNS CNAME", "hostname", h)
 		}
 	}
 
-	if len(skipped) > 0 {
-		return acmetav1.Condition().
-			WithType(apiv1.ConditionDNSManagement).
-			WithStatus(metav1.ConditionTrue).
-			WithObservedGeneration(generation).
-			WithLastTransitionTime(now).
-			WithReason(apiv1.ReasonDNSPartialFailure).
-			WithMessage(fmt.Sprintf("DNS records reconciled; skipped hostnames not in zone: %s", strings.Join(skipped, ", ")))
+	var msg strings.Builder
+	fmt.Fprintf(&msg, "DNS records reconciled for %d hostname(s)", len(desired))
+	if len(skippedRoutes) > 0 {
+		fmt.Fprintf(&msg, "\nHostnames not in zone %q:", zoneName)
+		for _, s := range skippedRoutes {
+			fmt.Fprintf(&msg, "\n- HTTPRoute %s: %s", s.key, strings.Join(s.hostnames, ", "))
+		}
 	}
+	return dnsCondition(metav1.ConditionTrue, generation, existingConditions, apiv1.ReasonDNSReconciled, msg.String())
+}
 
-	return acmetav1.Condition().
+// dnsCondition builds a DNSManagement condition. If the existing condition has
+// the same status, reason, and message, LastTransitionTime is preserved to avoid
+// unnecessary status updates.
+func dnsCondition(status metav1.ConditionStatus, generation int64, existingConditions []metav1.Condition, reason, message string) *acmetav1.ConditionApplyConfiguration {
+	cond := acmetav1.Condition().
 		WithType(apiv1.ConditionDNSManagement).
-		WithStatus(metav1.ConditionTrue).
+		WithStatus(status).
 		WithObservedGeneration(generation).
-		WithLastTransitionTime(now).
-		WithReason(apiv1.ReasonDNSReconciled).
-		WithMessage(fmt.Sprintf("DNS records reconciled for %d hostname(s)", len(desired)))
+		WithReason(reason).
+		WithMessage(message)
+	if prev := findCondition(existingConditions, apiv1.ConditionDNSManagement); prev != nil &&
+		prev.Status == status && prev.Reason == reason && prev.Message == message {
+		cond.WithLastTransitionTime(prev.LastTransitionTime)
+	} else {
+		cond.WithLastTransitionTime(metav1.Now())
+	}
+	return cond
 }
 
 // cleanupAllDNS deletes all CNAME records pointing to the tunnel across all
@@ -767,6 +766,12 @@ func listGatewayRoutes(ctx context.Context, r client.Reader, gw *gatewayv1.Gatew
 		}
 		allowed = append(allowed, hr)
 	}
+	slices.SortFunc(allowed, func(a, b *gatewayv1.HTTPRoute) int {
+		return strings.Compare(a.Namespace+"/"+a.Name, b.Namespace+"/"+b.Name)
+	})
+	slices.SortFunc(denied, func(a, b *gatewayv1.HTTPRoute) int {
+		return strings.Compare(a.Namespace+"/"+a.Name, b.Namespace+"/"+b.Name)
+	})
 	return allowed, denied, nil
 }
 

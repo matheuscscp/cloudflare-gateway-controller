@@ -39,7 +39,6 @@ const (
 
 // Reasons for the DNSManagement condition.
 const (
-	ReasonDNSReconciled     = "Reconciled"
-	ReasonDNSNotEnabled     = "NotEnabled"
-	ReasonDNSPartialFailure = "PartialFailure"
+	ReasonDNSReconciled = "Reconciled"
+	ReasonDNSNotEnabled = "NotEnabled"
 )
