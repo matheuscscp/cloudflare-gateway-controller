@@ -33,6 +33,7 @@ type mockTunnelClient struct {
 	ensureDNSCalls          []mockDNSCall
 	deleteDNSCalls          []mockDNSCall
 	zones                   map[string]string // hostname -> zoneID
+	listDNSCNAMEsByTarget   []string          // hostnames returned by ListDNSCNAMEsByTarget
 }
 
 type mockDNSCall struct {
@@ -82,6 +83,10 @@ func (m *mockTunnelClient) EnsureDNSCNAME(_ context.Context, zoneID, hostname, t
 func (m *mockTunnelClient) DeleteDNSCNAME(_ context.Context, zoneID, hostname string) error {
 	m.deleteDNSCalls = append(m.deleteDNSCalls, mockDNSCall{ZoneID: zoneID, Hostname: hostname})
 	return nil
+}
+
+func (m *mockTunnelClient) ListDNSCNAMEsByTarget(_ context.Context, _, _ string) ([]string, error) {
+	return m.listDNSCNAMEsByTarget, nil
 }
 
 func findCondition(conditions []metav1.Condition, conditionType string) *metav1.Condition {
@@ -146,6 +151,17 @@ func waitForGatewayClassReady(g Gomega, gc *gatewayv1.GatewayClass) {
 		ready := findCondition(result.Status.Conditions, apiv1.ConditionReady)
 		g.Expect(ready).NotTo(BeNil())
 		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func waitForGatewayProgrammed(g Gomega, gw *gatewayv1.Gateway) {
+	key := client.ObjectKeyFromObject(gw)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, key, &result)).To(Succeed())
+		programmed := findCondition(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
+		g.Expect(programmed).NotTo(BeNil())
+		g.Expect(programmed.Status).To(Equal(metav1.ConditionTrue))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
@@ -649,4 +665,153 @@ func TestGatewayInfrastructureParametersRef(t *testing.T) {
 		g.Expect(programmed).NotTo(BeNil())
 		g.Expect(programmed.Status).To(Equal(metav1.ConditionTrue))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func TestGatewayDNSReconciliation(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-dns", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-dns",
+			Namespace: ns.Name,
+			Annotations: map[string]string{
+				apiv1.AnnotationZoneName: "example.com",
+			},
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "http",
+					Protocol: gatewayv1.HTTPProtocolType,
+					Port:     80,
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+	waitForGatewayProgrammed(g, gw)
+
+	// Reset mock tracking
+	testMock.ensureDNSCalls = nil
+	testMock.deleteDNSCalls = nil
+	testMock.listDNSCNAMEsByTarget = nil
+
+	port := gatewayv1.PortNumber(8080)
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-route-dns",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{Name: gatewayv1.ObjectName(gw.Name)},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"app.example.com"},
+			Rules: []gatewayv1.HTTPRouteRule{
+				{
+					BackendRefs: []gatewayv1.HTTPBackendRef{
+						{BackendRef: gatewayv1.BackendRef{
+							BackendObjectReference: gatewayv1.BackendObjectReference{
+								Name: "my-service", Port: &port,
+							},
+						}},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.HTTPRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Verify EnsureDNSCNAME was called by the Gateway controller
+	g.Eventually(func() int {
+		return len(testMock.ensureDNSCalls)
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(BeNumerically(">=", 1))
+	g.Expect(testMock.ensureDNSCalls[0].Hostname).To(Equal("app.example.com"))
+	g.Expect(testMock.ensureDNSCalls[0].Target).To(Equal("test-tunnel-id.cfargotunnel.com"))
+}
+
+func TestGatewayDNSStaleCleanup(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-dns-stale", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	// Pre-populate the mock with a stale DNS record
+	testMock.listDNSCNAMEsByTarget = []string{"stale.example.com"}
+	testMock.ensureDNSCalls = nil
+	testMock.deleteDNSCalls = nil
+
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-dns-stale",
+			Namespace: ns.Name,
+			Annotations: map[string]string{
+				apiv1.AnnotationZoneName: "example.com",
+			},
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "http",
+					Protocol: gatewayv1.HTTPProtocolType,
+					Port:     80,
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		testMock.listDNSCNAMEsByTarget = nil
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Verify the stale record is deleted (no HTTPRoutes attached, so stale.example.com is stale)
+	g.Eventually(func() int {
+		return len(testMock.deleteDNSCalls)
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(BeNumerically(">=", 1))
+	g.Expect(testMock.deleteDNSCalls[0].Hostname).To(Equal("stale.example.com"))
 }

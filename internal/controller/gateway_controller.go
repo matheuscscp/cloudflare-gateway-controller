@@ -218,6 +218,13 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("updating tunnel configuration: %w", err)
 	}
 
+	// Reconcile DNS CNAME records if zoneName annotation is set.
+	if zoneName, ok := gw.Annotations[apiv1.AnnotationZoneName]; ok && zoneName != "" {
+		if err := r.reconcileDNS(ctx, tc, tunnelID, zoneName, gatewayRoutes); err != nil {
+			return ctrl.Result{}, fmt.Errorf("reconciling DNS: %w", err)
+		}
+	}
+
 	// Check Deployment readiness.
 	var deploy appsv1.Deployment
 	deployReady := false
@@ -334,6 +341,23 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 			return ctrl.Result{}, fmt.Errorf("looking up tunnel for deletion: %w", err)
 		}
 		if tunnelID != "" {
+			// Delete DNS CNAME records if zoneName annotation is set.
+			if zoneName, ok := gw.Annotations[apiv1.AnnotationZoneName]; ok && zoneName != "" {
+				zoneID, err := tc.FindZoneIDByHostname(ctx, zoneName)
+				if err != nil {
+					return ctrl.Result{}, fmt.Errorf("finding zone ID for DNS cleanup: %w", err)
+				}
+				tunnelTarget := tunnelID + ".cfargotunnel.com"
+				hostnames, err := tc.ListDNSCNAMEsByTarget(ctx, zoneID, tunnelTarget)
+				if err != nil {
+					return ctrl.Result{}, fmt.Errorf("listing DNS CNAMEs for cleanup: %w", err)
+				}
+				for _, h := range hostnames {
+					if err := tc.DeleteDNSCNAME(ctx, zoneID, h); err != nil {
+						return ctrl.Result{}, fmt.Errorf("deleting DNS CNAME %q during finalization: %w", h, err)
+					}
+				}
+			}
 			if err := tc.DeleteTunnel(ctx, tunnelID); err != nil {
 				return ctrl.Result{}, fmt.Errorf("deleting tunnel: %w", err)
 			}
@@ -353,6 +377,65 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// reconcileDNS reconciles DNS CNAME records for the Gateway's zone. It computes
+// the desired set of hostnames from attached HTTPRoutes, queries the zone for
+// actual CNAME records pointing to the tunnel target, and creates missing /
+// deletes stale records.
+func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cfclient.TunnelClient, tunnelID, zoneName string, routes []*gatewayv1.HTTPRoute) error {
+	log := log.FromContext(ctx)
+
+	zoneID, err := tc.FindZoneIDByHostname(ctx, zoneName)
+	if err != nil {
+		return fmt.Errorf("finding zone ID for %q: %w", zoneName, err)
+	}
+
+	// Compute desired hostnames from all attached HTTPRoutes.
+	desired := make(map[string]struct{})
+	for _, route := range routes {
+		for _, h := range route.Spec.Hostnames {
+			hostname := string(h)
+			if hostname != zoneName && !strings.HasSuffix(hostname, "."+zoneName) {
+				log.Info("Skipping hostname not in zone", "hostname", hostname, "zone", zoneName)
+				continue
+			}
+			desired[hostname] = struct{}{}
+		}
+	}
+
+	// Query actual CNAME records pointing to our tunnel.
+	tunnelTarget := tunnelID + ".cfargotunnel.com"
+	actual, err := tc.ListDNSCNAMEsByTarget(ctx, zoneID, tunnelTarget)
+	if err != nil {
+		return fmt.Errorf("listing DNS CNAMEs by target: %w", err)
+	}
+	actualSet := make(map[string]struct{}, len(actual))
+	for _, h := range actual {
+		actualSet[h] = struct{}{}
+	}
+
+	// Create missing records.
+	for h := range desired {
+		if _, ok := actualSet[h]; !ok {
+			if err := tc.EnsureDNSCNAME(ctx, zoneID, h, tunnelTarget); err != nil {
+				return fmt.Errorf("ensuring DNS CNAME for %q: %w", h, err)
+			}
+			log.V(1).Info("Created DNS CNAME", "hostname", h)
+		}
+	}
+
+	// Delete stale records.
+	for h := range actualSet {
+		if _, ok := desired[h]; !ok {
+			if err := tc.DeleteDNSCNAME(ctx, zoneID, h); err != nil {
+				return fmt.Errorf("deleting stale DNS CNAME for %q: %w", h, err)
+			}
+			log.V(1).Info("Deleted stale DNS CNAME", "hostname", h)
+		}
+	}
+
+	return nil
 }
 
 // ensureGatewayClassFinalizer adds the GatewayClass finalizer if not already present,

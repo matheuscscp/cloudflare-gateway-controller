@@ -40,6 +40,7 @@ type TunnelClient interface {
 	FindZoneIDByHostname(ctx context.Context, hostname string) (string, error)
 	EnsureDNSCNAME(ctx context.Context, zoneID, hostname, target string) error
 	DeleteDNSCNAME(ctx context.Context, zoneID, hostname string) error
+	ListDNSCNAMEsByTarget(ctx context.Context, zoneID, target string) ([]string, error)
 }
 
 // IsConflict reports whether the error is a 409 Conflict from the Cloudflare API.
@@ -215,4 +216,23 @@ func (c *tunnelClient) DeleteDNSCNAME(ctx context.Context, zoneID, hostname stri
 		}
 	}
 	return pager.Err()
+}
+
+func (c *tunnelClient) ListDNSCNAMEsByTarget(ctx context.Context, zoneID, target string) ([]string, error) {
+	pager := c.client.DNS.Records.ListAutoPaging(ctx, dns.RecordListParams{
+		ZoneID:  cloudflare.F(zoneID),
+		Type:    cloudflare.F(dns.RecordListParamsTypeCNAME),
+		Content: cloudflare.F(dns.RecordListParamsContent{Exact: cloudflare.F(target)}),
+	})
+	var hostnames []string
+	for pager.Next() {
+		record := pager.Current()
+		if record.Content == target {
+			hostnames = append(hostnames, record.Name)
+		}
+	}
+	if err := pager.Err(); err != nil {
+		return nil, fmt.Errorf("listing CNAME records by target %q in zone %q: %w", target, zoneID, err)
+	}
+	return hostnames, nil
 }

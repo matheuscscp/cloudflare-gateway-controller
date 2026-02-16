@@ -9,7 +9,6 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/sets"
 	acmetav1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -19,7 +18,6 @@ import (
 	acgatewayv1 "sigs.k8s.io/gateway-api/applyconfiguration/apis/v1"
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
-	cfclient "github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
 )
 
 type gatewayParent struct {
@@ -30,7 +28,6 @@ type gatewayParent struct {
 // HTTPRouteReconciler reconciles HTTPRoute objects.
 type HTTPRouteReconciler struct {
 	client.Client
-	NewTunnelClient cfclient.TunnelClientFactory
 }
 
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;update
@@ -79,41 +76,6 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	var parentStatuses []*acgatewayv1.RouteParentStatusApplyConfiguration
 	for _, p := range parents {
-		cfg, err := readCredentials(ctx, r.Client, p.gc, p.gw)
-		if err != nil {
-			parentStatuses = append(parentStatuses, buildRouteParentStatus(&route, p.gw, metav1.ConditionFalse,
-				string(gatewayv1.RouteReasonPending), "Gateway credentials not available"))
-			continue
-		}
-		tc, err := r.NewTunnelClient(cfg)
-		if err != nil {
-			parentStatuses = append(parentStatuses, buildRouteParentStatus(&route, p.gw, metav1.ConditionFalse,
-				string(gatewayv1.RouteReasonPending), "Gateway tunnel client not available"))
-			continue
-		}
-		tunnelID, err := tc.GetTunnelIDByName(ctx, apiv1.TunnelName(p.gw))
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("looking up tunnel: %w", err)
-		}
-		if tunnelID == "" {
-			parentStatuses = append(parentStatuses, buildRouteParentStatus(&route, p.gw, metav1.ConditionFalse,
-				string(gatewayv1.RouteReasonPending), "Gateway tunnel is not ready"))
-			continue
-		}
-
-		// Ensure DNS CNAME records for this route's hostnames.
-		tunnelTarget := tunnelID + ".cfargotunnel.com"
-		for _, hostname := range route.Spec.Hostnames {
-			h := string(hostname)
-			zoneID, err := tc.FindZoneIDByHostname(ctx, h)
-			if err != nil {
-				return ctrl.Result{}, fmt.Errorf("finding zone for %q: %w", h, err)
-			}
-			if err := tc.EnsureDNSCNAME(ctx, zoneID, h, tunnelTarget); err != nil {
-				return ctrl.Result{}, fmt.Errorf("ensuring DNS CNAME for %q: %w", h, err)
-			}
-		}
-
 		parentStatuses = append(parentStatuses, buildRouteParentStatus(&route, p.gw, metav1.ConditionTrue,
 			string(gatewayv1.RouteReasonAccepted), "HTTPRoute is accepted"))
 	}
@@ -167,49 +129,12 @@ func (r *HTTPRouteReconciler) resolveParents(ctx context.Context, route *gateway
 	return parents, nil
 }
 
-// finalize cleans up DNS CNAME records before allowing the HTTPRoute to be deleted.
-// The tunnel configuration is rebuilt by the Gateway controller, which is triggered
-// by the HTTPRoute deletion event via its Watch.
-func (r *HTTPRouteReconciler) finalize(ctx context.Context, route *gatewayv1.HTTPRoute, parents []gatewayParent) (ctrl.Result, error) {
+// finalize removes the finalizer from the HTTPRoute. DNS CNAME records are managed
+// by the Gateway controller, which is triggered by the HTTPRoute deletion event via
+// its Watch and will reconcile the desired DNS state for the zone.
+func (r *HTTPRouteReconciler) finalize(ctx context.Context, route *gatewayv1.HTTPRoute, _ []gatewayParent) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(route, apiv1.Finalizer) {
 		return ctrl.Result{}, nil
-	}
-
-	if route.Annotations[apiv1.AnnotationReconcile] != apiv1.ValueDisabled {
-		for _, p := range parents {
-			cfg, err := readCredentials(ctx, r.Client, p.gc, p.gw)
-			if err != nil {
-				continue
-			}
-			tc, err := r.NewTunnelClient(cfg)
-			if err != nil {
-				continue
-			}
-			tunnelID, err := tc.GetTunnelIDByName(ctx, apiv1.TunnelName(p.gw))
-			if err != nil || tunnelID == "" {
-				continue
-			}
-
-			// Delete DNS CNAME records for hostnames that are not used by
-			// any other non-deleting HTTPRoute for this Gateway.
-			otherHostnames, err := otherRouteHostnames(ctx, r.Client, route, p.gw)
-			if err != nil {
-				return ctrl.Result{}, fmt.Errorf("listing other route hostnames: %w", err)
-			}
-			for _, hostname := range route.Spec.Hostnames {
-				h := string(hostname)
-				if otherHostnames.Has(h) {
-					continue
-				}
-				zoneID, err := tc.FindZoneIDByHostname(ctx, h)
-				if err != nil {
-					return ctrl.Result{}, fmt.Errorf("finding zone for %q: %w", h, err)
-				}
-				if err := tc.DeleteDNSCNAME(ctx, zoneID, h); err != nil {
-					return ctrl.Result{}, fmt.Errorf("deleting DNS CNAME for %q: %w", h, err)
-				}
-			}
-		}
 	}
 
 	patch := client.MergeFrom(route.DeepCopy())
@@ -280,30 +205,4 @@ func parentRefMatches(ref gatewayv1.ParentReference, gw *gatewayv1.Gateway, rout
 		refNS = string(*ref.Namespace)
 	}
 	return refNS == gw.Namespace
-}
-
-// otherRouteHostnames returns the set of hostnames used by non-deleting HTTPRoutes
-// that reference the given Gateway, excluding the specified route. This is used during
-// finalization to avoid deleting DNS records still needed by other routes.
-func otherRouteHostnames(ctx context.Context, r client.Reader, exclude *gatewayv1.HTTPRoute, gw *gatewayv1.Gateway) (sets.Set[string], error) {
-	var allRoutes gatewayv1.HTTPRouteList
-	if err := r.List(ctx, &allRoutes); err != nil {
-		return nil, fmt.Errorf("listing HTTPRoutes: %w", err)
-	}
-	hostnames := sets.New[string]()
-	for i := range allRoutes.Items {
-		hr := &allRoutes.Items[i]
-		if hr.UID == exclude.UID || !hr.DeletionTimestamp.IsZero() {
-			continue
-		}
-		for _, ref := range hr.Spec.ParentRefs {
-			if parentRefMatches(ref, gw, hr.Namespace) {
-				for _, h := range hr.Spec.Hostnames {
-					hostnames.Insert(string(h))
-				}
-				break
-			}
-		}
-	}
-	return hostnames, nil
 }

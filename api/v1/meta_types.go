@@ -49,6 +49,11 @@ const (
 	// When absent on create, defaults to 1.
 	// When absent on update, the current value is preserved.
 	AnnotationReplicas = prefixGateway + "replicas"
+
+	// AnnotationZoneName opts a Gateway into DNS CNAME management for the given zone.
+	// When set, the Gateway controller manages all DNS CNAME records for hostnames
+	// from attached HTTPRoutes, pointing to the tunnel's cfargotunnel.com target.
+	AnnotationZoneName = prefixGateway + "zoneName"
 )
 
 // Reconciliation defaults.

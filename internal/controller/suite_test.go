@@ -101,9 +101,6 @@ func TestMain(m *testing.M) {
 
 	if err := (&HTTPRouteReconciler{
 		Client: mgr.GetClient(),
-		NewTunnelClient: func(_ cfclient.ClientConfig) (cfclient.TunnelClient, error) {
-			return testMock, nil
-		},
 	}).SetupWithManager(mgr); err != nil {
 		panic(fmt.Sprintf("failed to setup HTTPRoute controller: %v", err))
 	}

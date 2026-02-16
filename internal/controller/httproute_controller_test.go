@@ -16,17 +16,6 @@ import (
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 )
 
-func waitForGatewayProgrammed(g Gomega, gw *gatewayv1.Gateway) {
-	key := client.ObjectKeyFromObject(gw)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.Gateway
-		g.Expect(testClient.Get(testCtx, key, &result)).To(Succeed())
-		programmed := findCondition(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
-		g.Expect(programmed).NotTo(BeNil())
-		g.Expect(programmed.Status).To(Equal(metav1.ConditionTrue))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-}
-
 func createTestGateway(g Gomega, name, namespace, gcName string) *gatewayv1.Gateway {
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
@@ -77,7 +66,6 @@ func TestHTTPRouteAccepted(t *testing.T) {
 	// Reset mock tracking before HTTPRoute creation
 	testMock.lastTunnelConfigID = ""
 	testMock.lastTunnelConfigIngress = nil
-	testMock.ensureDNSCalls = nil
 
 	port := gatewayv1.PortNumber(8080)
 	route := &gatewayv1.HTTPRoute{
@@ -143,11 +131,6 @@ func TestHTTPRouteAccepted(t *testing.T) {
 		g.Expect(testMock.lastTunnelConfigIngress[1].Hostname).To(BeEmpty())
 		g.Expect(testMock.lastTunnelConfigIngress[1].Service).To(Equal("http_status:404"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-
-	// Verify EnsureDNSCNAME was called
-	g.Expect(testMock.ensureDNSCalls).To(HaveLen(1))
-	g.Expect(testMock.ensureDNSCalls[0].Hostname).To(Equal("app.example.com"))
-	g.Expect(testMock.ensureDNSCalls[0].Target).To(Equal("test-tunnel-id.cfargotunnel.com"))
 
 	// Verify Gateway listener has AttachedRoutes=1
 	gwKey := client.ObjectKeyFromObject(gw)
@@ -230,7 +213,6 @@ func TestHTTPRouteDeletion(t *testing.T) {
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
 	// Reset mock tracking
-	testMock.deleteDNSCalls = nil
 	testMock.lastTunnelConfigIngress = nil
 
 	// Delete the HTTPRoute
@@ -242,12 +224,6 @@ func TestHTTPRouteDeletion(t *testing.T) {
 	g.Eventually(func() error {
 		return testClient.Get(testCtx, routeKey, &latest)
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Satisfy(apierrors.IsNotFound))
-
-	// Verify DeleteDNSCNAME was called
-	g.Eventually(func() int {
-		return len(testMock.deleteDNSCalls)
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(BeNumerically(">=", 1))
-	g.Expect(testMock.deleteDNSCalls[0].Hostname).To(Equal("delete.example.com"))
 
 	// Verify tunnel config was rebuilt by the Gateway controller (only catch-all remains)
 	g.Eventually(func(g Gomega) {
@@ -343,7 +319,9 @@ func TestHTTPRouteGatewayNotReady(t *testing.T) {
 		}
 	})
 
-	// Verify HTTPRoute gets Accepted=False because Gateway has no tunnel
+	// HTTPRoute should be Accepted=True because the HTTPRoute controller no longer
+	// checks tunnel readiness — it only verifies the parent Gateway exists and is
+	// managed by our controller. DNS is managed by the Gateway controller.
 	routeKey := client.ObjectKeyFromObject(route)
 	g.Eventually(func(g Gomega) {
 		var result gatewayv1.HTTPRoute
@@ -351,7 +329,7 @@ func TestHTTPRouteGatewayNotReady(t *testing.T) {
 		g.Expect(result.Status.Parents).To(HaveLen(1))
 		accepted := findCondition(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
 		g.Expect(accepted).NotTo(BeNil())
-		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
-		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.RouteReasonPending)))
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
+		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.RouteReasonAccepted)))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
