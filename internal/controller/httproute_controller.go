@@ -9,6 +9,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	acmetav1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -184,9 +185,17 @@ func (r *HTTPRouteReconciler) finalize(ctx context.Context, route *gatewayv1.HTT
 				return ctrl.Result{}, fmt.Errorf("creating tunnel client for deletion: %w", err)
 			}
 
-			// Delete DNS CNAME records for this route's hostnames.
+			// Delete DNS CNAME records for hostnames that are not used by
+			// any other non-deleting HTTPRoute for this Gateway.
+			otherHostnames, err := otherRouteHostnames(ctx, r.Client, route, p.gw)
+			if err != nil {
+				return ctrl.Result{}, fmt.Errorf("listing other route hostnames: %w", err)
+			}
 			for _, hostname := range route.Spec.Hostnames {
 				h := string(hostname)
+				if otherHostnames.Has(h) {
+					continue
+				}
 				zoneID, err := tc.FindZoneIDByHostname(ctx, h)
 				if err != nil {
 					return ctrl.Result{}, fmt.Errorf("finding zone for %q: %w", h, err)
@@ -266,4 +275,30 @@ func parentRefMatches(ref gatewayv1.ParentReference, gw *gatewayv1.Gateway, rout
 		refNS = string(*ref.Namespace)
 	}
 	return refNS == gw.Namespace
+}
+
+// otherRouteHostnames returns the set of hostnames used by non-deleting HTTPRoutes
+// that reference the given Gateway, excluding the specified route. This is used during
+// finalization to avoid deleting DNS records still needed by other routes.
+func otherRouteHostnames(ctx context.Context, r client.Reader, exclude *gatewayv1.HTTPRoute, gw *gatewayv1.Gateway) (sets.Set[string], error) {
+	var allRoutes gatewayv1.HTTPRouteList
+	if err := r.List(ctx, &allRoutes); err != nil {
+		return nil, fmt.Errorf("listing HTTPRoutes: %w", err)
+	}
+	hostnames := sets.New[string]()
+	for i := range allRoutes.Items {
+		hr := &allRoutes.Items[i]
+		if hr.UID == exclude.UID || !hr.DeletionTimestamp.IsZero() {
+			continue
+		}
+		for _, ref := range hr.Spec.ParentRefs {
+			if parentRefMatches(ref, gw, hr.Namespace) {
+				for _, h := range hr.Spec.Hostnames {
+					hostnames.Insert(string(h))
+				}
+				break
+			}
+		}
+	}
+	return hostnames, nil
 }
