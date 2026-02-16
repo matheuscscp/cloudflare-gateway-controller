@@ -211,7 +211,10 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if len(deniedRoutes) > 0 {
 		log.Info("HTTPRoutes denied due to missing or failed ReferenceGrant checks", "count", len(deniedRoutes))
 	}
-	ingress, deniedBackendRefs := buildIngressRules(ctx, r.Client, gatewayRoutes)
+	ingress, deniedBackendRefs, err := buildIngressRules(ctx, r.Client, gatewayRoutes)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 	if len(deniedBackendRefs) > 0 {
 		log.Info("BackendRefs denied due to missing or failed ReferenceGrant checks", "count", len(deniedBackendRefs))
 	}
@@ -299,8 +302,16 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 		return ctrl.Result{}, nil
 	}
 
+	// When reconciliation is disabled, remove owner references from managed
+	// resources so Kubernetes GC doesn't delete them when the Gateway is removed.
+	// The user is responsible for manually cleaning up.
+	if gw.Annotations[apiv1.AnnotationReconcile] == apiv1.ValueDisabled {
+		if err := r.removeOwnerReferences(ctx, gw); err != nil {
+			return ctrl.Result{}, fmt.Errorf("removing owner references: %w", err)
+		}
+	}
+
 	// Delete managed resources if reconciliation is not disabled.
-	// When disabled, the user is responsible for manually cleaning up.
 	if gw.Annotations[apiv1.AnnotationReconcile] != apiv1.ValueDisabled {
 		// Delete the cloudflared Deployment and wait for it to be gone
 		// before deleting the tunnel, so there are no active connections.
@@ -363,6 +374,58 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// removeOwnerReferences removes the Gateway's owner references from managed
+// resources (cloudflared Deployment and tunnel token Secret) so they survive
+// garbage collection when the Gateway is deleted with reconciliation disabled.
+func (r *GatewayReconciler) removeOwnerReferences(ctx context.Context, gw *gatewayv1.Gateway) error {
+	// Remove owner reference from cloudflared Deployment.
+	var deploy appsv1.Deployment
+	deployKey := client.ObjectKey{Namespace: gw.Namespace, Name: apiv1.CloudflaredDeploymentName(gw)}
+	if err := r.Get(ctx, deployKey, &deploy); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("getting deployment: %w", err)
+		}
+	} else {
+		deployPatch := client.MergeFrom(deploy.DeepCopy())
+		if removeOwnerRef(&deploy, gw.UID) {
+			if err := r.Patch(ctx, &deploy, deployPatch); err != nil {
+				return fmt.Errorf("patching deployment: %w", err)
+			}
+		}
+	}
+
+	// Remove owner reference from tunnel token Secret.
+	var secret corev1.Secret
+	secretKey := client.ObjectKey{Namespace: gw.Namespace, Name: apiv1.TunnelTokenSecretName(gw)}
+	if err := r.Get(ctx, secretKey, &secret); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("getting secret: %w", err)
+		}
+	} else {
+		secretPatch := client.MergeFrom(secret.DeepCopy())
+		if removeOwnerRef(&secret, gw.UID) {
+			if err := r.Patch(ctx, &secret, secretPatch); err != nil {
+				return fmt.Errorf("patching secret: %w", err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// removeOwnerRef removes the owner reference with the given UID from the object.
+// Returns true if an owner reference was removed.
+func removeOwnerRef(obj client.Object, ownerUID types.UID) bool {
+	refs := obj.GetOwnerReferences()
+	for i, ref := range refs {
+		if ref.UID == ownerUID {
+			obj.SetOwnerReferences(append(refs[:i], refs[i+1:]...))
+			return true
+		}
+	}
+	return false
 }
 
 // reconcileDNS reconciles DNS CNAME records for the Gateway's zone and returns
@@ -760,7 +823,10 @@ func listGatewayRoutes(ctx context.Context, r client.Reader, gw *gatewayv1.Gatew
 			continue
 		}
 		granted, grantErr := httpRouteReferenceGranted(ctx, r, hr.Namespace, gw)
-		if grantErr != nil || !granted {
+		if grantErr != nil {
+			return nil, nil, fmt.Errorf("checking ReferenceGrant for HTTPRoute %s/%s: %w", hr.Namespace, hr.Name, grantErr)
+		}
+		if !granted {
 			denied = append(denied, hr)
 			continue
 		}
@@ -793,7 +859,7 @@ type deniedBackendRef struct {
 // Cross-namespace backendRefs are validated against ReferenceGrants. Denied refs are
 // returned separately so the caller can report them without blocking reconciliation.
 // A catch-all 404 rule is appended.
-func buildIngressRules(ctx context.Context, r client.Reader, routes []*gatewayv1.HTTPRoute) ([]cfclient.IngressRule, []deniedBackendRef) {
+func buildIngressRules(ctx context.Context, r client.Reader, routes []*gatewayv1.HTTPRoute) ([]cfclient.IngressRule, []deniedBackendRef, error) {
 	var rules []cfclient.IngressRule
 	var denied []deniedBackendRef
 	for _, route := range routes {
@@ -807,7 +873,10 @@ func buildIngressRules(ctx context.Context, r client.Reader, routes []*gatewayv1
 				ns = string(*ref.Namespace)
 			}
 			granted, err := backendReferenceGranted(ctx, r, route.Namespace, ns, string(ref.Name))
-			if err != nil || !granted {
+			if err != nil {
+				return nil, nil, fmt.Errorf("checking ReferenceGrant for backendRef %s/%s in HTTPRoute %s/%s: %w", ns, ref.Name, route.Namespace, route.Name, err)
+			}
+			if !granted {
 				denied = append(denied, deniedBackendRef{
 					routeNamespace:   route.Namespace,
 					routeName:        route.Name,
@@ -835,7 +904,7 @@ func buildIngressRules(ctx context.Context, r client.Reader, routes []*gatewayv1
 	rules = append(rules, cfclient.IngressRule{
 		Service: "http_status:404",
 	})
-	return rules, denied
+	return rules, denied, nil
 }
 
 // pathFromMatches extracts a path prefix from the first HTTPRouteMatch that has
