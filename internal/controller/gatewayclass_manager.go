@@ -6,6 +6,7 @@ package controller
 import (
 	"context"
 
+	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -39,27 +40,46 @@ func (r *GatewayClassReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&gatewayv1.GatewayClass{}, builder.WithPredicates(
-			debugPredicate(apiv1.KindGatewayClass,
-				predicate.Or(predicate.GenerationChangedPredicate{}, predicate.AnnotationChangedPredicate{}),
-			),
+			debugPredicate(apiv1.KindGatewayClass, predicate.Or(
+				predicate.GenerationChangedPredicate{},
+				predicate.AnnotationChangedPredicate{})),
 		)).
 		WatchesMetadata(
 			&apiextensionsv1.CustomResourceDefinition{},
 			handler.EnqueueRequestsFromMapFunc(r.managedGatewayClasses),
 			builder.WithPredicates(debugPredicate(apiv1.KindCustomResourceDefinition, gatewayClassCRDChanged))).
+		WatchesMetadata(
+			&corev1.Secret{},
+			handler.EnqueueRequestsFromMapFunc(r.managedGatewayClasses),
+			builder.WithPredicates(debugPredicate(apiv1.KindSecret, predicate.ResourceVersionChangedPredicate{}))).
 		Complete(r)
 }
 
 func (r *GatewayClassReconciler) managedGatewayClasses(ctx context.Context, obj client.Object) []reconcile.Request {
-	// List all GatewayClasses and enqueue those that reference our controller.
 	var classes gatewayv1.GatewayClassList
 	if err := r.List(ctx, &classes); err != nil {
 		return nil
 	}
+
+	var secret *corev1.Secret
+	if s, ok := obj.(*corev1.Secret); ok {
+		secret = s
+	}
+
 	var requests []reconcile.Request
 	for i := range classes.Items {
 		gc := &classes.Items[i]
-		if gc.Spec.ControllerName == apiv1.ControllerName {
+
+		if gc.Spec.ControllerName != apiv1.ControllerName {
+			continue
+		}
+
+		if secret == nil || (gc.Spec.ParametersRef != nil &&
+			gc.Spec.ParametersRef.Group == "" &&
+			string(gc.Spec.ParametersRef.Kind) == apiv1.KindSecret &&
+			gc.Spec.ParametersRef.Namespace != nil &&
+			string(*gc.Spec.ParametersRef.Namespace) == secret.Namespace &&
+			string(gc.Spec.ParametersRef.Name) == secret.Name) {
 			requests = append(requests, reconcile.Request{
 				NamespacedName: client.ObjectKey{Name: gc.Name},
 			})
