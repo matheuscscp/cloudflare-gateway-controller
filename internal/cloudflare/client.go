@@ -34,8 +34,6 @@ type IngressRule struct {
 type TunnelClient interface {
 	CreateTunnel(ctx context.Context, name string) (tunnelID string, err error)
 	GetTunnelIDByName(ctx context.Context, name string) (tunnelID string, err error)
-	GetTunnelName(ctx context.Context, tunnelID string) (name string, err error)
-	UpdateTunnel(ctx context.Context, tunnelID, name string) error
 	DeleteTunnel(ctx context.Context, tunnelID string) error
 	GetTunnelToken(ctx context.Context, tunnelID string) (token string, err error)
 	UpdateTunnelConfiguration(ctx context.Context, tunnelID string, ingress []IngressRule) error
@@ -94,25 +92,7 @@ func (c *tunnelClient) GetTunnelIDByName(ctx context.Context, name string) (stri
 	if err := pager.Err(); err != nil {
 		return "", fmt.Errorf("listing tunnels by name %q: %w", name, err)
 	}
-	return "", fmt.Errorf("tunnel with name %q not found", name)
-}
-
-func (c *tunnelClient) GetTunnelName(ctx context.Context, tunnelID string) (string, error) {
-	tunnel, err := c.client.ZeroTrust.Tunnels.Cloudflared.Get(ctx, tunnelID, zero_trust.TunnelCloudflaredGetParams{
-		AccountID: cloudflare.String(c.accountID),
-	})
-	if err != nil {
-		return "", err
-	}
-	return tunnel.Name, nil
-}
-
-func (c *tunnelClient) UpdateTunnel(ctx context.Context, tunnelID, name string) error {
-	_, err := c.client.ZeroTrust.Tunnels.Cloudflared.Edit(ctx, tunnelID, zero_trust.TunnelCloudflaredEditParams{
-		AccountID: cloudflare.String(c.accountID),
-		Name:      cloudflare.F(name),
-	})
-	return err
+	return "", nil
 }
 
 func (c *tunnelClient) DeleteTunnel(ctx context.Context, tunnelID string) error {

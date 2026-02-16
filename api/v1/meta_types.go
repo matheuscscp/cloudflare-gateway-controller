@@ -4,6 +4,7 @@
 package v1
 
 import (
+	"fmt"
 	"time"
 
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -44,10 +45,6 @@ const (
 	// The value must be a valid Go duration string (e.g. "5m", "1h").
 	AnnotationReconcileEvery = prefix + "reconcileEvery"
 
-	// AnnotationTunnelName overrides the default Cloudflare tunnel name.
-	// When absent, the Gateway UID is used.
-	AnnotationTunnelName = prefixGateway + "tunnelName"
-
 	// AnnotationReplicas sets the number of cloudflared replicas.
 	// When absent on create, defaults to 1.
 	// When absent on update, the current value is preserved.
@@ -60,6 +57,22 @@ const (
 	// reconciliations for drift correction.
 	DefaultReconcileInterval = 10 * time.Minute
 )
+
+// TunnelName returns the deterministic Cloudflare tunnel name for a Gateway.
+// The name is globally unique because it includes the Gateway's UID.
+func TunnelName(gw *gatewayv1.Gateway) string {
+	return "gateway-" + string(gw.UID)
+}
+
+// CloudflaredDeploymentName returns the name of the cloudflared Deployment for a Gateway.
+func CloudflaredDeploymentName(gw *gatewayv1.Gateway) string {
+	return fmt.Sprintf("cloudflared-%s", gw.Name)
+}
+
+// TunnelTokenSecretName returns the name of the tunnel token Secret for a Gateway.
+func TunnelTokenSecretName(gw *gatewayv1.Gateway) string {
+	return fmt.Sprintf("cloudflared-token-%s", gw.Name)
+}
 
 // ReconcileInterval returns the reconciliation interval for an object
 // based on its annotations. Returns 0 if reconciliation is disabled.

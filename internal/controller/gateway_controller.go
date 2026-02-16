@@ -108,35 +108,24 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err != nil {
 		now := metav1.Now()
 		credMsg := fmt.Sprintf("Failed to read credentials: %v", err)
-		conditions := []*acmetav1.ConditionApplyConfiguration{
-			acmetav1.Condition().
-				WithType(string(gatewayv1.GatewayConditionAccepted)).
-				WithStatus(metav1.ConditionFalse).
-				WithObservedGeneration(gw.Generation).
-				WithLastTransitionTime(now).
-				WithReason(string(gatewayv1.GatewayReasonInvalidParameters)).
-				WithMessage(credMsg),
-			acmetav1.Condition().
-				WithType(apiv1.ConditionReady).
-				WithStatus(metav1.ConditionFalse).
-				WithObservedGeneration(gw.Generation).
-				WithLastTransitionTime(now).
-				WithReason(apiv1.ReasonInvalidParams).
-				WithMessage(credMsg),
-		}
-		if existingTunnelID := tunnelIDFromStatus(&gw); existingTunnelID != "" {
-			conditions = append(conditions, acmetav1.Condition().
-				WithType(apiv1.ConditionTunnelID).
-				WithStatus(metav1.ConditionTrue).
-				WithObservedGeneration(gw.Generation).
-				WithLastTransitionTime(now).
-				WithReason(apiv1.ReasonTunnelCreated).
-				WithMessage(existingTunnelID),
-			)
-		}
 		statusPatch := acgatewayv1.Gateway(gw.Name, gw.Namespace).
 			WithStatus(acgatewayv1.GatewayStatus().
-				WithConditions(conditions...).
+				WithConditions(
+					acmetav1.Condition().
+						WithType(string(gatewayv1.GatewayConditionAccepted)).
+						WithStatus(metav1.ConditionFalse).
+						WithObservedGeneration(gw.Generation).
+						WithLastTransitionTime(now).
+						WithReason(string(gatewayv1.GatewayReasonInvalidParameters)).
+						WithMessage(credMsg),
+					acmetav1.Condition().
+						WithType(apiv1.ConditionReady).
+						WithStatus(metav1.ConditionFalse).
+						WithObservedGeneration(gw.Generation).
+						WithLastTransitionTime(now).
+						WithReason(apiv1.ReasonInvalidParams).
+						WithMessage(credMsg),
+				).
 				WithListeners(buildListenerStatusPatches(&gw, attachedRoutes)...),
 			)
 		if err := r.Status().Apply(ctx, statusPatch, client.FieldOwner(apiv1.ControllerName), client.ForceOwnership); err != nil {
@@ -151,52 +140,22 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("creating tunnel client: %w", err)
 	}
 
-	// Resolve desired tunnel name
-	tunnelName := gw.Annotations[apiv1.AnnotationTunnelName]
-	if tunnelName == "" {
-		tunnelName = string(gw.UID)
+	// Look up or create tunnel. The name is deterministic (gateway-{UID}),
+	// so Cloudflare is the source of truth — no local state tracking needed.
+	name := apiv1.TunnelName(&gw)
+	tunnelID, err := tc.GetTunnelIDByName(ctx, name)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("looking up tunnel: %w", err)
 	}
-
-	// Create or update tunnel
-	tunnelID := tunnelIDFromStatus(&gw)
 	if tunnelID == "" {
-		tunnelID, err = tc.CreateTunnel(ctx, tunnelName)
+		tunnelID, err = tc.CreateTunnel(ctx, name)
 		if err != nil {
-			// A conflict is safe to ignore only when the tunnel name
-			// defaults to the gateway UID, which is globally unique.
-			if !cfclient.IsConflict(err) || tunnelName != string(gw.UID) {
+			if !cfclient.IsConflict(err) {
 				return ctrl.Result{}, fmt.Errorf("creating tunnel: %w", err)
 			}
-			tunnelID, err = tc.GetTunnelIDByName(ctx, tunnelName)
+			tunnelID, err = tc.GetTunnelIDByName(ctx, name)
 			if err != nil {
-				return ctrl.Result{}, fmt.Errorf("looking up existing tunnel: %w", err)
-			}
-		}
-		// Persist tunnel ID immediately to avoid leaking tunnels on crash.
-		now := metav1.Now()
-		statusPatch := acgatewayv1.Gateway(gw.Name, gw.Namespace).
-			WithStatus(acgatewayv1.GatewayStatus().
-				WithConditions(
-					acmetav1.Condition().
-						WithType(apiv1.ConditionTunnelID).
-						WithStatus(metav1.ConditionTrue).
-						WithObservedGeneration(gw.Generation).
-						WithLastTransitionTime(now).
-						WithReason(apiv1.ReasonTunnelCreated).
-						WithMessage(tunnelID),
-				),
-			)
-		if err := r.Status().Apply(ctx, statusPatch, client.FieldOwner(apiv1.ControllerName), client.ForceOwnership); err != nil {
-			return ctrl.Result{}, fmt.Errorf("persisting tunnel ID in status: %w", err)
-		}
-	} else {
-		currentName, err := tc.GetTunnelName(ctx, tunnelID)
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("getting tunnel name: %w", err)
-		}
-		if currentName != tunnelName {
-			if err := tc.UpdateTunnel(ctx, tunnelID, tunnelName); err != nil {
-				return ctrl.Result{}, fmt.Errorf("updating tunnel name: %w", err)
+				return ctrl.Result{}, fmt.Errorf("looking up tunnel after conflict: %w", err)
 			}
 		}
 	}
@@ -264,7 +223,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	deployReady := false
 	if err := r.Get(ctx, client.ObjectKey{
 		Namespace: gw.Namespace,
-		Name:      cloudflaredDeploymentName(&gw),
+		Name:      apiv1.CloudflaredDeploymentName(&gw),
 	}, &deploy); err == nil {
 		for _, c := range deploy.Status.Conditions {
 			if c.Type == appsv1.DeploymentAvailable && c.Status == "True" {
@@ -312,13 +271,6 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			WithLastTransitionTime(now).
 			WithReason(readyReason).
 			WithMessage(readyMsg),
-		acmetav1.Condition().
-			WithType(apiv1.ConditionTunnelID).
-			WithStatus(metav1.ConditionTrue).
-			WithObservedGeneration(gw.Generation).
-			WithLastTransitionTime(now).
-			WithReason(apiv1.ReasonTunnelCreated).
-			WithMessage(tunnelID),
 	}
 	conditions = append(conditions, routeReferenceGrantsCondition(gw.Generation, now, deniedRoutes))
 	conditions = append(conditions, backendReferenceGrantsCondition(gw.Generation, now, deniedBackendRefs))
@@ -348,7 +300,7 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 		// before deleting the tunnel, so there are no active connections.
 		deploy := &appsv1.Deployment{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      cloudflaredDeploymentName(gw),
+				Name:      apiv1.CloudflaredDeploymentName(gw),
 				Namespace: gw.Namespace,
 			},
 		}
@@ -369,15 +321,19 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 			}
 		}
 
-		if tunnelID := tunnelIDFromStatus(gw); tunnelID != "" {
-			cfg, err := readCredentials(ctx, r.Client, gc, gw)
-			if err != nil {
-				return ctrl.Result{}, fmt.Errorf("reading credentials for tunnel deletion: %w", err)
-			}
-			tc, err := r.NewTunnelClient(cfg)
-			if err != nil {
-				return ctrl.Result{}, fmt.Errorf("creating tunnel client for deletion: %w", err)
-			}
+		cfg, err := readCredentials(ctx, r.Client, gc, gw)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("reading credentials for tunnel deletion: %w", err)
+		}
+		tc, err := r.NewTunnelClient(cfg)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("creating tunnel client for deletion: %w", err)
+		}
+		tunnelID, err := tc.GetTunnelIDByName(ctx, apiv1.TunnelName(gw))
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("looking up tunnel for deletion: %w", err)
+		}
+		if tunnelID != "" {
 			if err := tc.DeleteTunnel(ctx, tunnelID); err != nil {
 				return ctrl.Result{}, fmt.Errorf("deleting tunnel: %w", err)
 			}
@@ -493,17 +449,6 @@ func readCredentials(ctx context.Context, r client.Reader, gc *gatewayv1.Gateway
 		APIToken:  apiToken,
 		AccountID: accountID,
 	}, nil
-}
-
-// tunnelIDFromStatus extracts the Cloudflare tunnel ID stored in the Gateway's
-// TunnelID status condition message. Returns empty if no tunnel has been created.
-func tunnelIDFromStatus(gw *gatewayv1.Gateway) string {
-	for _, c := range gw.Status.Conditions {
-		if c.Type == apiv1.ConditionTunnelID && c.Reason == apiv1.ReasonTunnelCreated {
-			return c.Message
-		}
-	}
-	return ""
 }
 
 // buildListenerStatusPatches builds SSA apply configurations for each Gateway listener,
@@ -776,18 +721,10 @@ func countAttachedRoutes(ctx context.Context, r client.Reader, gw *gatewayv1.Gat
 	return counts, nil
 }
 
-func cloudflaredDeploymentName(gw *gatewayv1.Gateway) string {
-	return fmt.Sprintf("cloudflared-%s", gw.Name)
-}
-
-func tunnelTokenSecretName(gw *gatewayv1.Gateway) string {
-	return fmt.Sprintf("cloudflared-token-%s", gw.Name)
-}
-
 func buildTunnelTokenSecret(gw *gatewayv1.Gateway, tunnelToken string) *corev1.Secret {
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        tunnelTokenSecretName(gw),
+			Name:        apiv1.TunnelTokenSecretName(gw),
 			Namespace:   gw.Namespace,
 			Labels:      infrastructureLabels(gw.Spec.Infrastructure),
 			Annotations: infrastructureAnnotations(gw.Spec.Infrastructure),
@@ -811,7 +748,7 @@ func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gatewa
 	maps.Copy(templateLabels, deployLabels)
 	templateAnnotations := infrastructureAnnotations(gw.Spec.Infrastructure)
 
-	deploy := acappsv1.Deployment(cloudflaredDeploymentName(gw), gw.Namespace).
+	deploy := acappsv1.Deployment(apiv1.CloudflaredDeploymentName(gw), gw.Namespace).
 		WithLabels(deployLabels).
 		WithAnnotations(deployAnnotations).
 		WithOwnerReferences(acmetav1.OwnerReference().
@@ -838,7 +775,7 @@ func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gatewa
 							WithName("TUNNEL_TOKEN").
 							WithValueFrom(accorev1.EnvVarSource().
 								WithSecretKeyRef(accorev1.SecretKeySelector().
-									WithName(tunnelTokenSecretName(gw)).
+									WithName(apiv1.TunnelTokenSecretName(gw)).
 									WithKey("TUNNEL_TOKEN"),
 								),
 							),

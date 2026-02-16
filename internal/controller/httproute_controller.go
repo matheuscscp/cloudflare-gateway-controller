@@ -79,20 +79,26 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	var parentStatuses []*acgatewayv1.RouteParentStatusApplyConfiguration
 	for _, p := range parents {
-		tunnelID := tunnelIDFromStatus(p.gw)
+		cfg, err := readCredentials(ctx, r.Client, p.gc, p.gw)
+		if err != nil {
+			parentStatuses = append(parentStatuses, buildRouteParentStatus(&route, p.gw, metav1.ConditionFalse,
+				string(gatewayv1.RouteReasonPending), "Gateway credentials not available"))
+			continue
+		}
+		tc, err := r.NewTunnelClient(cfg)
+		if err != nil {
+			parentStatuses = append(parentStatuses, buildRouteParentStatus(&route, p.gw, metav1.ConditionFalse,
+				string(gatewayv1.RouteReasonPending), "Gateway tunnel client not available"))
+			continue
+		}
+		tunnelID, err := tc.GetTunnelIDByName(ctx, apiv1.TunnelName(p.gw))
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("looking up tunnel: %w", err)
+		}
 		if tunnelID == "" {
 			parentStatuses = append(parentStatuses, buildRouteParentStatus(&route, p.gw, metav1.ConditionFalse,
 				string(gatewayv1.RouteReasonPending), "Gateway tunnel is not ready"))
 			continue
-		}
-
-		cfg, err := readCredentials(ctx, r.Client, p.gc, p.gw)
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("reading credentials: %w", err)
-		}
-		tc, err := r.NewTunnelClient(cfg)
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("creating tunnel client: %w", err)
 		}
 
 		// Ensure DNS CNAME records for this route's hostnames.
@@ -171,18 +177,17 @@ func (r *HTTPRouteReconciler) finalize(ctx context.Context, route *gatewayv1.HTT
 
 	if route.Annotations[apiv1.AnnotationReconcile] != apiv1.ValueDisabled {
 		for _, p := range parents {
-			tunnelID := tunnelIDFromStatus(p.gw)
-			if tunnelID == "" {
-				continue
-			}
-
 			cfg, err := readCredentials(ctx, r.Client, p.gc, p.gw)
 			if err != nil {
-				return ctrl.Result{}, fmt.Errorf("reading credentials for deletion: %w", err)
+				continue
 			}
 			tc, err := r.NewTunnelClient(cfg)
 			if err != nil {
-				return ctrl.Result{}, fmt.Errorf("creating tunnel client for deletion: %w", err)
+				continue
+			}
+			tunnelID, err := tc.GetTunnelIDByName(ctx, apiv1.TunnelName(p.gw))
+			if err != nil || tunnelID == "" {
+				continue
 			}
 
 			// Delete DNS CNAME records for hostnames that are not used by

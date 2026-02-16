@@ -9,10 +9,6 @@ const (
 	// whether the resource has been successfully reconciled.
 	ConditionReady = "Ready"
 
-	// ConditionTunnelID is a Gateway condition that stores the Cloudflare
-	// tunnel ID in its Message field.
-	ConditionTunnelID = "TunnelID"
-
 	// ConditionRouteReferenceGrants is a Gateway condition that reports
 	// HTTPRoutes denied due to missing or failed cross-namespace
 	// ReferenceGrant checks.
@@ -29,11 +25,6 @@ const (
 	ReasonReconciled    = "ReconciliationSucceeded"
 	ReasonFailed        = "ReconciliationFailed"
 	ReasonInvalidParams = "InvalidParameters"
-)
-
-// Reasons for the TunnelID condition.
-const (
-	ReasonTunnelCreated = "Created"
 )
 
 // Reasons for the RouteReferenceGrants condition.

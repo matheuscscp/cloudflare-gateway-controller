@@ -86,8 +86,8 @@ func TestMain(m *testing.M) {
 	}
 
 	testMock = &mockTunnelClient{
-		createTunnelID: "test-tunnel-id",
-		tunnelToken:    "test-tunnel-token",
+		tunnelID:    "test-tunnel-id",
+		tunnelToken: "test-tunnel-token",
 	}
 	if err := (&GatewayReconciler{
 		Client: mgr.GetClient(),

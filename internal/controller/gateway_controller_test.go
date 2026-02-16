@@ -22,10 +22,10 @@ import (
 )
 
 type mockTunnelClient struct {
-	createTunnelID string
-	tunnelToken    string
-	deleteCalled   bool
-	deletedID      string
+	tunnelID     string
+	tunnelToken  string
+	deleteCalled bool
+	deletedID    string
 
 	// HTTPRoute-related tracking
 	lastTunnelConfigID      string
@@ -42,19 +42,11 @@ type mockDNSCall struct {
 }
 
 func (m *mockTunnelClient) CreateTunnel(_ context.Context, _ string) (string, error) {
-	return m.createTunnelID, nil
+	return m.tunnelID, nil
 }
 
 func (m *mockTunnelClient) GetTunnelIDByName(_ context.Context, _ string) (string, error) {
-	return m.createTunnelID, nil
-}
-
-func (m *mockTunnelClient) GetTunnelName(_ context.Context, _ string) (string, error) {
-	return "", nil
-}
-
-func (m *mockTunnelClient) UpdateTunnel(_ context.Context, _, _ string) error {
-	return nil
+	return m.tunnelID, nil
 }
 
 func (m *mockTunnelClient) DeleteTunnel(_ context.Context, tunnelID string) error {
@@ -217,12 +209,6 @@ func TestGatewayAcceptedAndProgrammed(t *testing.T) {
 		g.Expect(ready).NotTo(BeNil())
 		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
 		g.Expect(ready.Reason).To(Equal(apiv1.ReasonReconciled))
-
-		tunnelIDCond := findCondition(result.Status.Conditions, apiv1.ConditionTunnelID)
-		g.Expect(tunnelIDCond).NotTo(BeNil())
-		g.Expect(tunnelIDCond.Status).To(Equal(metav1.ConditionTrue))
-		g.Expect(tunnelIDCond.Reason).To(Equal(apiv1.ReasonTunnelCreated))
-		g.Expect(tunnelIDCond.Message).To(Equal("test-tunnel-id"))
 
 		// Listener status
 		g.Expect(result.Status.Listeners).To(HaveLen(1))
@@ -446,9 +432,6 @@ func TestGatewayCrossNamespaceSecret(t *testing.T) {
 		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
 		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.GatewayReasonInvalidParameters)))
 		g.Expect(accepted.Message).To(ContainSubstring("not allowed by any ReferenceGrant"))
-
-		tunnelIDCond := findCondition(result.Status.Conditions, apiv1.ConditionTunnelID)
-		g.Expect(tunnelIDCond).To(BeNil())
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
 	// Create a ReferenceGrant in namespace A allowing Gateways from namespace B
@@ -500,12 +483,6 @@ func TestGatewayCrossNamespaceSecret(t *testing.T) {
 		programmed := findCondition(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
 		g.Expect(programmed).NotTo(BeNil())
 		g.Expect(programmed.Status).To(Equal(metav1.ConditionTrue))
-
-		tunnelIDCond := findCondition(result.Status.Conditions, apiv1.ConditionTunnelID)
-		g.Expect(tunnelIDCond).NotTo(BeNil())
-		g.Expect(tunnelIDCond.Status).To(Equal(metav1.ConditionTrue))
-		g.Expect(tunnelIDCond.Reason).To(Equal(apiv1.ReasonTunnelCreated))
-		g.Expect(tunnelIDCond.Message).To(Equal("test-tunnel-id"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
