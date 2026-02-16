@@ -21,6 +21,7 @@ import (
 	acappsv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	accorev1 "k8s.io/client-go/applyconfigurations/core/v1"
 	acmetav1 "k8s.io/client-go/applyconfigurations/meta/v1"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -40,6 +41,7 @@ const DefaultCloudflaredImage = "ghcr.io/matheuscscp/cloudflare-gateway-controll
 // GatewayReconciler reconciles Gateway objects.
 type GatewayReconciler struct {
 	client.Client
+	events.EventRecorder
 	NewTunnelClient  cfclient.TunnelClientFactory
 	CloudflaredImage string
 }
@@ -970,7 +972,7 @@ func buildTunnelTokenSecret(gw *gatewayv1.Gateway, tunnelToken string) *corev1.S
 func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gateway, replicas *int32) *acappsv1.DeploymentApplyConfiguration {
 	selectorLabels := map[string]string{
 		"app.kubernetes.io/name":       "cloudflared",
-		"app.kubernetes.io/managed-by": "cloudflare-gateway-controller",
+		"app.kubernetes.io/managed-by": apiv1.ControllerName,
 		"app.kubernetes.io/instance":   gw.Name,
 	}
 	templateLabels := maps.Clone(selectorLabels)

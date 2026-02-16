@@ -21,6 +21,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
+	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 	cfclient "github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/controller"
 )
@@ -55,7 +56,7 @@ func main() {
 		},
 		HealthProbeBindAddress: ":8081",
 		LeaderElection:         *leaderElect,
-		LeaderElectionID:       "cloudflare-gateway-controller",
+		LeaderElectionID:       apiv1.ControllerName,
 		Client: ctrlclient.Options{
 			Cache: &ctrlclient.CacheOptions{
 				DisableFor: []ctrlclient.Object{
@@ -73,6 +74,7 @@ func main() {
 
 	if err := (&controller.GatewayClassReconciler{
 		Client:            mgr.GetClient(),
+		EventRecorder:     mgr.GetEventRecorder(apiv1.ControllerName + "/gatewayclass"),
 		GatewayAPIVersion: controller.GatewayAPIVersion(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GatewayClass")
@@ -81,6 +83,7 @@ func main() {
 
 	if err := (&controller.GatewayReconciler{
 		Client:           mgr.GetClient(),
+		EventRecorder:    mgr.GetEventRecorder(apiv1.ControllerName + "/gateway"),
 		NewTunnelClient:  cfclient.NewTunnelClient,
 		CloudflaredImage: *cloudflaredImage,
 	}).SetupWithManager(mgr); err != nil {
@@ -89,7 +92,8 @@ func main() {
 	}
 
 	if err := (&controller.HTTPRouteReconciler{
-		Client: mgr.GetClient(),
+		Client:        mgr.GetClient(),
+		EventRecorder: mgr.GetEventRecorder(apiv1.ControllerName + "/httproute"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "HTTPRoute")
 		os.Exit(1)

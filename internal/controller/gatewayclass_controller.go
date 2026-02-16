@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	acmetav1 "k8s.io/client-go/applyconfigurations/meta/v1"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -47,6 +48,7 @@ func GatewayAPIVersion() *semver.Version {
 // GatewayClassReconciler reconciles GatewayClass objects.
 type GatewayClassReconciler struct {
 	client.Client
+	events.EventRecorder
 	GatewayAPIVersion *semver.Version
 }
 
