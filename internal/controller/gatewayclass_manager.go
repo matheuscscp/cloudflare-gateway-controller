@@ -38,11 +38,15 @@ func (r *GatewayClassReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&gatewayv1.GatewayClass{}).
+		For(&gatewayv1.GatewayClass{}, builder.WithPredicates(
+			debugPredicate(apiv1.KindGatewayClass,
+				predicate.Or(predicate.GenerationChangedPredicate{}, predicate.AnnotationChangedPredicate{}),
+			),
+		)).
 		WatchesMetadata(
 			&apiextensionsv1.CustomResourceDefinition{},
 			handler.EnqueueRequestsFromMapFunc(r.managedGatewayClasses),
-			builder.WithPredicates(debugPredicate("CRD", gatewayClassCRDChanged))).
+			builder.WithPredicates(debugPredicate(apiv1.KindCustomResourceDefinition, gatewayClassCRDChanged))).
 		Complete(r)
 }
 

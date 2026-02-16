@@ -9,7 +9,9 @@ import (
 	"runtime/debug"
 
 	semver "github.com/Masterminds/semver/v3"
+	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	acmetav1 "k8s.io/client-go/applyconfigurations/meta/v1"
@@ -51,6 +53,7 @@ type GatewayClassReconciler struct {
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gatewayclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gatewayclasses/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 
 func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
@@ -77,6 +80,7 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	log.V(1).Info("Reconciling GatewayClass")
 
 	supportedVersion, supportedVersionMessage := r.checkSupportedVersion(ctx)
+	validParams, validParamsMessage := r.checkParametersRef(ctx, &gc)
 
 	acceptedStatus := metav1.ConditionTrue
 	acceptedReason := string(gatewayv1.GatewayClassReasonAccepted)
@@ -95,6 +99,13 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		readyStatus = metav1.ConditionFalse
 		readyReason = apiv1.ReasonFailed
 		readyMessage = supportedVersionMessage
+	} else if !validParams {
+		acceptedStatus = metav1.ConditionFalse
+		acceptedReason = string(gatewayv1.GatewayClassReasonInvalidParameters)
+		acceptedMessage = validParamsMessage
+		readyStatus = metav1.ConditionFalse
+		readyReason = apiv1.ReasonInvalidParams
+		readyMessage = validParamsMessage
 	}
 
 	now := metav1.Now()
@@ -151,7 +162,7 @@ func (r *GatewayClassReconciler) checkSupportedVersion(ctx context.Context) (boo
 	}
 
 	crd := &metav1.PartialObjectMetadata{}
-	crd.SetGroupVersionKind(apiextensionsv1.SchemeGroupVersion.WithKind("CustomResourceDefinition"))
+	crd.SetGroupVersionKind(apiextensionsv1.SchemeGroupVersion.WithKind(apiv1.KindCustomResourceDefinition))
 	if err := r.Get(ctx, types.NamespacedName{Name: apiv1.CRDGatewayClass}, crd); err != nil {
 		log.Error(err, "Failed to get Gateway API CRD")
 		return false, fmt.Sprintf("Failed to get Gateway API CRD: %v", err)
@@ -173,4 +184,37 @@ func (r *GatewayClassReconciler) checkSupportedVersion(ctx context.Context) (boo
 	}
 
 	return true, fmt.Sprintf("Gateway API CRD version %q is supported", bundleVersion)
+}
+
+// checkParametersRef validates the GatewayClass parametersRef. Returns false
+// with a human-readable reason if the reference is invalid, nonexistent, or
+// points to a malformed Secret.
+func (r *GatewayClassReconciler) checkParametersRef(ctx context.Context, gc *gatewayv1.GatewayClass) (bool, string) {
+	ref := gc.Spec.ParametersRef
+	if ref == nil {
+		return true, "No parametersRef configured"
+	}
+
+	if string(ref.Kind) != apiv1.KindSecret || (ref.Group != "" && ref.Group != "core" && ref.Group != gatewayv1.Group("")) {
+		return false, fmt.Sprintf("parametersRef must reference a core/v1 Secret, got %s/%s", ref.Group, ref.Kind)
+	}
+
+	if ref.Namespace == nil {
+		return false, "parametersRef must specify a namespace (Secret is a namespaced resource)"
+	}
+
+	var secret corev1.Secret
+	secretKey := types.NamespacedName{Namespace: string(*ref.Namespace), Name: ref.Name}
+	if err := r.Get(ctx, secretKey, &secret); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, fmt.Sprintf("Secret %s/%s not found", *ref.Namespace, ref.Name)
+		}
+		return false, fmt.Sprintf("Failed to get Secret %s/%s: %v", *ref.Namespace, ref.Name, err)
+	}
+
+	if len(secret.Data["CLOUDFLARE_API_TOKEN"]) == 0 || len(secret.Data["CLOUDFLARE_ACCOUNT_ID"]) == 0 {
+		return false, fmt.Sprintf("Secret %s/%s must contain CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID", *ref.Namespace, ref.Name)
+	}
+
+	return true, "parametersRef is valid"
 }

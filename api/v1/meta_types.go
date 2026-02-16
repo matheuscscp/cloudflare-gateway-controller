@@ -15,12 +15,15 @@ const (
 	CRDGatewayClass = "gatewayclasses.gateway.networking.k8s.io"
 )
 
-// Gateway API kind constants (not exported by the upstream package).
+// Kind constants.
 const (
-	KindGateway   = "Gateway"
-	KindHTTPRoute = "HTTPRoute"
-	KindSecret    = "Secret"
-	KindService   = "Service"
+	KindCustomResourceDefinition = "CustomResourceDefinition"
+	KindGatewayClass             = "GatewayClass"
+	KindGateway                  = "Gateway"
+	KindHTTPRoute                = "HTTPRoute"
+	KindSecret                   = "Secret"
+	KindService                  = "Service"
+	KindDeployment               = "Deployment"
 )
 
 // Annotation values.
