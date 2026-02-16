@@ -225,27 +225,30 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
-	// Build and create/update cloudflared Deployment
+	// Build and create/update cloudflared Deployment, retrying on conflict
+	// to handle races with HPA or other controllers updating the Deployment.
 	deploy := r.buildCloudflaredDeployment(&gw)
 	if err := controllerutil.SetControllerReference(&gw, deploy, r.Scheme()); err != nil {
 		return ctrl.Result{}, fmt.Errorf("setting owner reference: %w", err)
 	}
-	result, err = controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
-		currentReplicas := deploy.Spec.Replicas
-		desired := r.buildCloudflaredDeployment(&gw)
-		deploy.Labels = desired.Labels
-		deploy.Annotations = desired.Annotations
-		deploy.Spec = desired.Spec
-		if replicas != nil {
-			deploy.Spec.Replicas = replicas
-		} else if currentReplicas != nil {
-			deploy.Spec.Replicas = currentReplicas
-		} else {
-			deploy.Spec.Replicas = new(int32(1))
-		}
-		return controllerutil.SetControllerReference(&gw, deploy, r.Scheme())
-	})
-	if err != nil {
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		result, err = controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
+			currentReplicas := deploy.Spec.Replicas
+			desired := r.buildCloudflaredDeployment(&gw)
+			deploy.Labels = desired.Labels
+			deploy.Annotations = desired.Annotations
+			deploy.Spec = desired.Spec
+			if replicas != nil {
+				deploy.Spec.Replicas = replicas
+			} else if currentReplicas != nil {
+				deploy.Spec.Replicas = currentReplicas
+			} else {
+				deploy.Spec.Replicas = new(int32(1))
+			}
+			return controllerutil.SetControllerReference(&gw, deploy, r.Scheme())
+		})
+		return err
+	}); err != nil {
 		return ctrl.Result{}, fmt.Errorf("creating/updating cloudflared deployment: %w", err)
 	}
 	log.V(1).Info("Reconciled cloudflared Deployment", "result", result)
