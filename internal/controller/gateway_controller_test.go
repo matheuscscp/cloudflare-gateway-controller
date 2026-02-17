@@ -123,7 +123,7 @@ func TestGatewayReconciler_AcceptedAndProgrammed(t *testing.T) {
 	// Verify GatewayClass has the finalizer
 	var gcResult gatewayv1.GatewayClass
 	g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &gcResult)).To(Succeed())
-	g.Expect(gcResult.Finalizers).To(ContainElement(apiv1.FinalizerGatewayClass))
+	g.Expect(gcResult.Finalizers).To(ContainElement(apiv1.FinalizerGatewayClass(gw)))
 }
 
 func TestGatewayReconciler_UnsupportedProtocol(t *testing.T) {
@@ -251,7 +251,7 @@ func TestGatewayReconciler_Deletion(t *testing.T) {
 			return []string{err.Error()}
 		}
 		return gcResult.Finalizers
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).ShouldNot(ContainElement(apiv1.FinalizerGatewayClass))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).ShouldNot(ContainElement(apiv1.FinalizerGatewayClass(gw)))
 }
 
 func TestGatewayReconciler_CrossNamespaceSecret(t *testing.T) {

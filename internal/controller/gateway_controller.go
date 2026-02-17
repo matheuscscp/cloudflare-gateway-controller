@@ -91,6 +91,11 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{RequeueAfter: 1}, nil
 	}
 
+	// Ensure GatewayClass finalizer
+	if err := r.ensureGatewayClassFinalizer(ctx, &gc, &gw); err != nil {
+		return r.reconcileError(ctx, &gw, fmt.Errorf("ensuring GatewayClass finalizer: %w", err))
+	}
+
 	// Skip reconciliation if the object is suspended.
 	if gw.Annotations[apiv1.AnnotationReconcile] == apiv1.ValueDisabled {
 		log.V(1).Info("Reconciliation is disabled")
@@ -109,11 +114,6 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	attachedRoutes, err := countAttachedRoutes(ctx, r.Client, gw)
 	if err != nil {
 		return r.reconcileError(ctx, gw, fmt.Errorf("counting attached routes: %w", err))
-	}
-
-	// Ensure GatewayClass finalizer
-	if err := r.ensureGatewayClassFinalizer(ctx, gc); err != nil {
-		return r.reconcileError(ctx, gw, fmt.Errorf("ensuring GatewayClass finalizer: %w", err))
 	}
 
 	listenerPatches := buildListenerStatusPatches(gw, attachedRoutes)
@@ -666,16 +666,17 @@ func (r *GatewayReconciler) cleanupAllDNS(ctx context.Context, tc cloudflare.Cli
 
 // ensureGatewayClassFinalizer adds the GatewayClass finalizer if not already present,
 // preventing the GatewayClass from being deleted while Gateways reference it.
-func (r *GatewayReconciler) ensureGatewayClassFinalizer(ctx context.Context, gc *gatewayv1.GatewayClass) error {
+func (r *GatewayReconciler) ensureGatewayClassFinalizer(ctx context.Context, gc *gatewayv1.GatewayClass, gw *gatewayv1.Gateway) error {
+	finalizer := apiv1.FinalizerGatewayClass(gw)
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		if err := r.Get(ctx, types.NamespacedName{Name: gc.Name}, gc); err != nil {
 			return err
 		}
-		if controllerutil.ContainsFinalizer(gc, apiv1.FinalizerGatewayClass) {
+		if controllerutil.ContainsFinalizer(gc, finalizer) {
 			return nil
 		}
 		gcPatch := client.MergeFromWithOptions(gc.DeepCopy(), client.MergeFromWithOptimisticLock{})
-		controllerutil.AddFinalizer(gc, apiv1.FinalizerGatewayClass)
+		controllerutil.AddFinalizer(gc, finalizer)
 		return r.Patch(ctx, gc, gcPatch)
 	})
 }
@@ -683,25 +684,16 @@ func (r *GatewayReconciler) ensureGatewayClassFinalizer(ctx context.Context, gc 
 // removeGatewayClassFinalizer removes the GatewayClass finalizer if no other
 // non-deleting Gateways reference the class.
 func (r *GatewayReconciler) removeGatewayClassFinalizer(ctx context.Context, gc *gatewayv1.GatewayClass, gw *gatewayv1.Gateway) error {
+	finalizer := apiv1.FinalizerGatewayClass(gw)
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var gwList gatewayv1.GatewayList
-		if err := r.List(ctx, &gwList); err != nil {
-			return err
-		}
-		for i := range gwList.Items {
-			item := &gwList.Items[i]
-			if item.UID != gw.UID && item.DeletionTimestamp.IsZero() && string(item.Spec.GatewayClassName) == gc.Name {
-				return nil
-			}
-		}
 		if err := r.Get(ctx, types.NamespacedName{Name: gc.Name}, gc); err != nil {
 			return err
 		}
-		if !controllerutil.ContainsFinalizer(gc, apiv1.FinalizerGatewayClass) {
+		if !controllerutil.ContainsFinalizer(gc, finalizer) {
 			return nil
 		}
 		gcPatch := client.MergeFromWithOptions(gc.DeepCopy(), client.MergeFromWithOptimisticLock{})
-		controllerutil.RemoveFinalizer(gc, apiv1.FinalizerGatewayClass)
+		controllerutil.RemoveFinalizer(gc, finalizer)
 		return r.Patch(ctx, gc, gcPatch)
 	})
 }

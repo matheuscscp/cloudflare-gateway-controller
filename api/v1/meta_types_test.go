@@ -41,6 +41,19 @@ func TestTunnelTokenSecretName(t *testing.T) {
 	}
 }
 
+func TestFinalizerGatewayClass(t *testing.T) {
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-gw",
+			Namespace: "my-ns",
+		},
+	}
+	want := "gateway-exists-finalizer.gateway.networking.k8s.io/my-ns.my-gw"
+	if got := apiv1.FinalizerGatewayClass(gw); got != want {
+		t.Errorf("FinalizerGatewayClass() = %q, want %q", got, want)
+	}
+}
+
 func TestReconcileInterval(t *testing.T) {
 	tests := []struct {
 		name        string

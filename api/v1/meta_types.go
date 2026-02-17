@@ -37,11 +37,14 @@ const (
 	// Finalizer is the finalizer added to resources managed by this controller
 	// to ensure cleanup is performed before the resource is removed.
 	Finalizer = prefix + "finalizer"
-
-	// FinalizerGatewayClass is the finalizer added to GatewayClass resources
-	// to ensure the GatewayClass is not deleted while Gateways reference it.
-	FinalizerGatewayClass = gatewayv1.GatewayClassFinalizerGatewaysExist + "/finalizer"
 )
+
+// FinalizerGatewayClass returns the finalizer added to a GatewayClass for a
+// specific Gateway, ensuring the GatewayClass is not deleted while the Gateway
+// references it.
+func FinalizerGatewayClass(gw *gatewayv1.Gateway) string {
+	return string(gatewayv1.GatewayClassFinalizerGatewaysExist) + "/" + gw.Namespace + "." + gw.Name
+}
 
 // Annotations.
 const (
