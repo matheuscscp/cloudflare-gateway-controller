@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	acmetav1 "k8s.io/client-go/applyconfigurations/meta/v1"
@@ -55,7 +56,12 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Handle deletion.
 	if !route.DeletionTimestamp.IsZero() {
-		return r.finalize(ctx, &route, parents)
+		result, err := r.finalize(ctx, &route, parents)
+		if err != nil {
+			r.Eventf(&route, nil, corev1.EventTypeWarning, apiv1.ReasonFailed, "Finalize", "Finalization failed: %v", err)
+			return ctrl.Result{}, err
+		}
+		return result, nil
 	}
 
 	// Add finalizer first if it doesn't exist.
@@ -76,17 +82,88 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	log.V(1).Info("Reconciling HTTPRoute")
 
+	return r.reconcile(ctx, &route, parents)
+}
+
+func (r *HTTPRouteReconciler) reconcile(ctx context.Context, route *gatewayv1.HTTPRoute, parents []gatewayParent) (ctrl.Result, error) {
+	acceptedStatus := metav1.ConditionTrue
+	acceptedReason := string(gatewayv1.RouteReasonAccepted)
+	acceptedMessage := "HTTPRoute is accepted"
+	resolvedRefsStatus := metav1.ConditionTrue
+	resolvedRefsReason := string(gatewayv1.RouteReasonResolvedRefs)
+	resolvedRefsMessage := "References resolved"
+
+	requeueAfter := apiv1.ReconcileInterval(route.Annotations)
+
+	// Skip the status patch if no parent statuses changed.
+	acceptedType := string(gatewayv1.RouteConditionAccepted)
+	resolvedRefsType := string(gatewayv1.RouteConditionResolvedRefs)
+	if !r.routeStatusChanged(route, parents, acceptedType, acceptedStatus, acceptedReason, acceptedMessage,
+		resolvedRefsType, resolvedRefsStatus, resolvedRefsReason, resolvedRefsMessage) {
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
+	}
+
 	var parentStatuses []*acgatewayv1.RouteParentStatusApplyConfiguration
 	for _, p := range parents {
-		parentStatuses = append(parentStatuses, buildRouteParentStatus(&route, p.gw, metav1.ConditionTrue,
-			string(gatewayv1.RouteReasonAccepted), "HTTPRoute is accepted"))
+		parentStatuses = append(parentStatuses, buildRouteParentStatus(route, p.gw,
+			acceptedStatus, acceptedReason, acceptedMessage))
 	}
 
-	if err := r.applyRouteStatus(ctx, &route, parentStatuses); err != nil {
-		return ctrl.Result{}, fmt.Errorf("applying route status: %w", err)
+	if err := r.applyRouteStatus(ctx, route, parentStatuses); err != nil {
+		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{RequeueAfter: apiv1.ReconcileInterval(route.Annotations)}, nil
+	r.Eventf(route, nil, corev1.EventTypeNormal, apiv1.ReasonReconciled, "Reconcile", "HTTPRoute reconciled")
+	return ctrl.Result{RequeueAfter: requeueAfter}, nil
+}
+
+// routeStatusChanged reports whether the desired parent statuses differ from
+// the existing status. It checks that the set of parents managed by our
+// controller matches and that each parent's conditions are unchanged.
+func (r *HTTPRouteReconciler) routeStatusChanged(route *gatewayv1.HTTPRoute, parents []gatewayParent,
+	acceptedType string, acceptedStatus metav1.ConditionStatus, acceptedReason, acceptedMessage string,
+	resolvedRefsType string, resolvedRefsStatus metav1.ConditionStatus, resolvedRefsReason, resolvedRefsMessage string,
+) bool {
+	// Count existing entries for our controller.
+	var ours int
+	for _, p := range route.Status.Parents {
+		if p.ControllerName == gatewayv1.GatewayController(apiv1.ControllerName) {
+			ours++
+		}
+	}
+	if ours != len(parents) {
+		return true
+	}
+
+	// Check each parent's conditions.
+	for _, p := range parents {
+		existing := findRouteParentStatus(route.Status.Parents, p.gw)
+		if existing == nil {
+			return true
+		}
+		if conditionChanged(existing.Conditions, acceptedType, acceptedStatus, acceptedReason, acceptedMessage, route.Generation) ||
+			conditionChanged(existing.Conditions, resolvedRefsType, resolvedRefsStatus, resolvedRefsReason, resolvedRefsMessage, route.Generation) {
+			return true
+		}
+	}
+	return false
+}
+
+// findRouteParentStatus finds the RouteParentStatus entry for the given Gateway
+// managed by our controller.
+func findRouteParentStatus(statuses []gatewayv1.RouteParentStatus, gw *gatewayv1.Gateway) *gatewayv1.RouteParentStatus {
+	for i, s := range statuses {
+		if s.ControllerName != gatewayv1.GatewayController(apiv1.ControllerName) {
+			continue
+		}
+		if string(s.ParentRef.Name) != gw.Name {
+			continue
+		}
+		if s.ParentRef.Namespace != nil && string(*s.ParentRef.Namespace) == gw.Namespace {
+			return &statuses[i]
+		}
+	}
+	return nil
 }
 
 // resolveParents returns the parent Gateways (and their GatewayClasses) that are
@@ -183,6 +260,7 @@ func buildRouteParentStatus(route *gatewayv1.HTTPRoute, gw *gatewayv1.Gateway,
 func (r *HTTPRouteReconciler) applyRouteStatus(ctx context.Context, route *gatewayv1.HTTPRoute,
 	parentStatuses []*acgatewayv1.RouteParentStatusApplyConfiguration) error {
 	statusPatch := acgatewayv1.HTTPRoute(route.Name, route.Namespace).
+		WithResourceVersion(route.ResourceVersion).
 		WithStatus(acgatewayv1.HTTPRouteStatus().
 			WithParents(parentStatuses...),
 		)

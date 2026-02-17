@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
+	"slices"
 
 	semver "github.com/Masterminds/semver/v3"
 	corev1 "k8s.io/api/core/v1"
@@ -81,8 +82,12 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	log.V(1).Info("Reconciling GatewayClass")
 
+	return r.reconcile(ctx, &gc)
+}
+
+func (r *GatewayClassReconciler) reconcile(ctx context.Context, gc *gatewayv1.GatewayClass) (ctrl.Result, error) {
 	supportedVersion, supportedVersionMessage := r.checkSupportedVersion(ctx)
-	validParams, validParamsMessage := r.checkParametersRef(ctx, &gc)
+	validParams, validParamsMessage := r.checkParametersRef(ctx, gc)
 
 	acceptedStatus := metav1.ConditionTrue
 	acceptedReason := string(gatewayv1.GatewayClassReasonAccepted)
@@ -92,7 +97,8 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	readyStatus := metav1.ConditionTrue
 	readyReason := apiv1.ReasonReconciled
 	readyMessage := "GatewayClass is ready"
-	if !supportedVersion {
+	switch {
+	case !supportedVersion:
 		acceptedStatus = metav1.ConditionFalse
 		acceptedReason = string(gatewayv1.GatewayClassReasonUnsupportedVersion)
 		acceptedMessage = supportedVersionMessage
@@ -101,7 +107,7 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		readyStatus = metav1.ConditionFalse
 		readyReason = apiv1.ReasonFailed
 		readyMessage = supportedVersionMessage
-	} else if !validParams {
+	case !validParams:
 		acceptedStatus = metav1.ConditionFalse
 		acceptedReason = string(gatewayv1.GatewayClassReasonInvalidParameters)
 		acceptedMessage = validParamsMessage
@@ -110,20 +116,44 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		readyMessage = validParamsMessage
 	}
 
+	requeueAfter := apiv1.ReconcileInterval(gc.Annotations)
+
+	// Desired supported features (sorted alphabetically by name as required by the spec).
+	desiredFeatures := []gatewayv1.SupportedFeature{
+		{Name: gatewayv1.FeatureName(features.SupportGateway)},
+		{Name: gatewayv1.FeatureName(features.SupportGatewayInfrastructurePropagation)},
+		{Name: gatewayv1.FeatureName(features.SupportHTTPRoute)},
+		{Name: gatewayv1.FeatureName(features.SupportReferenceGrant)},
+	}
+
+	// Skip the status patch if no conditions or features changed.
+	acceptedType := string(gatewayv1.GatewayClassConditionStatusAccepted)
+	supportedVersionType := string(gatewayv1.GatewayClassConditionStatusSupportedVersion)
+	if !conditionChanged(gc.Status.Conditions, acceptedType, acceptedStatus, acceptedReason, acceptedMessage, gc.Generation) &&
+		!conditionChanged(gc.Status.Conditions, supportedVersionType, supportedVersionStatus, supportedVersionReason, supportedVersionMessage, gc.Generation) &&
+		!conditionChanged(gc.Status.Conditions, apiv1.ConditionReady, readyStatus, readyReason, readyMessage, gc.Generation) &&
+		slices.Equal(gc.Status.SupportedFeatures, desiredFeatures) {
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
+	}
+
 	now := metav1.Now()
+	featurePatches := make([]*acgatewayv1.SupportedFeatureApplyConfiguration, len(desiredFeatures))
+	for i, f := range desiredFeatures {
+		featurePatches[i] = acgatewayv1.SupportedFeature().WithName(f.Name)
+	}
 	statusPatch := acgatewayv1.GatewayClass(gc.Name).
 		WithResourceVersion(gc.ResourceVersion).
 		WithStatus(acgatewayv1.GatewayClassStatus().
 			WithConditions(
 				acmetav1.Condition().
-					WithType(string(gatewayv1.GatewayClassConditionStatusAccepted)).
+					WithType(acceptedType).
 					WithStatus(acceptedStatus).
 					WithObservedGeneration(gc.Generation).
 					WithLastTransitionTime(now).
 					WithReason(acceptedReason).
 					WithMessage(acceptedMessage),
 				acmetav1.Condition().
-					WithType(string(gatewayv1.GatewayClassConditionStatusSupportedVersion)).
+					WithType(supportedVersionType).
 					WithStatus(supportedVersionStatus).
 					WithObservedGeneration(gc.Generation).
 					WithLastTransitionTime(now).
@@ -137,20 +167,20 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 					WithReason(readyReason).
 					WithMessage(readyMessage),
 			).
-			// Sorted alphabetically by name as required by the spec.
-			WithSupportedFeatures(
-				acgatewayv1.SupportedFeature().WithName(gatewayv1.FeatureName(features.SupportGateway)),
-				acgatewayv1.SupportedFeature().WithName(gatewayv1.FeatureName(features.SupportGatewayInfrastructurePropagation)),
-				acgatewayv1.SupportedFeature().WithName(gatewayv1.FeatureName(features.SupportHTTPRoute)),
-				acgatewayv1.SupportedFeature().WithName(gatewayv1.FeatureName(features.SupportReferenceGrant)),
-			),
+			WithSupportedFeatures(featurePatches...),
 		)
 
 	if err := r.Status().Apply(ctx, statusPatch, client.FieldOwner(apiv1.ControllerName), client.ForceOwnership); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{RequeueAfter: apiv1.ReconcileInterval(gc.Annotations)}, nil
+	if readyStatus == metav1.ConditionFalse {
+		r.Eventf(gc, nil, corev1.EventTypeWarning, readyReason, "Reconcile", readyMessage)
+	} else {
+		r.Eventf(gc, nil, corev1.EventTypeNormal, apiv1.ReasonReconciled, "Reconcile", "GatewayClass is ready")
+	}
+
+	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
 // checkSupportedVersion verifies that the installed Gateway API CRD major.minor

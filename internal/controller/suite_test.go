@@ -17,6 +17,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -80,6 +81,7 @@ func TestMain(m *testing.M) {
 
 	if err := (&GatewayClassReconciler{
 		Client:            mgr.GetClient(),
+		EventRecorder:     &events.FakeRecorder{},
 		GatewayAPIVersion: testGatewayAPIVersion,
 	}).SetupWithManager(mgr); err != nil {
 		panic(fmt.Sprintf("failed to setup GatewayClass controller: %v", err))
@@ -90,7 +92,8 @@ func TestMain(m *testing.M) {
 		tunnelToken: "test-tunnel-token",
 	}
 	if err := (&GatewayReconciler{
-		Client: mgr.GetClient(),
+		Client:        mgr.GetClient(),
+		EventRecorder: &events.FakeRecorder{},
 		NewTunnelClient: func(_ cfclient.ClientConfig) (cfclient.TunnelClient, error) {
 			return testMock, nil
 		},
@@ -100,7 +103,8 @@ func TestMain(m *testing.M) {
 	}
 
 	if err := (&HTTPRouteReconciler{
-		Client: mgr.GetClient(),
+		Client:        mgr.GetClient(),
+		EventRecorder: &events.FakeRecorder{},
 	}).SetupWithManager(mgr); err != nil {
 		panic(fmt.Sprintf("failed to setup HTTPRoute controller: %v", err))
 	}
