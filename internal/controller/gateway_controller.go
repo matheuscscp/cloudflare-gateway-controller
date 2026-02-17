@@ -557,7 +557,7 @@ func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cloudflare.Clie
 	}
 
 	// Query actual CNAME records pointing to our tunnel.
-	tunnelTarget := tunnelID + ".cfargotunnel.com"
+	tunnelTarget := cloudflare.TunnelTarget(tunnelID)
 	actual, err := tc.ListDNSCNAMEsByTarget(ctx, zoneID, tunnelTarget)
 	if err != nil {
 		return new(fmt.Sprintf("Failed to list DNS CNAMEs: %v", err))
@@ -610,7 +610,7 @@ func dnsWasPreviouslyEnabled(routes []*gatewayv1.HTTPRoute, gw *gatewayv1.Gatewa
 // account zones. This is used when the zoneName annotation is removed.
 func (r *GatewayReconciler) cleanupAllDNS(ctx context.Context, tc cloudflare.Client, tunnelID string) error {
 	log := log.FromContext(ctx)
-	tunnelTarget := tunnelID + ".cfargotunnel.com"
+	tunnelTarget := cloudflare.TunnelTarget(tunnelID)
 
 	zoneIDs, err := tc.ListZoneIDs(ctx)
 	if err != nil {

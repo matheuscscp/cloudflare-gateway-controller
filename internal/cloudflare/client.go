@@ -51,6 +51,11 @@ func IsConflict(err error) bool {
 	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict
 }
 
+// TunnelTarget returns the CNAME target for a Cloudflare tunnel.
+func TunnelTarget(tunnelID string) string {
+	return tunnelID + ".cfargotunnel.com"
+}
+
 // ClientFactory creates a Client from a ClientConfig.
 type ClientFactory func(cfg ClientConfig) (Client, error)
 

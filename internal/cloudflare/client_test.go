@@ -113,6 +113,11 @@ func TestIsConflict(t *testing.T) {
 	})
 }
 
+func TestTunnelTarget(t *testing.T) {
+	g := NewWithT(t)
+	g.Expect(cloudflare.TunnelTarget("abc-123")).To(Equal("abc-123.cfargotunnel.com"))
+}
+
 func TestNewClient(t *testing.T) {
 	g := NewWithT(t)
 	c, err := cloudflare.NewClient(cloudflare.ClientConfig{

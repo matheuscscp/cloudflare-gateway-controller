@@ -17,6 +17,7 @@ import (
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
+	"github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/conditions"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/controller"
 )
@@ -612,7 +613,7 @@ func TestGatewayReconciler_DNSReconciliation(t *testing.T) {
 		return len(testMock.ensureDNSCalls)
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(BeNumerically(">=", 1))
 	g.Expect(testMock.ensureDNSCalls[0].Hostname).To(Equal("app.example.com"))
-	g.Expect(testMock.ensureDNSCalls[0].Target).To(Equal("test-tunnel-id.cfargotunnel.com"))
+	g.Expect(testMock.ensureDNSCalls[0].Target).To(Equal(cloudflare.TunnelTarget("test-tunnel-id")))
 
 	// Verify DNSManagement condition on HTTPRoute status.parents
 	routeKey := client.ObjectKeyFromObject(route)
