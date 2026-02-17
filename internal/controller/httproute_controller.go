@@ -46,24 +46,9 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Resolve parent Gateways that belong to our controller.
-	parents, err := r.resolveParents(ctx, &route)
-	if err != nil {
-		r.Eventf(&route, nil, corev1.EventTypeWarning, apiv1.ReasonProgressingWithRetry, "Reconcile", "Reconciliation failed: %v", err)
-		return ctrl.Result{}, fmt.Errorf("resolving parent Gateways: %w", err)
-	}
-	if len(parents) == 0 {
-		return ctrl.Result{}, nil
-	}
-
-	// Handle deletion.
+	// Handle deletion before any heavy work (parent resolution).
 	if !route.DeletionTimestamp.IsZero() {
-		result, err := r.finalize(ctx, &route, parents)
-		if err != nil {
-			r.Eventf(&route, nil, corev1.EventTypeWarning, apiv1.ReasonFailed, "Finalize", "Finalization failed: %v", err)
-			return ctrl.Result{}, err
-		}
-		return result, nil
+		return r.finalize(ctx, &route)
 	}
 
 	// Add finalizer first if it doesn't exist.
@@ -84,10 +69,20 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	log.V(1).Info("Reconciling HTTPRoute")
 
-	return r.reconcile(ctx, &route, parents)
+	return r.reconcile(ctx, &route)
 }
 
-func (r *HTTPRouteReconciler) reconcile(ctx context.Context, route *gatewayv1.HTTPRoute, parents []gatewayParent) (ctrl.Result, error) {
+func (r *HTTPRouteReconciler) reconcile(ctx context.Context, route *gatewayv1.HTTPRoute) (ctrl.Result, error) {
+	// Resolve parent Gateways that belong to our controller.
+	parents, err := r.resolveParents(ctx, route)
+	if err != nil {
+		r.Eventf(route, nil, corev1.EventTypeWarning, apiv1.ReasonProgressingWithRetry, "Reconcile", "Reconciliation failed: %v", err)
+		return ctrl.Result{}, fmt.Errorf("resolving parent Gateways: %w", err)
+	}
+	if len(parents) == 0 {
+		return ctrl.Result{}, nil
+	}
+
 	acceptedStatus := metav1.ConditionTrue
 	acceptedReason := string(gatewayv1.RouteReasonAccepted)
 	acceptedMessage := "HTTPRoute is accepted"
@@ -111,7 +106,12 @@ func (r *HTTPRouteReconciler) reconcile(ctx context.Context, route *gatewayv1.HT
 			acceptedStatus, acceptedReason, acceptedMessage))
 	}
 
-	if err := r.applyRouteStatus(ctx, route, parentStatuses); err != nil {
+	statusPatch := acgatewayv1.HTTPRoute(route.Name, route.Namespace).
+		WithResourceVersion(route.ResourceVersion).
+		WithStatus(acgatewayv1.HTTPRouteStatus().
+			WithParents(parentStatuses...),
+		)
+	if err := r.Status().Apply(ctx, statusPatch, client.FieldOwner(apiv1.ShortControllerName), client.ForceOwnership); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -210,22 +210,6 @@ func (r *HTTPRouteReconciler) resolveParents(ctx context.Context, route *gateway
 	return parents, nil
 }
 
-// finalize removes the finalizer from the HTTPRoute. DNS CNAME records are managed
-// by the Gateway controller, which is triggered by the HTTPRoute deletion event via
-// its Watch and will reconcile the desired DNS state for the zone.
-func (r *HTTPRouteReconciler) finalize(ctx context.Context, route *gatewayv1.HTTPRoute, _ []gatewayParent) (ctrl.Result, error) {
-	if !controllerutil.ContainsFinalizer(route, apiv1.Finalizer) {
-		return ctrl.Result{}, nil
-	}
-
-	patch := client.MergeFrom(route.DeepCopy())
-	controllerutil.RemoveFinalizer(route, apiv1.Finalizer)
-	if err := r.Patch(ctx, route, patch); err != nil {
-		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
-	}
-	return ctrl.Result{}, nil
-}
-
 // buildRouteParentStatus builds an SSA apply configuration for a single parent
 // Gateway's status entry in an HTTPRoute.
 func buildRouteParentStatus(route *gatewayv1.HTTPRoute, gw *gatewayv1.Gateway,
@@ -257,18 +241,6 @@ func buildRouteParentStatus(route *gatewayv1.HTTPRoute, gw *gatewayv1.Gateway,
 		)
 }
 
-// applyRouteStatus applies the HTTPRoute status via SSA for all parent Gateways
-// in a single API call.
-func (r *HTTPRouteReconciler) applyRouteStatus(ctx context.Context, route *gatewayv1.HTTPRoute,
-	parentStatuses []*acgatewayv1.RouteParentStatusApplyConfiguration) error {
-	statusPatch := acgatewayv1.HTTPRoute(route.Name, route.Namespace).
-		WithResourceVersion(route.ResourceVersion).
-		WithStatus(acgatewayv1.HTTPRouteStatus().
-			WithParents(parentStatuses...),
-		)
-	return r.Status().Apply(ctx, statusPatch, client.FieldOwner(apiv1.ShortControllerName), client.ForceOwnership)
-}
-
 // parentRefMatches reports whether the given parentRef points to the specified Gateway,
 // defaulting group to gateway.networking.k8s.io, kind to Gateway, and namespace to
 // the route's namespace when unset.
@@ -287,4 +259,20 @@ func parentRefMatches(ref gatewayv1.ParentReference, gw *gatewayv1.Gateway, rout
 		refNS = string(*ref.Namespace)
 	}
 	return refNS == gw.Namespace
+}
+
+// finalize removes the finalizer from the HTTPRoute. DNS CNAME records are managed
+// by the Gateway controller, which is triggered by the HTTPRoute deletion event via
+// its Watch and will reconcile the desired DNS state for the zone.
+func (r *HTTPRouteReconciler) finalize(ctx context.Context, route *gatewayv1.HTTPRoute) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(route, apiv1.Finalizer) {
+		return ctrl.Result{}, nil
+	}
+
+	patch := client.MergeFrom(route.DeepCopy())
+	controllerutil.RemoveFinalizer(route, apiv1.Finalizer)
+	if err := r.Patch(ctx, route, patch); err != nil {
+		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
+	}
+	return ctrl.Result{}, nil
 }
