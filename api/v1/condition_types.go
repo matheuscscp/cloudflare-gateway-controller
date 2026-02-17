@@ -9,16 +9,6 @@ const (
 	// whether the resource has been successfully reconciled.
 	ConditionReady = "Ready"
 
-	// ConditionRouteReferenceGrants is a Gateway condition that reports
-	// HTTPRoutes denied due to missing or failed cross-namespace
-	// ReferenceGrant checks.
-	ConditionRouteReferenceGrants = "RouteReferenceGrants"
-
-	// ConditionBackendReferenceGrants is a Gateway condition that reports
-	// HTTPRoute backendRefs denied due to missing or failed cross-namespace
-	// ReferenceGrant checks.
-	ConditionBackendReferenceGrants = "BackendReferenceGrants"
-
 	// ConditionDNSRecordsApplied is an HTTPRoute status.parents condition that
 	// reports whether DNS CNAME records have been applied for the route's hostnames.
 	ConditionDNSRecordsApplied = "DNSRecordsApplied"

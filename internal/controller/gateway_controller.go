@@ -223,14 +223,21 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		}
 		if len(deniedRoutes) > 0 {
 			log.Info("HTTPRoutes denied due to missing or failed ReferenceGrant checks", "count", len(deniedRoutes))
+			// Remove stale status.parents entries for denied routes (e.g. after a
+			// ReferenceGrant was deleted).
+			for _, route := range deniedRoutes {
+				if err := r.removeRouteStatus(ctx, gw, route); err != nil {
+					log.Error(err, "Failed to remove status for denied HTTPRoute", "httproute", route.Namespace+"/"+route.Name)
+				}
+			}
 		}
 
-		ingress, deniedBackendRefs, err := buildIngressRules(ctx, r.Client, gatewayRoutes)
+		ingress, routesWithDeniedRefs, err := buildIngressRules(ctx, r.Client, gatewayRoutes)
 		if err != nil {
 			return r.reconcileError(ctx, gw, err)
 		}
-		if len(deniedBackendRefs) > 0 {
-			log.Info("BackendRefs denied due to missing or failed ReferenceGrant checks", "count", len(deniedBackendRefs))
+		if len(routesWithDeniedRefs) > 0 {
+			log.Info("BackendRefs denied due to missing or failed ReferenceGrant checks", "routes", len(routesWithDeniedRefs))
 		}
 		if err := tc.UpdateTunnelConfiguration(ctx, tunnelID, ingress); err != nil {
 			return r.reconcileError(ctx, gw, fmt.Errorf("updating tunnel configuration: %w", err))
@@ -241,7 +248,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		dnsErr := r.reconcileDNS(ctx, tc, tunnelID, zoneName, gw, gatewayRoutes)
 
 		// Update HTTPRoute status.parents for allowed routes (after DNS so we can report DNS status).
-		r.updateRouteStatuses(ctx, gw, gatewayRoutes, zoneName, dnsErr)
+		r.updateRouteStatuses(ctx, gw, gatewayRoutes, routesWithDeniedRefs, zoneName, dnsErr)
 
 		// Check Deployment readiness.
 		var deploy appsv1.Deployment
@@ -294,8 +301,6 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 				WithReason(readyReason).
 				WithMessage(readyMsg),
 		}
-		condPatches = append(condPatches, routeReferenceGrantsCondition(gw.Generation, now, deniedRoutes))
-		condPatches = append(condPatches, backendReferenceGrantsCondition(gw.Generation, now, deniedBackendRefs))
 	}
 
 	// Skip the status patch if no conditions or listener statuses changed.
@@ -829,60 +834,6 @@ func listenersChanged(existing []gatewayv1.ListenerStatus, desired []*acgatewayv
 	return false
 }
 
-// routeReferenceGrantsCondition builds a Gateway status condition reporting whether
-// all cross-namespace HTTPRoutes have valid ReferenceGrants. When denied routes exist,
-// the condition lists each one in a multi-line message.
-func routeReferenceGrantsCondition(generation int64, now metav1.Time, deniedRoutes []*gatewayv1.HTTPRoute) *acmetav1.ConditionApplyConfiguration {
-	if len(deniedRoutes) == 0 {
-		return acmetav1.Condition().
-			WithType(apiv1.ConditionRouteReferenceGrants).
-			WithStatus(metav1.ConditionTrue).
-			WithObservedGeneration(generation).
-			WithLastTransitionTime(now).
-			WithReason(apiv1.ReasonReferencesAllowed).
-			WithMessage("All HTTPRoutes have valid references")
-	}
-	var lines []string
-	for _, hr := range deniedRoutes {
-		lines = append(lines, fmt.Sprintf("- %s/%s", hr.Namespace, hr.Name))
-	}
-	msg := fmt.Sprintf("HTTPRoutes denied due to missing or failed ReferenceGrant:\n%s", strings.Join(lines, "\n"))
-	return acmetav1.Condition().
-		WithType(apiv1.ConditionRouteReferenceGrants).
-		WithStatus(metav1.ConditionFalse).
-		WithObservedGeneration(generation).
-		WithLastTransitionTime(now).
-		WithReason(apiv1.ReasonReferencesDenied).
-		WithMessage(msg)
-}
-
-// backendReferenceGrantsCondition builds a Gateway status condition reporting whether
-// all cross-namespace backendRefs have valid ReferenceGrants. When denied refs exist,
-// the condition lists each one in a multi-line message.
-func backendReferenceGrantsCondition(generation int64, now metav1.Time, denied []deniedBackendRef) *acmetav1.ConditionApplyConfiguration {
-	if len(denied) == 0 {
-		return acmetav1.Condition().
-			WithType(apiv1.ConditionBackendReferenceGrants).
-			WithStatus(metav1.ConditionTrue).
-			WithObservedGeneration(generation).
-			WithLastTransitionTime(now).
-			WithReason(apiv1.ReasonReferencesAllowed).
-			WithMessage("All backendRefs have valid references")
-	}
-	var lines []string
-	for _, d := range denied {
-		lines = append(lines, fmt.Sprintf("- HTTPRoute %s/%s → Service %s/%s", d.routeNamespace, d.routeName, d.serviceNamespace, d.serviceName))
-	}
-	msg := fmt.Sprintf("BackendRefs denied due to missing or failed ReferenceGrant:\n%s", strings.Join(lines, "\n"))
-	return acmetav1.Condition().
-		WithType(apiv1.ConditionBackendReferenceGrants).
-		WithStatus(metav1.ConditionFalse).
-		WithObservedGeneration(generation).
-		WithLastTransitionTime(now).
-		WithReason(apiv1.ReasonReferencesDenied).
-		WithMessage(msg)
-}
-
 // listGatewayRoutes filters non-deleting HTTPRoutes from the pre-fetched list that
 // reference the given Gateway. Cross-namespace routes are only included if a
 // ReferenceGrant in the Gateway's namespace permits the reference. Routes denied
@@ -914,27 +865,19 @@ func listGatewayRoutes(ctx context.Context, r client.Client, allRoutes *gatewayv
 	return allowed, denied, nil
 }
 
-// deniedBackendRef holds information about a backendRef that was denied due to a
-// missing or failed cross-namespace ReferenceGrant check.
-type deniedBackendRef struct {
-	routeNamespace   string
-	routeName        string
-	serviceNamespace string
-	serviceName      string
-}
-
 // buildIngressRules converts a list of HTTPRoutes into Cloudflare tunnel ingress rules.
 // For each rule in each route it takes the first backendRef and maps every hostname to
 // http://<service>.<namespace>.svc.cluster.local:<port>, optionally with a path prefix.
 // Only the first backendRef per rule is used because additional backendRefs represent
 // traffic splitting (weighted load balancing), which Cloudflare tunnel ingress does not
 // support — use a Kubernetes Service for that instead.
-// Cross-namespace backendRefs are validated against ReferenceGrants. Denied refs are
-// returned separately so the caller can report them without blocking reconciliation.
+// Cross-namespace backendRefs are validated against ReferenceGrants. Routes with denied
+// refs are returned in a map (route name -> list of denied ref names) so the caller can
+// set ResolvedRefs=False on those routes with a specific message.
 // A catch-all 404 rule is appended.
-func buildIngressRules(ctx context.Context, r client.Reader, routes []*gatewayv1.HTTPRoute) ([]cloudflare.IngressRule, []deniedBackendRef, error) {
+func buildIngressRules(ctx context.Context, r client.Reader, routes []*gatewayv1.HTTPRoute) ([]cloudflare.IngressRule, map[types.NamespacedName][]string, error) {
 	var rules []cloudflare.IngressRule
-	var denied []deniedBackendRef
+	routesWithDeniedRefs := make(map[types.NamespacedName][]string)
 	for _, route := range routes {
 		for _, rule := range route.Spec.Rules {
 			if len(rule.BackendRefs) == 0 {
@@ -950,12 +893,8 @@ func buildIngressRules(ctx context.Context, r client.Reader, routes []*gatewayv1
 				return nil, nil, fmt.Errorf("checking ReferenceGrant for backendRef %s/%s in HTTPRoute %s/%s: %w", ns, ref.Name, route.Namespace, route.Name, err)
 			}
 			if !granted {
-				denied = append(denied, deniedBackendRef{
-					routeNamespace:   route.Namespace,
-					routeName:        route.Name,
-					serviceNamespace: ns,
-					serviceName:      string(ref.Name),
-				})
+				key := types.NamespacedName{Namespace: route.Namespace, Name: route.Name}
+				routesWithDeniedRefs[key] = append(routesWithDeniedRefs[key], ns+"/"+string(ref.Name))
 				continue
 			}
 			port := int32(80)
@@ -977,7 +916,7 @@ func buildIngressRules(ctx context.Context, r client.Reader, routes []*gatewayv1
 	rules = append(rules, cloudflare.IngressRule{
 		Service: "http_status:404",
 	})
-	return rules, denied, nil
+	return rules, routesWithDeniedRefs, nil
 }
 
 // pathFromMatches extracts a path prefix from the first HTTPRouteMatch that has
@@ -1170,12 +1109,26 @@ func (r *GatewayReconciler) removeRouteStatuses(ctx context.Context, gw *gateway
 		return fmt.Errorf("listing HTTPRoutes for gateway %s/%s: %w", gw.Namespace, gw.Name, err)
 	}
 	for i := range routes.Items {
-		route := &routes.Items[i]
-		existing := findRouteParentStatus(route.Status.Parents, gw)
-		if existing == nil {
-			continue
+		if err := r.removeRouteStatus(ctx, gw, &routes.Items[i]); err != nil {
+			return err
 		}
-		patch := client.MergeFrom(route.DeepCopy())
+	}
+	return nil
+}
+
+// removeRouteStatus removes this Gateway's entry from status.parents on a
+// single HTTPRoute. This is used for denied routes (missing ReferenceGrant)
+// and during Gateway finalization.
+func (r *GatewayReconciler) removeRouteStatus(ctx context.Context, gw *gatewayv1.Gateway, route *gatewayv1.HTTPRoute) error {
+	routeKey := client.ObjectKeyFromObject(route)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := r.Get(ctx, routeKey, route); err != nil {
+			return err
+		}
+		if findRouteParentStatus(route.Status.Parents, gw) == nil {
+			return nil
+		}
+		patch := client.MergeFromWithOptions(route.DeepCopy(), client.MergeFromWithOptimisticLock{})
 		var filtered []gatewayv1.RouteParentStatus
 		for _, s := range route.Status.Parents {
 			if s.ControllerName == apiv1.ControllerName &&
@@ -1189,16 +1142,17 @@ func (r *GatewayReconciler) removeRouteStatuses(ctx context.Context, gw *gateway
 		if err := r.Status().Patch(ctx, route, patch); err != nil {
 			return fmt.Errorf("removing status entry from HTTPRoute %s/%s: %w", route.Namespace, route.Name, err)
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 // updateRouteStatuses updates the status.parents entry for this Gateway
 // on each allowed HTTPRoute using merge-patch.
-func (r *GatewayReconciler) updateRouteStatuses(ctx context.Context, gw *gatewayv1.Gateway, routes []*gatewayv1.HTTPRoute, zoneName string, dnsErr *string) {
+func (r *GatewayReconciler) updateRouteStatuses(ctx context.Context, gw *gatewayv1.Gateway, routes []*gatewayv1.HTTPRoute, routesWithDeniedRefs map[types.NamespacedName][]string, zoneName string, dnsErr *string) {
 	log := log.FromContext(ctx)
 	for _, route := range routes {
-		if err := r.updateRouteStatus(ctx, gw, route, zoneName, dnsErr); err != nil {
+		deniedRefs := routesWithDeniedRefs[types.NamespacedName{Namespace: route.Namespace, Name: route.Name}]
+		if err := r.updateRouteStatus(ctx, gw, route, deniedRefs, zoneName, dnsErr); err != nil {
 			log.Error(err, "Failed to update HTTPRoute status", "httproute", route.Namespace+"/"+route.Name)
 		}
 	}
@@ -1207,16 +1161,29 @@ func (r *GatewayReconciler) updateRouteStatuses(ctx context.Context, gw *gateway
 // updateRouteStatus updates the status.parents entry for this Gateway on the
 // given HTTPRoute using merge-patch. If the entry already exists with up-to-date
 // conditions, no patch is issued.
-func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1.Gateway, route *gatewayv1.HTTPRoute, zoneName string, dnsErr *string) error {
-	existing := findRouteParentStatus(route.Status.Parents, gw)
-
+func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1.Gateway, route *gatewayv1.HTTPRoute, deniedRefs []string, zoneName string, dnsErr *string) error {
 	acceptedType := string(gatewayv1.RouteConditionAccepted)
 	resolvedRefsType := string(gatewayv1.RouteConditionResolvedRefs)
 
+	// ResolvedRefs condition: False/RefNotPermitted when cross-namespace backendRefs
+	// are denied, True/ResolvedRefs otherwise.
+	resolvedRefsStatus := metav1.ConditionTrue
+	resolvedRefsReason := string(gatewayv1.RouteReasonResolvedRefs)
+	resolvedRefsMsg := "References resolved"
+	if len(deniedRefs) > 0 {
+		resolvedRefsStatus = metav1.ConditionFalse
+		resolvedRefsReason = string(gatewayv1.RouteReasonRefNotPermitted)
+		resolvedRefsMsg = "BackendRefs not permitted by ReferenceGrant:\n"
+		for _, ref := range deniedRefs {
+			resolvedRefsMsg += "- " + ref + "\n"
+		}
+		resolvedRefsMsg = strings.TrimSuffix(resolvedRefsMsg, "\n")
+	}
+
 	// Build per-route DNS condition if DNS is enabled on the Gateway.
+	dnsEnabled := zoneName != ""
 	var dnsStatus metav1.ConditionStatus
 	var dnsReason, dnsMessage string
-	dnsEnabled := zoneName != ""
 	if dnsEnabled {
 		if dnsErr != nil {
 			dnsStatus = metav1.ConditionFalse
@@ -1229,56 +1196,65 @@ func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1
 		}
 	}
 
-	// Check if update is needed.
-	if existing != nil {
-		changed := conditions.Changed(existing.Conditions, acceptedType, metav1.ConditionTrue,
-			string(gatewayv1.RouteReasonAccepted), "HTTPRoute is accepted", route.Generation) ||
-			conditions.Changed(existing.Conditions, resolvedRefsType, metav1.ConditionTrue,
-				string(gatewayv1.RouteReasonResolvedRefs), "References resolved", route.Generation)
+	routeKey := client.ObjectKeyFromObject(route)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := r.Get(ctx, routeKey, route); err != nil {
+			return err
+		}
+
+		existing := findRouteParentStatus(route.Status.Parents, gw)
+
+		// Check if update is needed.
+		if existing != nil {
+			changed := conditions.Changed(existing.Conditions, acceptedType, metav1.ConditionTrue,
+				string(gatewayv1.RouteReasonAccepted), "HTTPRoute is accepted", route.Generation) ||
+				conditions.Changed(existing.Conditions, resolvedRefsType, resolvedRefsStatus,
+					resolvedRefsReason, resolvedRefsMsg, route.Generation)
+			if dnsEnabled {
+				changed = changed || conditions.Changed(existing.Conditions, apiv1.ConditionDNSRecordsApplied,
+					dnsStatus, dnsReason, dnsMessage, route.Generation)
+			} else {
+				// DNS was disabled — check if we need to remove a stale condition.
+				changed = changed || conditions.Find(existing.Conditions, apiv1.ConditionDNSRecordsApplied) != nil
+			}
+			if !changed {
+				return nil
+			}
+		}
+
+		patch := client.MergeFromWithOptions(route.DeepCopy(), client.MergeFromWithOptimisticLock{})
+		now := metav1.Now()
+
+		if existing == nil {
+			ns := gatewayv1.Namespace(gw.Namespace)
+			group := gatewayv1.Group(gatewayv1.GroupName)
+			kind := gatewayv1.Kind(apiv1.KindGateway)
+			route.Status.Parents = append(route.Status.Parents, gatewayv1.RouteParentStatus{
+				ParentRef: gatewayv1.ParentReference{
+					Group:     &group,
+					Kind:      &kind,
+					Namespace: &ns,
+					Name:      gatewayv1.ObjectName(gw.Name),
+				},
+				ControllerName: apiv1.ControllerName,
+			})
+			existing = &route.Status.Parents[len(route.Status.Parents)-1]
+		}
+
+		setRouteCondition(existing, acceptedType, metav1.ConditionTrue,
+			string(gatewayv1.RouteReasonAccepted), "HTTPRoute is accepted", route.Generation, now)
+		setRouteCondition(existing, resolvedRefsType, resolvedRefsStatus,
+			resolvedRefsReason, resolvedRefsMsg, route.Generation, now)
+
 		if dnsEnabled {
-			changed = changed || conditions.Changed(existing.Conditions, apiv1.ConditionDNSRecordsApplied,
-				dnsStatus, dnsReason, dnsMessage, route.Generation)
+			setRouteCondition(existing, apiv1.ConditionDNSRecordsApplied, dnsStatus,
+				dnsReason, dnsMessage, route.Generation, now)
 		} else {
-			// DNS was disabled — check if we need to remove a stale condition.
-			changed = changed || conditions.Find(existing.Conditions, apiv1.ConditionDNSRecordsApplied) != nil
+			removeRouteCondition(existing, apiv1.ConditionDNSRecordsApplied)
 		}
-		if !changed {
-			return nil
-		}
-	}
 
-	patch := client.MergeFrom(route.DeepCopy())
-	now := metav1.Now()
-
-	if existing == nil {
-		ns := gatewayv1.Namespace(gw.Namespace)
-		group := gatewayv1.Group(gatewayv1.GroupName)
-		kind := gatewayv1.Kind(apiv1.KindGateway)
-		route.Status.Parents = append(route.Status.Parents, gatewayv1.RouteParentStatus{
-			ParentRef: gatewayv1.ParentReference{
-				Group:     &group,
-				Kind:      &kind,
-				Namespace: &ns,
-				Name:      gatewayv1.ObjectName(gw.Name),
-			},
-			ControllerName: apiv1.ControllerName,
-		})
-		existing = &route.Status.Parents[len(route.Status.Parents)-1]
-	}
-
-	setRouteCondition(existing, acceptedType, metav1.ConditionTrue,
-		string(gatewayv1.RouteReasonAccepted), "HTTPRoute is accepted", route.Generation, now)
-	setRouteCondition(existing, resolvedRefsType, metav1.ConditionTrue,
-		string(gatewayv1.RouteReasonResolvedRefs), "References resolved", route.Generation, now)
-
-	if dnsEnabled {
-		setRouteCondition(existing, apiv1.ConditionDNSRecordsApplied, dnsStatus,
-			dnsReason, dnsMessage, route.Generation, now)
-	} else {
-		removeRouteCondition(existing, apiv1.ConditionDNSRecordsApplied)
-	}
-
-	return r.Status().Patch(ctx, route, patch)
+		return r.Status().Patch(ctx, route, patch)
+	})
 }
 
 // routeDNSMessage builds a per-route DNS condition message listing the
