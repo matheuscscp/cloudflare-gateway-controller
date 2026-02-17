@@ -52,8 +52,11 @@ type GatewayReconciler struct {
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch;update
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways/status,verbs=update;patch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways/finalizers,verbs=update
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;get;list;watch;update;delete
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=referencegrants,verbs=get;list;watch
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;update
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes/status,verbs=update;patch
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes/finalizers,verbs=update
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;get;list;watch;update;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update
 
 func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -224,6 +227,10 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		if len(deniedRoutes) > 0 {
 			log.Info("HTTPRoutes denied due to missing or failed ReferenceGrant checks", "count", len(deniedRoutes))
 		}
+
+		// Update HTTPRoute status.parents for allowed routes.
+		r.updateRouteStatuses(ctx, gw, gatewayRoutes)
+
 		ingress, deniedBackendRefs, err := buildIngressRules(ctx, r.Client, gatewayRoutes)
 		if err != nil {
 			return r.reconcileError(ctx, gw, err)
@@ -364,10 +371,6 @@ func (r *GatewayReconciler) reconcileError(ctx context.Context, gw *gatewayv1.Ga
 // finalize cleans up managed resources (cloudflared Deployment and Cloudflare tunnel)
 // before allowing the Gateway to be deleted, then removes the finalizer.
 func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway, gc *gatewayv1.GatewayClass) (ctrl.Result, error) {
-	if !controllerutil.ContainsFinalizer(gw, apiv1.Finalizer) {
-		return ctrl.Result{}, nil
-	}
-
 	// When reconciliation is disabled, remove owner references from managed
 	// resources so Kubernetes GC doesn't delete them when the Gateway is removed.
 	// The user is responsible for manually cleaning up.
@@ -375,10 +378,7 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 		if err := r.removeOwnerReferences(ctx, gw); err != nil {
 			return ctrl.Result{}, fmt.Errorf("removing owner references: %w", err)
 		}
-	}
-
-	// Delete managed resources if reconciliation is not disabled.
-	if gw.Annotations[apiv1.AnnotationReconcile] != apiv1.ValueDisabled {
+	} else {
 		// Delete the cloudflared Deployment and wait for it to be gone
 		// before deleting the tunnel, so there are no active connections.
 		deploy := &appsv1.Deployment{
@@ -427,11 +427,13 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 		}
 	}
 
-	// Remove finalizer from Gateway
-	gwPatch := client.MergeFrom(gw.DeepCopy())
-	controllerutil.RemoveFinalizer(gw, apiv1.Finalizer)
-	if err := r.Patch(ctx, gw, gwPatch); err != nil {
-		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
+	// Remove finalizer from Gateway if needed
+	if controllerutil.ContainsFinalizer(gw, apiv1.Finalizer) {
+		gwPatch := client.MergeFrom(gw.DeepCopy())
+		controllerutil.RemoveFinalizer(gw, apiv1.Finalizer)
+		if err := r.Patch(ctx, gw, gwPatch); err != nil {
+			return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
+		}
 	}
 
 	// If no other Gateways reference this GatewayClass, remove its finalizer
@@ -901,13 +903,23 @@ func backendReferenceGrantsCondition(generation int64, now metav1.Time, denied [
 // Cross-namespace routes are only included if a ReferenceGrant in the Gateway's namespace
 // permits the reference. Routes denied due to missing or failed ReferenceGrant checks are
 // returned separately so the caller can report them without blocking reconciliation.
-func listGatewayRoutes(ctx context.Context, r client.Reader, gw *gatewayv1.Gateway) (allowed, denied []*gatewayv1.HTTPRoute, err error) {
+func listGatewayRoutes(ctx context.Context, r client.Client, gw *gatewayv1.Gateway) (allowed, denied []*gatewayv1.HTTPRoute, err error) {
 	var allRoutes gatewayv1.HTTPRouteList
 	if err := r.List(ctx, &allRoutes); err != nil {
 		return nil, nil, fmt.Errorf("listing HTTPRoutes: %w", err)
 	}
 	for i := range allRoutes.Items {
 		hr := &allRoutes.Items[i]
+
+		// Migration: remove stale finalizer left by the old HTTPRoute controller.
+		if controllerutil.ContainsFinalizer(hr, apiv1.Finalizer) {
+			fPatch := client.MergeFrom(hr.DeepCopy())
+			controllerutil.RemoveFinalizer(hr, apiv1.Finalizer)
+			if patchErr := r.Patch(ctx, hr, fPatch); patchErr != nil {
+				return nil, nil, fmt.Errorf("removing stale finalizer from HTTPRoute %s/%s: %w", hr.Namespace, hr.Name, patchErr)
+			}
+		}
+
 		if !hr.DeletionTimestamp.IsZero() {
 			continue
 		}
@@ -1151,4 +1163,121 @@ func infrastructureAnnotations(infra *gatewayv1.GatewayInfrastructure) map[strin
 		annotations[string(k)] = string(v)
 	}
 	return annotations
+}
+
+// parentRefMatches reports whether the given parentRef points to the specified Gateway,
+// defaulting group to gateway.networking.k8s.io, kind to Gateway, and namespace to
+// the route's namespace when unset.
+func parentRefMatches(ref gatewayv1.ParentReference, gw *gatewayv1.Gateway, routeNamespace string) bool {
+	if ref.Group != nil && *ref.Group != gatewayv1.Group(gatewayv1.GroupName) {
+		return false
+	}
+	if ref.Kind != nil && *ref.Kind != gatewayv1.Kind(apiv1.KindGateway) {
+		return false
+	}
+	if string(ref.Name) != gw.Name {
+		return false
+	}
+	refNS := routeNamespace
+	if ref.Namespace != nil {
+		refNS = string(*ref.Namespace)
+	}
+	return refNS == gw.Namespace
+}
+
+// findRouteParentStatus finds the RouteParentStatus entry for the given Gateway
+// managed by our controller.
+func findRouteParentStatus(statuses []gatewayv1.RouteParentStatus, gw *gatewayv1.Gateway) *gatewayv1.RouteParentStatus {
+	for i, s := range statuses {
+		if s.ControllerName != apiv1.ControllerName {
+			continue
+		}
+		if string(s.ParentRef.Name) != gw.Name {
+			continue
+		}
+		if s.ParentRef.Namespace != nil && string(*s.ParentRef.Namespace) == gw.Namespace {
+			return &statuses[i]
+		}
+	}
+	return nil
+}
+
+// updateRouteStatuses updates the status.parents entry for this Gateway
+// on each allowed HTTPRoute using merge-patch.
+func (r *GatewayReconciler) updateRouteStatuses(ctx context.Context, gw *gatewayv1.Gateway, routes []*gatewayv1.HTTPRoute) {
+	log := log.FromContext(ctx)
+	for _, route := range routes {
+		if err := r.updateRouteStatus(ctx, gw, route); err != nil {
+			log.Error(err, "Failed to update HTTPRoute status", "httproute", route.Namespace+"/"+route.Name)
+		}
+	}
+}
+
+// updateRouteStatus updates the status.parents entry for this Gateway on the
+// given HTTPRoute using merge-patch. If the entry already exists with up-to-date
+// conditions, no patch is issued.
+func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1.Gateway, route *gatewayv1.HTTPRoute) error {
+	existing := findRouteParentStatus(route.Status.Parents, gw)
+
+	acceptedType := string(gatewayv1.RouteConditionAccepted)
+	resolvedRefsType := string(gatewayv1.RouteConditionResolvedRefs)
+
+	// Check if update is needed.
+	if existing != nil &&
+		!conditions.Changed(existing.Conditions, acceptedType, metav1.ConditionTrue,
+			string(gatewayv1.RouteReasonAccepted), "HTTPRoute is accepted", route.Generation) &&
+		!conditions.Changed(existing.Conditions, resolvedRefsType, metav1.ConditionTrue,
+			string(gatewayv1.RouteReasonResolvedRefs), "References resolved", route.Generation) {
+		return nil
+	}
+
+	patch := client.MergeFrom(route.DeepCopy())
+	now := metav1.Now()
+
+	if existing == nil {
+		ns := gatewayv1.Namespace(gw.Namespace)
+		group := gatewayv1.Group(gatewayv1.GroupName)
+		kind := gatewayv1.Kind(apiv1.KindGateway)
+		route.Status.Parents = append(route.Status.Parents, gatewayv1.RouteParentStatus{
+			ParentRef: gatewayv1.ParentReference{
+				Group:     &group,
+				Kind:      &kind,
+				Namespace: &ns,
+				Name:      gatewayv1.ObjectName(gw.Name),
+			},
+			ControllerName: apiv1.ControllerName,
+		})
+		existing = &route.Status.Parents[len(route.Status.Parents)-1]
+	}
+
+	setRouteCondition(existing, acceptedType, metav1.ConditionTrue,
+		string(gatewayv1.RouteReasonAccepted), "HTTPRoute is accepted", route.Generation, now)
+	setRouteCondition(existing, resolvedRefsType, metav1.ConditionTrue,
+		string(gatewayv1.RouteReasonResolvedRefs), "References resolved", route.Generation, now)
+
+	return r.Status().Patch(ctx, route, patch)
+}
+
+// setRouteCondition sets or updates a condition in the RouteParentStatus.
+func setRouteCondition(parent *gatewayv1.RouteParentStatus, condType string, status metav1.ConditionStatus, reason, message string, generation int64, now metav1.Time) {
+	for i, c := range parent.Conditions {
+		if c.Type == condType {
+			if c.Status != status {
+				parent.Conditions[i].LastTransitionTime = now
+			}
+			parent.Conditions[i].Status = status
+			parent.Conditions[i].Reason = reason
+			parent.Conditions[i].Message = message
+			parent.Conditions[i].ObservedGeneration = generation
+			return
+		}
+	}
+	parent.Conditions = append(parent.Conditions, metav1.Condition{
+		Type:               condType,
+		Status:             status,
+		ObservedGeneration: generation,
+		LastTransitionTime: now,
+		Reason:             reason,
+		Message:            message,
+	})
 }

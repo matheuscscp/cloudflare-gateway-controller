@@ -18,7 +18,7 @@ import (
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/conditions"
 )
 
-func TestGatewayClassAccepted(t *testing.T) {
+func TestGatewayClassReconciler_Accepted(t *testing.T) {
 	g := NewWithT(t)
 
 	gc := &gatewayv1.GatewayClass{
@@ -62,7 +62,7 @@ func TestGatewayClassAccepted(t *testing.T) {
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
-func TestGatewayClassAcceptedWithParametersRef(t *testing.T) {
+func TestGatewayClassReconciler_AcceptedWithParametersRef(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
@@ -109,7 +109,7 @@ func TestGatewayClassAcceptedWithParametersRef(t *testing.T) {
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
-func TestGatewayClassWrongControllerIgnored(t *testing.T) {
+func TestGatewayClassReconciler_WrongControllerIgnored(t *testing.T) {
 	g := NewWithT(t)
 
 	gc := &gatewayv1.GatewayClass{
@@ -134,7 +134,7 @@ func TestGatewayClassWrongControllerIgnored(t *testing.T) {
 	}).WithTimeout(2 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
 }
 
-func TestGatewayClassInvalidParametersRefKind(t *testing.T) {
+func TestGatewayClassReconciler_InvalidParametersRefKind(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := gatewayv1.Namespace("default")
@@ -178,7 +178,7 @@ func TestGatewayClassInvalidParametersRefKind(t *testing.T) {
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
-func TestGatewayClassInvalidParametersRefNoNamespace(t *testing.T) {
+func TestGatewayClassReconciler_InvalidParametersRefNoNamespace(t *testing.T) {
 	g := NewWithT(t)
 
 	gc := &gatewayv1.GatewayClass{
@@ -214,7 +214,7 @@ func TestGatewayClassInvalidParametersRefNoNamespace(t *testing.T) {
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
-func TestGatewayClassParametersRefSecretNotFound(t *testing.T) {
+func TestGatewayClassReconciler_ParametersRefSecretNotFound(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
@@ -260,7 +260,7 @@ func TestGatewayClassParametersRefSecretNotFound(t *testing.T) {
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
-func TestGatewayClassParametersRefSecretMissingKeys(t *testing.T) {
+func TestGatewayClassReconciler_ParametersRefSecretMissingKeys(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
@@ -318,7 +318,7 @@ func TestGatewayClassParametersRefSecretMissingKeys(t *testing.T) {
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
-func TestGatewayClassIdempotent(t *testing.T) {
+func TestGatewayClassReconciler_Idempotent(t *testing.T) {
 	g := NewWithT(t)
 
 	gc := &gatewayv1.GatewayClass{
@@ -362,7 +362,7 @@ func TestGatewayClassIdempotent(t *testing.T) {
 	}).WithTimeout(3 * time.Second).WithPolling(500 * time.Millisecond).Should(Succeed())
 }
 
-func TestGatewayClassSecretUpdateTriggersReconcile(t *testing.T) {
+func TestGatewayClassReconciler_SecretUpdateTriggersReconcile(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
@@ -429,7 +429,7 @@ func TestGatewayClassSecretUpdateTriggersReconcile(t *testing.T) {
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
-func TestGatewayClassSupportedFeatures(t *testing.T) {
+func TestGatewayClassReconciler_SupportedFeatures(t *testing.T) {
 	g := NewWithT(t)
 
 	gc := &gatewayv1.GatewayClass{
@@ -462,7 +462,7 @@ func TestGatewayClassSupportedFeatures(t *testing.T) {
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
-func TestGatewayClassUnsupportedVersion(t *testing.T) {
+func TestGatewayClassReconciler_UnsupportedVersion(t *testing.T) {
 	g := NewWithT(t)
 
 	// The testGatewayAPIVersion in suite_test.go matches the installed CRD version.
@@ -495,7 +495,7 @@ func TestGatewayClassUnsupportedVersion(t *testing.T) {
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
-func TestGatewayClassInvalidParametersRefGroup(t *testing.T) {
+func TestGatewayClassReconciler_InvalidParametersRefGroup(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := gatewayv1.Namespace("default")

@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"strings"
 
-	cloudflare "github.com/cloudflare/cloudflare-go/v6"
+	"github.com/cloudflare/cloudflare-go/v6"
 	"github.com/cloudflare/cloudflare-go/v6/dns"
 	"github.com/cloudflare/cloudflare-go/v6/option"
 	"github.com/cloudflare/cloudflare-go/v6/zero_trust"

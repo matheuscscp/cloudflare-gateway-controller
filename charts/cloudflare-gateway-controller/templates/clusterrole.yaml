@@ -36,6 +36,7 @@ rules:
   resources:
   - gatewayclasses
   - gateways
+  - httproutes
   verbs:
   - get
   - list
@@ -46,6 +47,7 @@ rules:
   resources:
   - gatewayclasses/finalizers
   - gateways/finalizers
+  - httproutes/finalizers
   verbs:
   - update
 - apiGroups:
@@ -60,6 +62,7 @@ rules:
   - gateway.networking.k8s.io
   resources:
   - gateways/status
+  - httproutes/status
   verbs:
   - patch
   - update
