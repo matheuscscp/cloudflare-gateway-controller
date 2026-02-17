@@ -21,32 +21,7 @@ import (
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 )
 
-const (
-	indexSpecControllerName = ".spec.controllerName"
-	indexSpecParametersRef  = ".spec.parametersRef"
-)
-
-func (r *GatewayClassReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
-	// Index GatewayClasses by .spec.controllerName.
-	mgr.GetCache().IndexField(ctx, &gatewayv1.GatewayClass{}, indexSpecControllerName,
-		func(obj client.Object) []string {
-			gc := obj.(*gatewayv1.GatewayClass)
-			return []string{string(gc.Spec.ControllerName)}
-		})
-
-	// Index GatewayClasses by Secret ref.
-	mgr.GetCache().IndexField(ctx, &gatewayv1.GatewayClass{}, indexSpecParametersRef,
-		func(obj client.Object) []string {
-			gc := obj.(*gatewayv1.GatewayClass)
-			if gc.Spec.ParametersRef == nil ||
-				gc.Spec.ParametersRef.Group != "" ||
-				string(gc.Spec.ParametersRef.Kind) != apiv1.KindSecret ||
-				gc.Spec.ParametersRef.Namespace == nil {
-				return nil
-			}
-			return []string{string(*gc.Spec.ParametersRef.Namespace) + "/" + string(gc.Spec.ParametersRef.Name)}
-		})
-
+func (r *GatewayClassReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	gatewayClassCRDChangedPredicate := predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
 			return e.Object.GetName() == apiv1.CRDGatewayClass
@@ -83,10 +58,10 @@ func (r *GatewayClassReconciler) SetupWithManager(ctx context.Context, mgr ctrl.
 func (r *GatewayClassReconciler) managedGatewayClasses(withSecret bool) func(ctx context.Context, obj client.Object) []reconcile.Request {
 	return func(ctx context.Context, obj client.Object) []reconcile.Request {
 		matchingFields := client.MatchingFields{
-			indexSpecControllerName: string(apiv1.ControllerName),
+			indexGatewayClassControllerName: string(apiv1.ControllerName),
 		}
 		if withSecret {
-			matchingFields[indexSpecParametersRef] = obj.GetNamespace() + "/" + obj.GetName()
+			matchingFields[indexGatewayClassParametersRef] = obj.GetNamespace() + "/" + obj.GetName()
 		}
 
 		var classes gatewayv1.GatewayClassList

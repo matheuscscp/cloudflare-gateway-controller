@@ -77,19 +77,22 @@ func main() {
 		os.Exit(1)
 	}
 
+	controller.SetupIndexes(ctx, mgr)
+
+	client := mgr.GetClient()
 	eventRecorder := mgr.GetEventRecorder(apiv1.ShortControllerName)
 
 	if err := (&controller.GatewayClassReconciler{
-		Client:            mgr.GetClient(),
+		Client:            client,
 		EventRecorder:     eventRecorder,
 		GatewayAPIVersion: gatewayAPIVersion(),
-	}).SetupWithManager(ctx, mgr); err != nil {
+	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GatewayClass")
 		os.Exit(1)
 	}
 
 	if err := (&controller.GatewayReconciler{
-		Client:              mgr.GetClient(),
+		Client:              client,
 		EventRecorder:       eventRecorder,
 		NewCloudflareClient: cloudflare.NewClient,
 		CloudflaredImage:    *cloudflaredImage,

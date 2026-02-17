@@ -24,7 +24,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -43,7 +43,7 @@ var testGatewayAPIVersion = semver.MustParse("1.4.1")
 
 var (
 	testEnv    *envtest.Environment
-	testClient client.Client
+	testClient ctrlclient.Client
 	testCtx    context.Context
 	testCancel context.CancelFunc
 	testMock   *mockCloudflareClient
@@ -95,13 +95,16 @@ func TestMain(m *testing.M) {
 		panic(fmt.Sprintf("failed to create manager: %v", err))
 	}
 
+	controller.SetupIndexes(testCtx, mgr)
+
+	client := mgr.GetClient()
 	eventRecorder := mgr.GetEventRecorder(apiv1.ShortControllerName)
 
 	if err := (&controller.GatewayClassReconciler{
-		Client:            mgr.GetClient(),
+		Client:            client,
 		EventRecorder:     eventRecorder,
 		GatewayAPIVersion: *testGatewayAPIVersion,
-	}).SetupWithManager(testCtx, mgr); err != nil {
+	}).SetupWithManager(mgr); err != nil {
 		panic(fmt.Sprintf("failed to setup GatewayClass controller: %v", err))
 	}
 
@@ -110,7 +113,7 @@ func TestMain(m *testing.M) {
 		tunnelToken: "test-tunnel-token",
 	}
 	if err := (&controller.GatewayReconciler{
-		Client:        mgr.GetClient(),
+		Client:        client,
 		EventRecorder: eventRecorder,
 		NewCloudflareClient: func(_ cloudflare.ClientConfig) (cloudflare.Client, error) {
 			return testMock, nil
@@ -120,7 +123,7 @@ func TestMain(m *testing.M) {
 		panic(fmt.Sprintf("failed to setup Gateway controller: %v", err))
 	}
 
-	testClient, err = client.New(cfg, client.Options{Scheme: scheme})
+	testClient, err = ctrlclient.New(cfg, ctrlclient.Options{Scheme: scheme})
 	if err != nil {
 		panic(fmt.Sprintf("failed to create test client: %v", err))
 	}
@@ -326,7 +329,7 @@ func createTestGateway(g Gomega, name, namespace, gcName string) *gatewayv1.Gate
 }
 
 func waitForGatewayClassReady(g Gomega, gc *gatewayv1.GatewayClass) {
-	key := client.ObjectKeyFromObject(gc)
+	key := ctrlclient.ObjectKeyFromObject(gc)
 	g.Eventually(func(g Gomega) {
 		var result gatewayv1.GatewayClass
 		g.Expect(testClient.Get(testCtx, key, &result)).To(Succeed())
@@ -337,7 +340,7 @@ func waitForGatewayClassReady(g Gomega, gc *gatewayv1.GatewayClass) {
 }
 
 func waitForGatewayProgrammed(g Gomega, gw *gatewayv1.Gateway) {
-	key := client.ObjectKeyFromObject(gw)
+	key := ctrlclient.ObjectKeyFromObject(gw)
 	g.Eventually(func(g Gomega) {
 		var result gatewayv1.Gateway
 		g.Expect(testClient.Get(testCtx, key, &result)).To(Succeed())
@@ -351,7 +354,7 @@ func waitForGatewayProgrammed(g Gomega, gw *gatewayv1.Gateway) {
 // matching the specified type and reason.
 func findEvent(g Gomega, objectName, eventType, reason string) *eventsv1.Event {
 	var events eventsv1.EventList
-	g.Expect(testClient.List(testCtx, &events, client.InNamespace("default"))).To(Succeed())
+	g.Expect(testClient.List(testCtx, &events, ctrlclient.InNamespace("default"))).To(Succeed())
 	for i, e := range events.Items {
 		if e.Regarding.Name == objectName && e.Type == eventType && e.Reason == reason {
 			return &events.Items[i]
