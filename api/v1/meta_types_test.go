@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -15,43 +16,38 @@ import (
 )
 
 func TestTunnelName(t *testing.T) {
+	g := NewWithT(t)
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{UID: types.UID("abc-123")},
 	}
-	if got := apiv1.TunnelName(gw); got != "gateway-abc-123" {
-		t.Errorf("TunnelName() = %q, want %q", got, "gateway-abc-123")
-	}
+	g.Expect(apiv1.TunnelName(gw)).To(Equal("gateway-abc-123"))
 }
 
 func TestCloudflaredDeploymentName(t *testing.T) {
+	g := NewWithT(t)
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{Name: "my-gw"},
 	}
-	if got := apiv1.CloudflaredDeploymentName(gw); got != "cloudflared-my-gw" {
-		t.Errorf("CloudflaredDeploymentName() = %q, want %q", got, "cloudflared-my-gw")
-	}
+	g.Expect(apiv1.CloudflaredDeploymentName(gw)).To(Equal("cloudflared-my-gw"))
 }
 
 func TestTunnelTokenSecretName(t *testing.T) {
+	g := NewWithT(t)
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{Name: "my-gw"},
 	}
-	if got := apiv1.TunnelTokenSecretName(gw); got != "cloudflared-token-my-gw" {
-		t.Errorf("TunnelTokenSecretName() = %q, want %q", got, "cloudflared-token-my-gw")
-	}
+	g.Expect(apiv1.TunnelTokenSecretName(gw)).To(Equal("cloudflared-token-my-gw"))
 }
 
 func TestFinalizerGatewayClass(t *testing.T) {
+	g := NewWithT(t)
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "my-gw",
 			Namespace: "my-ns",
 		},
 	}
-	want := "gateway-exists-finalizer.gateway.networking.k8s.io/my-gw.my-ns"
-	if got := apiv1.FinalizerGatewayClass(gw); got != want {
-		t.Errorf("FinalizerGatewayClass() = %q, want %q", got, want)
-	}
+	g.Expect(apiv1.FinalizerGatewayClass(gw)).To(Equal("gateway-exists-finalizer.gateway.networking.k8s.io/my-gw.my-ns"))
 }
 
 func TestReconcileInterval(t *testing.T) {
@@ -103,9 +99,8 @@ func TestReconcileInterval(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := apiv1.ReconcileInterval(tt.annotations); got != tt.want {
-				t.Errorf("ReconcileInterval() = %v, want %v", got, tt.want)
-			}
+			g := NewWithT(t)
+			g.Expect(apiv1.ReconcileInterval(tt.annotations)).To(Equal(tt.want))
 		})
 	}
 }

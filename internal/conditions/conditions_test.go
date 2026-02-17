@@ -6,6 +6,7 @@ package conditions_test
 import (
 	"testing"
 
+	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	acmetav1 "k8s.io/client-go/applyconfigurations/meta/v1"
 
@@ -19,42 +20,35 @@ func TestFind(t *testing.T) {
 	}
 
 	t.Run("found", func(t *testing.T) {
+		g := NewWithT(t)
 		c := conditions.Find(conds, "Ready")
-		if c == nil {
-			t.Fatal("Find(Ready) = nil, want non-nil")
-		}
-		if c.Status != metav1.ConditionTrue {
-			t.Errorf("Find(Ready).Status = %v, want True", c.Status)
-		}
+		g.Expect(c).NotTo(BeNil())
+		g.Expect(c.Status).To(Equal(metav1.ConditionTrue))
 	})
 
 	t.Run("not found", func(t *testing.T) {
-		if c := conditions.Find(conds, "Missing"); c != nil {
-			t.Errorf("Find(Missing) = %v, want nil", c)
-		}
+		g := NewWithT(t)
+		g.Expect(conditions.Find(conds, "Missing")).To(BeNil())
 	})
 
 	t.Run("nil slice", func(t *testing.T) {
-		if c := conditions.Find(nil, "Ready"); c != nil {
-			t.Errorf("Find(nil, Ready) = %v, want nil", c)
-		}
+		g := NewWithT(t)
+		g.Expect(conditions.Find(nil, "Ready")).To(BeNil())
 	})
 
 	t.Run("empty slice", func(t *testing.T) {
-		if c := conditions.Find([]metav1.Condition{}, "Ready"); c != nil {
-			t.Errorf("Find(empty, Ready) = %v, want nil", c)
-		}
+		g := NewWithT(t)
+		g.Expect(conditions.Find([]metav1.Condition{}, "Ready")).To(BeNil())
 	})
 
 	t.Run("returns pointer into slice", func(t *testing.T) {
+		g := NewWithT(t)
 		slice := []metav1.Condition{
 			{Type: "Ready", Reason: "original"},
 		}
 		c := conditions.Find(slice, "Ready")
 		c.Reason = "modified"
-		if slice[0].Reason != "modified" {
-			t.Error("Find should return pointer into the original slice")
-		}
+		g.Expect(slice[0].Reason).To(Equal("modified"))
 	})
 }
 
@@ -70,45 +64,38 @@ func TestChanged(t *testing.T) {
 	}
 
 	t.Run("no change", func(t *testing.T) {
-		if conditions.Changed(existing, "Ready", metav1.ConditionTrue, "OK", "all good", 1) {
-			t.Error("Changed() = true for identical condition")
-		}
+		g := NewWithT(t)
+		g.Expect(conditions.Changed(existing, "Ready", metav1.ConditionTrue, "OK", "all good", 1)).To(BeFalse())
 	})
 
 	t.Run("condition not found", func(t *testing.T) {
-		if !conditions.Changed(existing, "Missing", metav1.ConditionTrue, "OK", "all good", 1) {
-			t.Error("Changed() = false for missing condition")
-		}
+		g := NewWithT(t)
+		g.Expect(conditions.Changed(existing, "Missing", metav1.ConditionTrue, "OK", "all good", 1)).To(BeTrue())
 	})
 
 	t.Run("status changed", func(t *testing.T) {
-		if !conditions.Changed(existing, "Ready", metav1.ConditionFalse, "OK", "all good", 1) {
-			t.Error("Changed() = false when status changed")
-		}
+		g := NewWithT(t)
+		g.Expect(conditions.Changed(existing, "Ready", metav1.ConditionFalse, "OK", "all good", 1)).To(BeTrue())
 	})
 
 	t.Run("reason changed", func(t *testing.T) {
-		if !conditions.Changed(existing, "Ready", metav1.ConditionTrue, "Different", "all good", 1) {
-			t.Error("Changed() = false when reason changed")
-		}
+		g := NewWithT(t)
+		g.Expect(conditions.Changed(existing, "Ready", metav1.ConditionTrue, "Different", "all good", 1)).To(BeTrue())
 	})
 
 	t.Run("message changed", func(t *testing.T) {
-		if !conditions.Changed(existing, "Ready", metav1.ConditionTrue, "OK", "different", 1) {
-			t.Error("Changed() = false when message changed")
-		}
+		g := NewWithT(t)
+		g.Expect(conditions.Changed(existing, "Ready", metav1.ConditionTrue, "OK", "different", 1)).To(BeTrue())
 	})
 
 	t.Run("generation changed", func(t *testing.T) {
-		if !conditions.Changed(existing, "Ready", metav1.ConditionTrue, "OK", "all good", 2) {
-			t.Error("Changed() = false when generation changed")
-		}
+		g := NewWithT(t)
+		g.Expect(conditions.Changed(existing, "Ready", metav1.ConditionTrue, "OK", "all good", 2)).To(BeTrue())
 	})
 
 	t.Run("nil slice", func(t *testing.T) {
-		if !conditions.Changed(nil, "Ready", metav1.ConditionTrue, "OK", "msg", 1) {
-			t.Error("Changed() = false for nil slice")
-		}
+		g := NewWithT(t)
+		g.Expect(conditions.Changed(nil, "Ready", metav1.ConditionTrue, "OK", "msg", 1)).To(BeTrue())
 	})
 }
 
@@ -124,82 +111,75 @@ func TestApplyChanged(t *testing.T) {
 	}
 
 	t.Run("no change", func(t *testing.T) {
+		g := NewWithT(t)
 		cond := &acmetav1.ConditionApplyConfiguration{
 			Type:    new("Ready"),
 			Status:  new(metav1.ConditionStatus(metav1.ConditionTrue)),
 			Reason:  new("OK"),
 			Message: new("all good"),
 		}
-		if conditions.ApplyChanged(existing, cond, 1) {
-			t.Error("ApplyChanged() = true for identical condition")
-		}
+		g.Expect(conditions.ApplyChanged(existing, cond, 1)).To(BeFalse())
 	})
 
 	t.Run("changed", func(t *testing.T) {
+		g := NewWithT(t)
 		cond := &acmetav1.ConditionApplyConfiguration{
 			Type:    new("Ready"),
 			Status:  new(metav1.ConditionStatus(metav1.ConditionFalse)),
 			Reason:  new("Failed"),
 			Message: new("something broke"),
 		}
-		if !conditions.ApplyChanged(existing, cond, 1) {
-			t.Error("ApplyChanged() = false for changed condition")
-		}
+		g.Expect(conditions.ApplyChanged(existing, cond, 1)).To(BeTrue())
 	})
 
 	t.Run("nil type", func(t *testing.T) {
+		g := NewWithT(t)
 		cond := &acmetav1.ConditionApplyConfiguration{
 			Status:  new(metav1.ConditionStatus(metav1.ConditionTrue)),
 			Reason:  new("OK"),
 			Message: new("all good"),
 		}
-		if !conditions.ApplyChanged(existing, cond, 1) {
-			t.Error("ApplyChanged() = false when Type is nil")
-		}
+		g.Expect(conditions.ApplyChanged(existing, cond, 1)).To(BeTrue())
 	})
 
 	t.Run("nil status", func(t *testing.T) {
+		g := NewWithT(t)
 		cond := &acmetav1.ConditionApplyConfiguration{
 			Type:    new("Ready"),
 			Reason:  new("OK"),
 			Message: new("all good"),
 		}
-		if !conditions.ApplyChanged(existing, cond, 1) {
-			t.Error("ApplyChanged() = false when Status is nil")
-		}
+		g.Expect(conditions.ApplyChanged(existing, cond, 1)).To(BeTrue())
 	})
 
 	t.Run("nil reason", func(t *testing.T) {
+		g := NewWithT(t)
 		cond := &acmetav1.ConditionApplyConfiguration{
 			Type:    new("Ready"),
 			Status:  new(metav1.ConditionStatus(metav1.ConditionTrue)),
 			Message: new("all good"),
 		}
-		if !conditions.ApplyChanged(existing, cond, 1) {
-			t.Error("ApplyChanged() = false when Reason is nil")
-		}
+		g.Expect(conditions.ApplyChanged(existing, cond, 1)).To(BeTrue())
 	})
 
 	t.Run("nil message", func(t *testing.T) {
+		g := NewWithT(t)
 		cond := &acmetav1.ConditionApplyConfiguration{
 			Type:   new("Ready"),
 			Status: new(metav1.ConditionStatus(metav1.ConditionTrue)),
 			Reason: new("OK"),
 		}
-		if !conditions.ApplyChanged(existing, cond, 1) {
-			t.Error("ApplyChanged() = false when Message is nil")
-		}
+		g.Expect(conditions.ApplyChanged(existing, cond, 1)).To(BeTrue())
 	})
 
 	t.Run("condition not found in existing", func(t *testing.T) {
+		g := NewWithT(t)
 		cond := &acmetav1.ConditionApplyConfiguration{
 			Type:    new("Missing"),
 			Status:  new(metav1.ConditionStatus(metav1.ConditionTrue)),
 			Reason:  new("OK"),
 			Message: new("msg"),
 		}
-		if !conditions.ApplyChanged(existing, cond, 1) {
-			t.Error("ApplyChanged() = false for missing condition")
-		}
+		g.Expect(conditions.ApplyChanged(existing, cond, 1)).To(BeTrue())
 	})
 }

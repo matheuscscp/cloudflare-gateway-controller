@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	cfgo "github.com/cloudflare/cloudflare-go/v6"
+	. "github.com/onsi/gomega"
 
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
 )
@@ -78,69 +79,59 @@ func apiError(status int) map[string]any {
 	}
 }
 
-// TestIsConflict tests the IsConflict error helper.
 func TestIsConflict(t *testing.T) {
 	t.Run("nil error", func(t *testing.T) {
-		if cloudflare.IsConflict(nil) {
-			t.Error("IsConflict(nil) = true, want false")
-		}
+		g := NewWithT(t)
+		g.Expect(cloudflare.IsConflict(nil)).To(BeFalse())
 	})
 
 	t.Run("plain error", func(t *testing.T) {
-		if cloudflare.IsConflict(errors.New("something failed")) {
-			t.Error("IsConflict(plain error) = true, want false")
-		}
+		g := NewWithT(t)
+		g.Expect(cloudflare.IsConflict(errors.New("something failed"))).To(BeFalse())
 	})
 
 	t.Run("conflict error", func(t *testing.T) {
+		g := NewWithT(t)
 		var apiErr cfgo.Error
 		apiErr.StatusCode = http.StatusConflict
-		if !cloudflare.IsConflict(&apiErr) {
-			t.Error("IsConflict(409) = false, want true")
-		}
+		g.Expect(cloudflare.IsConflict(&apiErr)).To(BeTrue())
 	})
 
 	t.Run("wrapped conflict error", func(t *testing.T) {
+		g := NewWithT(t)
 		var apiErr cfgo.Error
 		apiErr.StatusCode = http.StatusConflict
 		wrapped := fmt.Errorf("outer: %w", &apiErr)
-		if !cloudflare.IsConflict(wrapped) {
-			t.Error("IsConflict(wrapped 409) = false, want true")
-		}
+		g.Expect(cloudflare.IsConflict(wrapped)).To(BeTrue())
 	})
 
 	t.Run("non-conflict API error", func(t *testing.T) {
+		g := NewWithT(t)
 		var apiErr cfgo.Error
 		apiErr.StatusCode = http.StatusNotFound
-		if cloudflare.IsConflict(&apiErr) {
-			t.Error("IsConflict(404) = true, want false")
-		}
+		g.Expect(cloudflare.IsConflict(&apiErr)).To(BeFalse())
 	})
 }
 
 func TestNewClient(t *testing.T) {
+	g := NewWithT(t)
 	c, err := cloudflare.NewClient(cloudflare.ClientConfig{
 		APIToken:  "test-token",
 		AccountID: "test-account",
 	})
-	if err != nil {
-		t.Fatalf("NewClient() error = %v", err)
-	}
-	if c == nil {
-		t.Fatal("NewClient() returned nil")
-	}
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(c).NotTo(BeNil())
 }
 
 func TestCreateTunnel(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
+		g := NewWithT(t)
 		mux := http.NewServeMux()
 		mux.HandleFunc("POST /accounts/{accountID}/cfd_tunnel", func(w http.ResponseWriter, r *http.Request) {
 			body, _ := io.ReadAll(r.Body)
 			var params map[string]any
 			json.Unmarshal(body, &params)
-			if params["name"] != "my-tunnel" {
-				t.Errorf("CreateTunnel name = %v, want my-tunnel", params["name"])
-			}
+			g.Expect(params["name"]).To(Equal("my-tunnel"))
 			writeJSON(w, http.StatusOK, envelope(map[string]any{
 				"id":   "tunnel-123",
 				"name": "my-tunnel",
@@ -149,15 +140,12 @@ func TestCreateTunnel(t *testing.T) {
 		c := newTestClient(t, mux)
 
 		id, err := c.CreateTunnel(context.Background(), "my-tunnel")
-		if err != nil {
-			t.Fatalf("CreateTunnel() error = %v", err)
-		}
-		if id != "tunnel-123" {
-			t.Errorf("CreateTunnel() = %q, want %q", id, "tunnel-123")
-		}
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(id).To(Equal("tunnel-123"))
 	})
 
 	t.Run("API error", func(t *testing.T) {
+		g := NewWithT(t)
 		mux := http.NewServeMux()
 		mux.HandleFunc("POST /accounts/{accountID}/cfd_tunnel", func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
@@ -165,14 +153,13 @@ func TestCreateTunnel(t *testing.T) {
 		c := newTestClient(t, mux)
 
 		_, err := c.CreateTunnel(context.Background(), "my-tunnel")
-		if err == nil {
-			t.Fatal("CreateTunnel() error = nil, want error")
-		}
+		g.Expect(err).To(HaveOccurred())
 	})
 }
 
 func TestGetTunnelIDByName(t *testing.T) {
 	t.Run("found", func(t *testing.T) {
+		g := NewWithT(t)
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /accounts/{accountID}/cfd_tunnel", func(w http.ResponseWriter, r *http.Request) {
 			page := r.URL.Query().Get("page")
@@ -187,15 +174,12 @@ func TestGetTunnelIDByName(t *testing.T) {
 		c := newTestClient(t, mux)
 
 		id, err := c.GetTunnelIDByName(context.Background(), "my-tunnel")
-		if err != nil {
-			t.Fatalf("GetTunnelIDByName() error = %v", err)
-		}
-		if id != "tunnel-abc" {
-			t.Errorf("GetTunnelIDByName() = %q, want %q", id, "tunnel-abc")
-		}
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(id).To(Equal("tunnel-abc"))
 	})
 
 	t.Run("not found", func(t *testing.T) {
+		g := NewWithT(t)
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /accounts/{accountID}/cfd_tunnel", func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, emptyPage())
@@ -203,15 +187,12 @@ func TestGetTunnelIDByName(t *testing.T) {
 		c := newTestClient(t, mux)
 
 		id, err := c.GetTunnelIDByName(context.Background(), "missing")
-		if err != nil {
-			t.Fatalf("GetTunnelIDByName() error = %v", err)
-		}
-		if id != "" {
-			t.Errorf("GetTunnelIDByName() = %q, want empty", id)
-		}
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(id).To(BeEmpty())
 	})
 
 	t.Run("API error", func(t *testing.T) {
+		g := NewWithT(t)
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /accounts/{accountID}/cfd_tunnel", func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
@@ -219,14 +200,13 @@ func TestGetTunnelIDByName(t *testing.T) {
 		c := newTestClient(t, mux)
 
 		_, err := c.GetTunnelIDByName(context.Background(), "my-tunnel")
-		if err == nil {
-			t.Fatal("GetTunnelIDByName() error = nil, want error")
-		}
+		g.Expect(err).To(HaveOccurred())
 	})
 }
 
 func TestDeleteTunnel(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
+		g := NewWithT(t)
 		mux := http.NewServeMux()
 		mux.HandleFunc("DELETE /accounts/{accountID}/cfd_tunnel/{tunnelID}", func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, envelope(map[string]any{
@@ -235,38 +215,35 @@ func TestDeleteTunnel(t *testing.T) {
 		})
 		c := newTestClient(t, mux)
 
-		if err := c.DeleteTunnel(context.Background(), "tunnel-123"); err != nil {
-			t.Fatalf("DeleteTunnel() error = %v", err)
-		}
+		g.Expect(c.DeleteTunnel(context.Background(), "tunnel-123")).To(Succeed())
 	})
 
 	t.Run("not found returns nil", func(t *testing.T) {
+		g := NewWithT(t)
 		mux := http.NewServeMux()
 		mux.HandleFunc("DELETE /accounts/{accountID}/cfd_tunnel/{tunnelID}", func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, apiError(http.StatusNotFound))
 		})
 		c := newTestClient(t, mux)
 
-		if err := c.DeleteTunnel(context.Background(), "missing"); err != nil {
-			t.Fatalf("DeleteTunnel(not found) error = %v, want nil", err)
-		}
+		g.Expect(c.DeleteTunnel(context.Background(), "missing")).To(Succeed())
 	})
 
 	t.Run("non-404 error is returned", func(t *testing.T) {
+		g := NewWithT(t)
 		mux := http.NewServeMux()
 		mux.HandleFunc("DELETE /accounts/{accountID}/cfd_tunnel/{tunnelID}", func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
 		})
 		c := newTestClient(t, mux)
 
-		if err := c.DeleteTunnel(context.Background(), "tunnel-123"); err == nil {
-			t.Fatal("DeleteTunnel() error = nil, want error")
-		}
+		g.Expect(c.DeleteTunnel(context.Background(), "tunnel-123")).To(HaveOccurred())
 	})
 }
 
 func TestGetTunnelToken(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
+		g := NewWithT(t)
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /accounts/{accountID}/cfd_tunnel/{tunnelID}/token", func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, envelope("my-secret-token"))
@@ -274,15 +251,12 @@ func TestGetTunnelToken(t *testing.T) {
 		c := newTestClient(t, mux)
 
 		token, err := c.GetTunnelToken(context.Background(), "tunnel-123")
-		if err != nil {
-			t.Fatalf("GetTunnelToken() error = %v", err)
-		}
-		if token != "my-secret-token" {
-			t.Errorf("GetTunnelToken() = %q, want %q", token, "my-secret-token")
-		}
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(token).To(Equal("my-secret-token"))
 	})
 
 	t.Run("API error", func(t *testing.T) {
+		g := NewWithT(t)
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /accounts/{accountID}/cfd_tunnel/{tunnelID}/token", func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
@@ -290,14 +264,13 @@ func TestGetTunnelToken(t *testing.T) {
 		c := newTestClient(t, mux)
 
 		_, err := c.GetTunnelToken(context.Background(), "tunnel-123")
-		if err == nil {
-			t.Fatal("GetTunnelToken() error = nil, want error")
-		}
+		g.Expect(err).To(HaveOccurred())
 	})
 }
 
 func TestUpdateTunnelConfiguration(t *testing.T) {
 	t.Run("with path", func(t *testing.T) {
+		g := NewWithT(t)
 		var captured map[string]any
 		mux := http.NewServeMux()
 		mux.HandleFunc("PUT /accounts/{accountID}/cfd_tunnel/{tunnelID}/configurations", func(w http.ResponseWriter, r *http.Request) {
@@ -313,25 +286,18 @@ func TestUpdateTunnelConfiguration(t *testing.T) {
 			{Hostname: "app.example.com", Service: "http://localhost:8080", Path: "/api"},
 			{Hostname: "", Service: "http_status:404"},
 		})
-		if err != nil {
-			t.Fatalf("UpdateTunnelConfiguration() error = %v", err)
-		}
+		g.Expect(err).NotTo(HaveOccurred())
 
 		config, _ := captured["config"].(map[string]any)
 		ingress, _ := config["ingress"].([]any)
-		if len(ingress) != 2 {
-			t.Fatalf("ingress length = %d, want 2", len(ingress))
-		}
+		g.Expect(ingress).To(HaveLen(2))
 		first, _ := ingress[0].(map[string]any)
-		if first["hostname"] != "app.example.com" {
-			t.Errorf("ingress[0].hostname = %v, want app.example.com", first["hostname"])
-		}
-		if first["path"] != "/api" {
-			t.Errorf("ingress[0].path = %v, want /api", first["path"])
-		}
+		g.Expect(first["hostname"]).To(Equal("app.example.com"))
+		g.Expect(first["path"]).To(Equal("/api"))
 	})
 
 	t.Run("without path", func(t *testing.T) {
+		g := NewWithT(t)
 		var captured map[string]any
 		mux := http.NewServeMux()
 		mux.HandleFunc("PUT /accounts/{accountID}/cfd_tunnel/{tunnelID}/configurations", func(w http.ResponseWriter, r *http.Request) {
@@ -346,19 +312,16 @@ func TestUpdateTunnelConfiguration(t *testing.T) {
 		err := c.UpdateTunnelConfiguration(context.Background(), "tunnel-123", []cloudflare.IngressRule{
 			{Hostname: "app.example.com", Service: "http://localhost:8080"},
 		})
-		if err != nil {
-			t.Fatalf("UpdateTunnelConfiguration() error = %v", err)
-		}
+		g.Expect(err).NotTo(HaveOccurred())
 
 		config, _ := captured["config"].(map[string]any)
 		ingress, _ := config["ingress"].([]any)
 		first, _ := ingress[0].(map[string]any)
-		if _, ok := first["path"]; ok {
-			t.Errorf("ingress[0].path should be absent, got %v", first["path"])
-		}
+		g.Expect(first).NotTo(HaveKey("path"))
 	})
 
 	t.Run("API error", func(t *testing.T) {
+		g := NewWithT(t)
 		mux := http.NewServeMux()
 		mux.HandleFunc("PUT /accounts/{accountID}/cfd_tunnel/{tunnelID}/configurations", func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
@@ -368,14 +331,13 @@ func TestUpdateTunnelConfiguration(t *testing.T) {
 		err := c.UpdateTunnelConfiguration(context.Background(), "tunnel-123", []cloudflare.IngressRule{
 			{Hostname: "app.example.com", Service: "http://localhost:8080"},
 		})
-		if err == nil {
-			t.Fatal("UpdateTunnelConfiguration() error = nil, want error")
-		}
+		g.Expect(err).To(HaveOccurred())
 	})
 }
 
 func TestListZoneIDs(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
+		g := NewWithT(t)
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /zones", func(w http.ResponseWriter, r *http.Request) {
 			page := r.URL.Query().Get("page")
@@ -391,15 +353,12 @@ func TestListZoneIDs(t *testing.T) {
 		c := newTestClient(t, mux)
 
 		ids, err := c.ListZoneIDs(context.Background())
-		if err != nil {
-			t.Fatalf("ListZoneIDs() error = %v", err)
-		}
-		if len(ids) != 2 || ids[0] != "zone-1" || ids[1] != "zone-2" {
-			t.Errorf("ListZoneIDs() = %v, want [zone-1, zone-2]", ids)
-		}
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(ids).To(Equal([]string{"zone-1", "zone-2"}))
 	})
 
 	t.Run("API error", func(t *testing.T) {
+		g := NewWithT(t)
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /zones", func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
@@ -407,14 +366,13 @@ func TestListZoneIDs(t *testing.T) {
 		c := newTestClient(t, mux)
 
 		_, err := c.ListZoneIDs(context.Background())
-		if err == nil {
-			t.Fatal("ListZoneIDs() error = nil, want error")
-		}
+		g.Expect(err).To(HaveOccurred())
 	})
 }
 
 func TestFindZoneIDByHostname(t *testing.T) {
 	t.Run("exact match", func(t *testing.T) {
+		g := NewWithT(t)
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /zones", func(w http.ResponseWriter, r *http.Request) {
 			name := r.URL.Query().Get("name")
@@ -434,15 +392,12 @@ func TestFindZoneIDByHostname(t *testing.T) {
 		c := newTestClient(t, mux)
 
 		id, err := c.FindZoneIDByHostname(context.Background(), "example.com")
-		if err != nil {
-			t.Fatalf("FindZoneIDByHostname() error = %v", err)
-		}
-		if id != "zone-abc" {
-			t.Errorf("FindZoneIDByHostname() = %q, want %q", id, "zone-abc")
-		}
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(id).To(Equal("zone-abc"))
 	})
 
 	t.Run("subdomain strips to parent zone", func(t *testing.T) {
+		g := NewWithT(t)
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /zones", func(w http.ResponseWriter, r *http.Request) {
 			name := r.URL.Query().Get("name")
@@ -462,15 +417,12 @@ func TestFindZoneIDByHostname(t *testing.T) {
 		c := newTestClient(t, mux)
 
 		id, err := c.FindZoneIDByHostname(context.Background(), "sub.example.com")
-		if err != nil {
-			t.Fatalf("FindZoneIDByHostname() error = %v", err)
-		}
-		if id != "zone-parent" {
-			t.Errorf("FindZoneIDByHostname() = %q, want %q", id, "zone-parent")
-		}
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(id).To(Equal("zone-parent"))
 	})
 
 	t.Run("not found", func(t *testing.T) {
+		g := NewWithT(t)
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /zones", func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, emptyPage())
@@ -478,12 +430,11 @@ func TestFindZoneIDByHostname(t *testing.T) {
 		c := newTestClient(t, mux)
 
 		_, err := c.FindZoneIDByHostname(context.Background(), "unknown.example.com")
-		if err == nil {
-			t.Fatal("FindZoneIDByHostname() error = nil, want error")
-		}
+		g.Expect(err).To(HaveOccurred())
 	})
 
 	t.Run("API error", func(t *testing.T) {
+		g := NewWithT(t)
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /zones", func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
@@ -491,14 +442,13 @@ func TestFindZoneIDByHostname(t *testing.T) {
 		c := newTestClient(t, mux)
 
 		_, err := c.FindZoneIDByHostname(context.Background(), "app.example.com")
-		if err == nil {
-			t.Fatal("FindZoneIDByHostname() error = nil, want error")
-		}
+		g.Expect(err).To(HaveOccurred())
 	})
 }
 
 func TestEnsureDNSCNAME(t *testing.T) {
 	t.Run("creates when not found", func(t *testing.T) {
+		g := NewWithT(t)
 		var createdBody map[string]any
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /zones/{zoneID}/dns_records", func(w http.ResponseWriter, r *http.Request) {
@@ -516,19 +466,13 @@ func TestEnsureDNSCNAME(t *testing.T) {
 		})
 		c := newTestClient(t, mux)
 
-		err := c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "tunnel.cfargotunnel.com")
-		if err != nil {
-			t.Fatalf("EnsureDNSCNAME() error = %v", err)
-		}
-		if createdBody["name"] != "app.example.com" {
-			t.Errorf("created name = %v, want app.example.com", createdBody["name"])
-		}
-		if createdBody["content"] != "tunnel.cfargotunnel.com" {
-			t.Errorf("created content = %v, want tunnel.cfargotunnel.com", createdBody["content"])
-		}
+		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "tunnel.cfargotunnel.com")).To(Succeed())
+		g.Expect(createdBody["name"]).To(Equal("app.example.com"))
+		g.Expect(createdBody["content"]).To(Equal("tunnel.cfargotunnel.com"))
 	})
 
 	t.Run("updates when target differs", func(t *testing.T) {
+		g := NewWithT(t)
 		var updatedBody map[string]any
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /zones/{zoneID}/dns_records", func(w http.ResponseWriter, r *http.Request) {
@@ -553,29 +497,23 @@ func TestEnsureDNSCNAME(t *testing.T) {
 		})
 		c := newTestClient(t, mux)
 
-		err := c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "new-target.cfargotunnel.com")
-		if err != nil {
-			t.Fatalf("EnsureDNSCNAME() error = %v", err)
-		}
-		if updatedBody["content"] != "new-target.cfargotunnel.com" {
-			t.Errorf("updated content = %v, want new-target.cfargotunnel.com", updatedBody["content"])
-		}
+		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "new-target.cfargotunnel.com")).To(Succeed())
+		g.Expect(updatedBody["content"]).To(Equal("new-target.cfargotunnel.com"))
 	})
 
 	t.Run("list error", func(t *testing.T) {
+		g := NewWithT(t)
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /zones/{zoneID}/dns_records", func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
 		})
 		c := newTestClient(t, mux)
 
-		err := c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "tunnel.cfargotunnel.com")
-		if err == nil {
-			t.Fatal("EnsureDNSCNAME() error = nil, want error")
-		}
+		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "tunnel.cfargotunnel.com")).To(HaveOccurred())
 	})
 
 	t.Run("update error", func(t *testing.T) {
+		g := NewWithT(t)
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /zones/{zoneID}/dns_records", func(w http.ResponseWriter, r *http.Request) {
 			page := r.URL.Query().Get("page")
@@ -592,13 +530,11 @@ func TestEnsureDNSCNAME(t *testing.T) {
 		})
 		c := newTestClient(t, mux)
 
-		err := c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "new-target.cfargotunnel.com")
-		if err == nil {
-			t.Fatal("EnsureDNSCNAME() error = nil, want error")
-		}
+		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "new-target.cfargotunnel.com")).To(HaveOccurred())
 	})
 
 	t.Run("create error", func(t *testing.T) {
+		g := NewWithT(t)
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /zones/{zoneID}/dns_records", func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, emptyPage())
@@ -608,13 +544,11 @@ func TestEnsureDNSCNAME(t *testing.T) {
 		})
 		c := newTestClient(t, mux)
 
-		err := c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "tunnel.cfargotunnel.com")
-		if err == nil {
-			t.Fatal("EnsureDNSCNAME() error = nil, want error")
-		}
+		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "tunnel.cfargotunnel.com")).To(HaveOccurred())
 	})
 
 	t.Run("no-op when target matches", func(t *testing.T) {
+		g := NewWithT(t)
 		updateCalled := false
 		createCalled := false
 		mux := http.NewServeMux()
@@ -636,21 +570,15 @@ func TestEnsureDNSCNAME(t *testing.T) {
 		})
 		c := newTestClient(t, mux)
 
-		err := c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "tunnel.cfargotunnel.com")
-		if err != nil {
-			t.Fatalf("EnsureDNSCNAME() error = %v", err)
-		}
-		if updateCalled {
-			t.Error("EnsureDNSCNAME() called update when target already matches")
-		}
-		if createCalled {
-			t.Error("EnsureDNSCNAME() called create when target already matches")
-		}
+		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "tunnel.cfargotunnel.com")).To(Succeed())
+		g.Expect(updateCalled).To(BeFalse())
+		g.Expect(createCalled).To(BeFalse())
 	})
 }
 
 func TestDeleteDNSCNAME(t *testing.T) {
 	t.Run("deletes when found", func(t *testing.T) {
+		g := NewWithT(t)
 		deleteCalled := false
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /zones/{zoneID}/dns_records", func(w http.ResponseWriter, r *http.Request) {
@@ -671,42 +599,34 @@ func TestDeleteDNSCNAME(t *testing.T) {
 		})
 		c := newTestClient(t, mux)
 
-		err := c.DeleteDNSCNAME(context.Background(), "zone-1", "app.example.com")
-		if err != nil {
-			t.Fatalf("DeleteDNSCNAME() error = %v", err)
-		}
-		if !deleteCalled {
-			t.Error("DeleteDNSCNAME() did not call delete")
-		}
+		g.Expect(c.DeleteDNSCNAME(context.Background(), "zone-1", "app.example.com")).To(Succeed())
+		g.Expect(deleteCalled).To(BeTrue())
 	})
 
 	t.Run("no-op when not found", func(t *testing.T) {
+		g := NewWithT(t)
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /zones/{zoneID}/dns_records", func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, emptyPage())
 		})
 		c := newTestClient(t, mux)
 
-		err := c.DeleteDNSCNAME(context.Background(), "zone-1", "missing.example.com")
-		if err != nil {
-			t.Fatalf("DeleteDNSCNAME() error = %v, want nil", err)
-		}
+		g.Expect(c.DeleteDNSCNAME(context.Background(), "zone-1", "missing.example.com")).To(Succeed())
 	})
 
 	t.Run("list error", func(t *testing.T) {
+		g := NewWithT(t)
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /zones/{zoneID}/dns_records", func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
 		})
 		c := newTestClient(t, mux)
 
-		err := c.DeleteDNSCNAME(context.Background(), "zone-1", "app.example.com")
-		if err == nil {
-			t.Fatal("DeleteDNSCNAME() error = nil, want error")
-		}
+		g.Expect(c.DeleteDNSCNAME(context.Background(), "zone-1", "app.example.com")).To(HaveOccurred())
 	})
 
 	t.Run("delete error", func(t *testing.T) {
+		g := NewWithT(t)
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /zones/{zoneID}/dns_records", func(w http.ResponseWriter, r *http.Request) {
 			page := r.URL.Query().Get("page")
@@ -723,15 +643,13 @@ func TestDeleteDNSCNAME(t *testing.T) {
 		})
 		c := newTestClient(t, mux)
 
-		err := c.DeleteDNSCNAME(context.Background(), "zone-1", "app.example.com")
-		if err == nil {
-			t.Fatal("DeleteDNSCNAME() error = nil, want error")
-		}
+		g.Expect(c.DeleteDNSCNAME(context.Background(), "zone-1", "app.example.com")).To(HaveOccurred())
 	})
 }
 
 func TestListDNSCNAMEsByTarget(t *testing.T) {
 	t.Run("returns matching hostnames", func(t *testing.T) {
+		g := NewWithT(t)
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /zones/{zoneID}/dns_records", func(w http.ResponseWriter, r *http.Request) {
 			page := r.URL.Query().Get("page")
@@ -747,15 +665,12 @@ func TestListDNSCNAMEsByTarget(t *testing.T) {
 		c := newTestClient(t, mux)
 
 		hostnames, err := c.ListDNSCNAMEsByTarget(context.Background(), "zone-1", "tunnel.cfargotunnel.com")
-		if err != nil {
-			t.Fatalf("ListDNSCNAMEsByTarget() error = %v", err)
-		}
-		if len(hostnames) != 2 || hostnames[0] != "app1.example.com" || hostnames[1] != "app2.example.com" {
-			t.Errorf("ListDNSCNAMEsByTarget() = %v, want [app1.example.com, app2.example.com]", hostnames)
-		}
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(hostnames).To(Equal([]string{"app1.example.com", "app2.example.com"}))
 	})
 
 	t.Run("returns nil when empty", func(t *testing.T) {
+		g := NewWithT(t)
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /zones/{zoneID}/dns_records", func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, emptyPage())
@@ -763,15 +678,12 @@ func TestListDNSCNAMEsByTarget(t *testing.T) {
 		c := newTestClient(t, mux)
 
 		hostnames, err := c.ListDNSCNAMEsByTarget(context.Background(), "zone-1", "tunnel.cfargotunnel.com")
-		if err != nil {
-			t.Fatalf("ListDNSCNAMEsByTarget() error = %v", err)
-		}
-		if hostnames != nil {
-			t.Errorf("ListDNSCNAMEsByTarget() = %v, want nil", hostnames)
-		}
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(hostnames).To(BeNil())
 	})
 
 	t.Run("API error", func(t *testing.T) {
+		g := NewWithT(t)
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /zones/{zoneID}/dns_records", func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
@@ -779,8 +691,6 @@ func TestListDNSCNAMEsByTarget(t *testing.T) {
 		c := newTestClient(t, mux)
 
 		_, err := c.ListDNSCNAMEsByTarget(context.Background(), "zone-1", "tunnel.cfargotunnel.com")
-		if err == nil {
-			t.Fatal("ListDNSCNAMEsByTarget() error = nil, want error")
-		}
+		g.Expect(err).To(HaveOccurred())
 	})
 }
