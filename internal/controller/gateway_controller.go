@@ -110,13 +110,16 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway, gc *gatewayv1.GatewayClass) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 
-	// Count attached HTTPRoutes per listener.
-	attachedRoutes, err := countAttachedRoutes(ctx, r.Client, gw)
-	if err != nil {
-		return r.reconcileError(ctx, gw, fmt.Errorf("counting attached routes: %w", err))
+	// List all HTTPRoutes referencing this Gateway once, then reuse the list
+	// for attached route counts, ingress rules, DNS, and status updates.
+	var allRoutes gatewayv1.HTTPRouteList
+	if err := r.List(ctx, &allRoutes, client.MatchingFields{
+		indexHTTPRouteParentGateway: gw.Namespace + "/" + gw.Name,
+	}); err != nil {
+		return r.reconcileError(ctx, gw, fmt.Errorf("listing HTTPRoutes: %w", err))
 	}
 
-	listenerPatches := buildListenerStatusPatches(gw, attachedRoutes)
+	listenerPatches := buildListenerStatusPatches(gw, countAttachedRoutes(&allRoutes, gw))
 	now := metav1.Now()
 	readyStatus := metav1.ConditionFalse
 	readyReason := apiv1.ReasonReconciliationFailed
@@ -214,8 +217,8 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		}
 		log.V(1).Info("Reconciled cloudflared Deployment")
 
-		// List all HTTPRoutes for this Gateway and update tunnel ingress configuration.
-		gatewayRoutes, deniedRoutes, err := listGatewayRoutes(ctx, r.Client, gw)
+		// Filter HTTPRoutes by ReferenceGrant and update tunnel ingress configuration.
+		gatewayRoutes, deniedRoutes, err := listGatewayRoutes(ctx, r.Client, &allRoutes, gw)
 		if err != nil {
 			return r.reconcileError(ctx, gw, err)
 		}
@@ -881,17 +884,12 @@ func backendReferenceGrantsCondition(generation int64, now metav1.Time, denied [
 		WithMessage(msg)
 }
 
-// listGatewayRoutes lists all non-deleting HTTPRoutes that reference the given Gateway.
-// Cross-namespace routes are only included if a ReferenceGrant in the Gateway's namespace
-// permits the reference. Routes denied due to missing or failed ReferenceGrant checks are
-// returned separately so the caller can report them without blocking reconciliation.
-func listGatewayRoutes(ctx context.Context, r client.Client, gw *gatewayv1.Gateway) (allowed, denied []*gatewayv1.HTTPRoute, err error) {
-	var allRoutes gatewayv1.HTTPRouteList
-	if err := r.List(ctx, &allRoutes, client.MatchingFields{
-		indexHTTPRouteParentGateway: gw.Namespace + "/" + gw.Name,
-	}); err != nil {
-		return nil, nil, fmt.Errorf("listing HTTPRoutes: %w", err)
-	}
+// listGatewayRoutes filters non-deleting HTTPRoutes from the pre-fetched list that
+// reference the given Gateway. Cross-namespace routes are only included if a
+// ReferenceGrant in the Gateway's namespace permits the reference. Routes denied
+// due to missing or failed ReferenceGrant checks are returned separately so the
+// caller can report them without blocking reconciliation.
+func listGatewayRoutes(ctx context.Context, r client.Client, allRoutes *gatewayv1.HTTPRouteList, gw *gatewayv1.Gateway) (allowed, denied []*gatewayv1.HTTPRoute, err error) {
 	for i := range allRoutes.Items {
 		hr := &allRoutes.Items[i]
 
@@ -1010,13 +1008,7 @@ func pathFromMatches(matches []gatewayv1.HTTPRouteMatch) string {
 
 // countAttachedRoutes counts the number of non-deleting HTTPRoutes attached to each
 // listener of the given Gateway. Routes without a sectionName count toward all listeners.
-func countAttachedRoutes(ctx context.Context, r client.Reader, gw *gatewayv1.Gateway) (map[gatewayv1.SectionName]int32, error) {
-	var routes gatewayv1.HTTPRouteList
-	if err := r.List(ctx, &routes, client.MatchingFields{
-		indexHTTPRouteParentGateway: gw.Namespace + "/" + gw.Name,
-	}); err != nil {
-		return nil, fmt.Errorf("listing HTTPRoutes: %w", err)
-	}
+func countAttachedRoutes(routes *gatewayv1.HTTPRouteList, gw *gatewayv1.Gateway) map[gatewayv1.SectionName]int32 {
 	counts := make(map[gatewayv1.SectionName]int32)
 	for i := range routes.Items {
 		hr := &routes.Items[i]
@@ -1037,7 +1029,7 @@ func countAttachedRoutes(ctx context.Context, r client.Reader, gw *gatewayv1.Gat
 			}
 		}
 	}
-	return counts, nil
+	return counts
 }
 
 func buildTunnelTokenSecret(gw *gatewayv1.Gateway, tunnelToken string) *corev1.Secret {
