@@ -74,12 +74,6 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, nil
 	}
 
-	// Skip reconciliation if the object is suspended.
-	if gc.Annotations[apiv1.AnnotationReconcile] == apiv1.ValueDisabled {
-		log.V(1).Info("Reconciliation is disabled")
-		return ctrl.Result{}, nil
-	}
-
 	log.V(1).Info("Reconciling GatewayClass")
 
 	return r.reconcile(ctx, &gc)
@@ -99,24 +93,26 @@ func (r *GatewayClassReconciler) reconcile(ctx context.Context, gc *gatewayv1.Ga
 	readyMessage := "GatewayClass is ready"
 	switch {
 	case !supportedVersion:
+		reason := string(gatewayv1.GatewayClassReasonUnsupportedVersion)
+
 		acceptedStatus = metav1.ConditionFalse
-		acceptedReason = string(gatewayv1.GatewayClassReasonUnsupportedVersion)
+		acceptedReason = reason
 		acceptedMessage = supportedVersionMessage
 		supportedVersionStatus = metav1.ConditionFalse
-		supportedVersionReason = string(gatewayv1.GatewayClassReasonUnsupportedVersion)
+		supportedVersionReason = reason
 		readyStatus = metav1.ConditionFalse
-		readyReason = apiv1.ReasonFailed
+		readyReason = reason
 		readyMessage = supportedVersionMessage
 	case !validParams:
+		reason := string(gatewayv1.GatewayClassReasonInvalidParameters)
+
 		acceptedStatus = metav1.ConditionFalse
-		acceptedReason = string(gatewayv1.GatewayClassReasonInvalidParameters)
+		acceptedReason = reason
 		acceptedMessage = validParamsMessage
 		readyStatus = metav1.ConditionFalse
-		readyReason = apiv1.ReasonInvalidParams
+		readyReason = reason
 		readyMessage = validParamsMessage
 	}
-
-	requeueAfter := apiv1.ReconcileInterval(gc.Annotations)
 
 	// Desired supported features (sorted alphabetically by name as required by the spec).
 	desiredFeatures := []gatewayv1.SupportedFeature{
@@ -133,7 +129,7 @@ func (r *GatewayClassReconciler) reconcile(ctx context.Context, gc *gatewayv1.Ga
 		!conditionChanged(gc.Status.Conditions, supportedVersionType, supportedVersionStatus, supportedVersionReason, supportedVersionMessage, gc.Generation) &&
 		!conditionChanged(gc.Status.Conditions, apiv1.ConditionReady, readyStatus, readyReason, readyMessage, gc.Generation) &&
 		slices.Equal(gc.Status.SupportedFeatures, desiredFeatures) {
-		return ctrl.Result{RequeueAfter: requeueAfter}, nil
+		return ctrl.Result{}, nil
 	}
 
 	now := metav1.Now()
@@ -180,7 +176,7 @@ func (r *GatewayClassReconciler) reconcile(ctx context.Context, gc *gatewayv1.Ga
 		r.Eventf(gc, nil, corev1.EventTypeNormal, apiv1.ReasonReconciled, "Reconcile", "GatewayClass is ready")
 	}
 
-	return ctrl.Result{RequeueAfter: requeueAfter}, nil
+	return ctrl.Result{}, nil
 }
 
 // checkSupportedVersion verifies that the installed Gateway API CRD major.minor
