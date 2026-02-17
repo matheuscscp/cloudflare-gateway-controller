@@ -82,7 +82,7 @@ func TestMain(m *testing.M) {
 	if err := (&GatewayClassReconciler{
 		Client:            mgr.GetClient(),
 		EventRecorder:     &events.FakeRecorder{},
-		GatewayAPIVersion: testGatewayAPIVersion,
+		GatewayAPIVersion: *testGatewayAPIVersion,
 	}).SetupWithManager(mgr); err != nil {
 		panic(fmt.Sprintf("failed to setup GatewayClass controller: %v", err))
 	}

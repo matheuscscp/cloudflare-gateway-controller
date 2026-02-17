@@ -29,28 +29,28 @@ import (
 
 // GatewayAPIVersion returns the parsed semver version of the
 // sigs.k8s.io/gateway-api module dependency from the build info.
-func GatewayAPIVersion() *semver.Version {
+func GatewayAPIVersion() semver.Version {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
-		return nil
+		panic("failed to read build info")
 	}
 	for _, dep := range info.Deps {
 		if dep.Path == "sigs.k8s.io/gateway-api" {
 			v, err := semver.NewVersion(dep.Version)
 			if err != nil {
-				return nil
+				panic(fmt.Sprintf("failed to parse gateway-api version '%s': %v", dep.Version, err))
 			}
-			return v
+			return *v
 		}
 	}
-	return nil
+	panic("gateway-api dependency not found in build info")
 }
 
 // GatewayClassReconciler reconciles GatewayClass objects.
 type GatewayClassReconciler struct {
 	client.Client
 	events.EventRecorder
-	GatewayAPIVersion *semver.Version
+	GatewayAPIVersion semver.Version
 }
 
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gatewayclasses,verbs=get;list;watch
@@ -187,10 +187,6 @@ func (r *GatewayClassReconciler) reconcile(ctx context.Context, gc *gatewayv1.Ga
 // version matches the version this binary was compiled against. Returns false
 // with a human-readable reason if the versions are incompatible.
 func (r *GatewayClassReconciler) checkSupportedVersion(ctx context.Context) (bool, string) {
-	if r.GatewayAPIVersion == nil {
-		return false, "Binary Gateway API version is unknown"
-	}
-
 	crd := &metav1.PartialObjectMetadata{}
 	crd.SetGroupVersionKind(apiextensionsv1.SchemeGroupVersion.WithKind(apiv1.KindCustomResourceDefinition))
 	if err := r.Get(ctx, types.NamespacedName{Name: apiv1.CRDGatewayClass}, crd); err != nil {
