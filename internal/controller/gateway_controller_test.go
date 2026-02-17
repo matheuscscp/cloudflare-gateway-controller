@@ -1,7 +1,7 @@
 // Copyright 2026 Matheus Pimenta.
 // SPDX-License-Identifier: AGPL-3.0
 
-package controller
+package controller_test
 
 import (
 	"context"
@@ -19,6 +19,8 @@ import (
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 	cfclient "github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
+	"github.com/matheuscscp/cloudflare-gateway-controller/internal/conditions"
+	"github.com/matheuscscp/cloudflare-gateway-controller/internal/controller"
 )
 
 type mockTunnelClient struct {
@@ -126,7 +128,7 @@ func createTestGatewayClass(g Gomega, name string, secretNamespace string) *gate
 			Name: name,
 		},
 		Spec: gatewayv1.GatewayClassSpec{
-			ControllerName: gatewayv1.GatewayController(apiv1.ControllerName),
+			ControllerName: apiv1.ControllerName,
 			ParametersRef: &gatewayv1.ParametersReference{
 				Group:     "",
 				Kind:      "Secret",
@@ -144,7 +146,7 @@ func waitForGatewayClassReady(g Gomega, gc *gatewayv1.GatewayClass) {
 	g.Eventually(func(g Gomega) {
 		var result gatewayv1.GatewayClass
 		g.Expect(testClient.Get(testCtx, key, &result)).To(Succeed())
-		ready := findCondition(result.Status.Conditions, apiv1.ConditionReady)
+		ready := conditions.Find(result.Status.Conditions, apiv1.ConditionReady)
 		g.Expect(ready).NotTo(BeNil())
 		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
@@ -155,7 +157,7 @@ func waitForGatewayProgrammed(g Gomega, gw *gatewayv1.Gateway) {
 	g.Eventually(func(g Gomega) {
 		var result gatewayv1.Gateway
 		g.Expect(testClient.Get(testCtx, key, &result)).To(Succeed())
-		programmed := findCondition(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
+		programmed := conditions.Find(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
 		g.Expect(programmed).NotTo(BeNil())
 		g.Expect(programmed.Status).To(Equal(metav1.ConditionTrue))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
@@ -209,21 +211,21 @@ func TestGatewayAcceptedAndProgrammed(t *testing.T) {
 		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
 
 		// Gateway-level conditions
-		accepted := findCondition(result.Status.Conditions, string(gatewayv1.GatewayConditionAccepted))
+		accepted := conditions.Find(result.Status.Conditions, string(gatewayv1.GatewayConditionAccepted))
 		g.Expect(accepted).NotTo(BeNil())
 		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
 
-		programmed := findCondition(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
+		programmed := conditions.Find(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
 		g.Expect(programmed).NotTo(BeNil())
 		g.Expect(programmed.Status).To(Equal(metav1.ConditionTrue))
 
-		ready := findCondition(result.Status.Conditions, apiv1.ConditionReady)
+		ready := conditions.Find(result.Status.Conditions, apiv1.ConditionReady)
 		g.Expect(ready).NotTo(BeNil())
 		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
 		g.Expect(ready.Reason).To(Equal(apiv1.ReasonReconciled))
 
 		// DNSManagement condition should be NotEnabled (no zoneName annotation)
-		dns := findCondition(result.Status.Conditions, apiv1.ConditionDNSManagement)
+		dns := conditions.Find(result.Status.Conditions, apiv1.ConditionDNSManagement)
 		g.Expect(dns).NotTo(BeNil())
 		g.Expect(dns.Status).To(Equal(metav1.ConditionFalse))
 		g.Expect(dns.Reason).To(Equal(apiv1.ReasonDNSNotEnabled))
@@ -232,7 +234,7 @@ func TestGatewayAcceptedAndProgrammed(t *testing.T) {
 		g.Expect(result.Status.Listeners).To(HaveLen(1))
 		ls := result.Status.Listeners[0]
 		g.Expect(ls.Name).To(Equal(gatewayv1.SectionName("http")))
-		listenerAccepted := findCondition(ls.Conditions, string(gatewayv1.ListenerConditionAccepted))
+		listenerAccepted := conditions.Find(ls.Conditions, string(gatewayv1.ListenerConditionAccepted))
 		g.Expect(listenerAccepted).NotTo(BeNil())
 		g.Expect(listenerAccepted.Status).To(Equal(metav1.ConditionTrue))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
@@ -248,7 +250,7 @@ func TestGatewayAcceptedAndProgrammed(t *testing.T) {
 	deployKey := client.ObjectKey{Name: "cloudflared-" + gw.Name, Namespace: gw.Namespace}
 	g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
 	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
-	g.Expect(deploy.Spec.Template.Spec.Containers[0].Image).To(Equal(DefaultCloudflaredImage))
+	g.Expect(deploy.Spec.Template.Spec.Containers[0].Image).To(Equal(controller.DefaultCloudflaredImage))
 
 	// Verify env uses secretKeyRef, not plain Value
 	env := deploy.Spec.Template.Spec.Containers[0].Env
@@ -313,13 +315,13 @@ func TestGatewayUnsupportedProtocol(t *testing.T) {
 		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
 
 		// Gateway should still be Programmed
-		programmed := findCondition(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
+		programmed := conditions.Find(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
 		g.Expect(programmed).NotTo(BeNil())
 		g.Expect(programmed.Status).To(Equal(metav1.ConditionTrue))
 
 		// Listener Accepted=False with UnsupportedProtocol
 		g.Expect(result.Status.Listeners).To(HaveLen(1))
-		listenerAccepted := findCondition(result.Status.Listeners[0].Conditions, string(gatewayv1.ListenerConditionAccepted))
+		listenerAccepted := conditions.Find(result.Status.Listeners[0].Conditions, string(gatewayv1.ListenerConditionAccepted))
 		g.Expect(listenerAccepted).NotTo(BeNil())
 		g.Expect(listenerAccepted.Status).To(Equal(metav1.ConditionFalse))
 		g.Expect(listenerAccepted.Reason).To(Equal(string(gatewayv1.ListenerReasonUnsupportedProtocol)))
@@ -366,7 +368,7 @@ func TestGatewayDeletion(t *testing.T) {
 	g.Eventually(func(g Gomega) {
 		var result gatewayv1.Gateway
 		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
-		programmed := findCondition(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
+		programmed := conditions.Find(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
 		g.Expect(programmed).NotTo(BeNil())
 		g.Expect(programmed.Status).To(Equal(metav1.ConditionTrue))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
@@ -445,7 +447,7 @@ func TestGatewayCrossNamespaceSecret(t *testing.T) {
 	g.Eventually(func(g Gomega) {
 		var result gatewayv1.Gateway
 		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
-		accepted := findCondition(result.Status.Conditions, string(gatewayv1.GatewayConditionAccepted))
+		accepted := conditions.Find(result.Status.Conditions, string(gatewayv1.GatewayConditionAccepted))
 		g.Expect(accepted).NotTo(BeNil())
 		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
 		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.GatewayReasonInvalidParameters)))
@@ -494,11 +496,11 @@ func TestGatewayCrossNamespaceSecret(t *testing.T) {
 		var result gatewayv1.Gateway
 		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
 
-		accepted := findCondition(result.Status.Conditions, string(gatewayv1.GatewayConditionAccepted))
+		accepted := conditions.Find(result.Status.Conditions, string(gatewayv1.GatewayConditionAccepted))
 		g.Expect(accepted).NotTo(BeNil())
 		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
 
-		programmed := findCondition(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
+		programmed := conditions.Find(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
 		g.Expect(programmed).NotTo(BeNil())
 		g.Expect(programmed.Status).To(Equal(metav1.ConditionTrue))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
@@ -558,7 +560,7 @@ func TestGatewayInfrastructure(t *testing.T) {
 	g.Eventually(func(g Gomega) {
 		var result gatewayv1.Gateway
 		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
-		programmed := findCondition(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
+		programmed := conditions.Find(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
 		g.Expect(programmed).NotTo(BeNil())
 		g.Expect(programmed.Status).To(Equal(metav1.ConditionTrue))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
@@ -659,11 +661,11 @@ func TestGatewayInfrastructureParametersRef(t *testing.T) {
 		var result gatewayv1.Gateway
 		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
 
-		accepted := findCondition(result.Status.Conditions, string(gatewayv1.GatewayConditionAccepted))
+		accepted := conditions.Find(result.Status.Conditions, string(gatewayv1.GatewayConditionAccepted))
 		g.Expect(accepted).NotTo(BeNil())
 		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
 
-		programmed := findCondition(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
+		programmed := conditions.Find(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
 		g.Expect(programmed).NotTo(BeNil())
 		g.Expect(programmed.Status).To(Equal(metav1.ConditionTrue))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
@@ -765,7 +767,7 @@ func TestGatewayDNSReconciliation(t *testing.T) {
 	g.Eventually(func(g Gomega) {
 		var result gatewayv1.Gateway
 		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
-		dns := findCondition(result.Status.Conditions, apiv1.ConditionDNSManagement)
+		dns := conditions.Find(result.Status.Conditions, apiv1.ConditionDNSManagement)
 		g.Expect(dns).NotTo(BeNil())
 		g.Expect(dns.Status).To(Equal(metav1.ConditionTrue))
 		g.Expect(dns.Reason).To(Equal(apiv1.ReasonDNSReconciled))
@@ -833,7 +835,7 @@ func TestGatewayDNSStaleCleanup(t *testing.T) {
 	g.Eventually(func(g Gomega) {
 		var result gatewayv1.Gateway
 		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
-		dns := findCondition(result.Status.Conditions, apiv1.ConditionDNSManagement)
+		dns := conditions.Find(result.Status.Conditions, apiv1.ConditionDNSManagement)
 		g.Expect(dns).NotTo(BeNil())
 		g.Expect(dns.Status).To(Equal(metav1.ConditionTrue))
 		g.Expect(dns.Reason).To(Equal(apiv1.ReasonDNSReconciled))
@@ -931,7 +933,7 @@ func TestGatewayDNSSkippedHostnames(t *testing.T) {
 	g.Eventually(func(g Gomega) {
 		var result gatewayv1.Gateway
 		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
-		dns := findCondition(result.Status.Conditions, apiv1.ConditionDNSManagement)
+		dns := conditions.Find(result.Status.Conditions, apiv1.ConditionDNSManagement)
 		g.Expect(dns).NotTo(BeNil())
 		g.Expect(dns.Status).To(Equal(metav1.ConditionTrue))
 		g.Expect(dns.Reason).To(Equal(apiv1.ReasonDNSReconciled))

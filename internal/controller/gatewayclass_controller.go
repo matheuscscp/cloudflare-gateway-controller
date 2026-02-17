@@ -6,7 +6,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"runtime/debug"
 	"slices"
 
 	semver "github.com/Masterminds/semver/v3"
@@ -25,26 +24,8 @@ import (
 	"sigs.k8s.io/gateway-api/pkg/features"
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
+	"github.com/matheuscscp/cloudflare-gateway-controller/internal/conditions"
 )
-
-// GatewayAPIVersion returns the parsed semver version of the
-// sigs.k8s.io/gateway-api module dependency from the build info.
-func GatewayAPIVersion() semver.Version {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		panic("failed to read build info")
-	}
-	for _, dep := range info.Deps {
-		if dep.Path == "sigs.k8s.io/gateway-api" {
-			v, err := semver.NewVersion(dep.Version)
-			if err != nil {
-				panic(fmt.Sprintf("failed to parse gateway-api version '%s': %v", dep.Version, err))
-			}
-			return *v
-		}
-	}
-	panic("gateway-api dependency not found in build info")
-}
 
 // GatewayClassReconciler reconciles GatewayClass objects.
 type GatewayClassReconciler struct {
@@ -66,7 +47,7 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	if gc.Spec.ControllerName != gatewayv1.GatewayController(apiv1.ControllerName) {
+	if gc.Spec.ControllerName != apiv1.ControllerName {
 		return ctrl.Result{}, nil
 	}
 
@@ -125,9 +106,9 @@ func (r *GatewayClassReconciler) reconcile(ctx context.Context, gc *gatewayv1.Ga
 	// Skip the status patch if no conditions or features changed.
 	acceptedType := string(gatewayv1.GatewayClassConditionStatusAccepted)
 	supportedVersionType := string(gatewayv1.GatewayClassConditionStatusSupportedVersion)
-	if !conditionChanged(gc.Status.Conditions, acceptedType, acceptedStatus, acceptedReason, acceptedMessage, gc.Generation) &&
-		!conditionChanged(gc.Status.Conditions, supportedVersionType, supportedVersionStatus, supportedVersionReason, supportedVersionMessage, gc.Generation) &&
-		!conditionChanged(gc.Status.Conditions, apiv1.ConditionReady, readyStatus, readyReason, readyMessage, gc.Generation) &&
+	if !conditions.Changed(gc.Status.Conditions, acceptedType, acceptedStatus, acceptedReason, acceptedMessage, gc.Generation) &&
+		!conditions.Changed(gc.Status.Conditions, supportedVersionType, supportedVersionStatus, supportedVersionReason, supportedVersionMessage, gc.Generation) &&
+		!conditions.Changed(gc.Status.Conditions, apiv1.ConditionReady, readyStatus, readyReason, readyMessage, gc.Generation) &&
 		slices.Equal(gc.Status.SupportedFeatures, desiredFeatures) {
 		return ctrl.Result{}, nil
 	}
@@ -166,7 +147,7 @@ func (r *GatewayClassReconciler) reconcile(ctx context.Context, gc *gatewayv1.Ga
 			WithSupportedFeatures(featurePatches...),
 		)
 
-	if err := r.Status().Apply(ctx, statusPatch, client.FieldOwner(apiv1.ControllerName), client.ForceOwnership); err != nil {
+	if err := r.Status().Apply(ctx, statusPatch, client.FieldOwner(apiv1.ShortControllerName), client.ForceOwnership); err != nil {
 		return ctrl.Result{}, err
 	}
 

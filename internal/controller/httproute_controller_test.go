@@ -1,7 +1,7 @@
 // Copyright 2026 Matheus Pimenta.
 // SPDX-License-Identifier: AGPL-3.0
 
-package controller
+package controller_test
 
 import (
 	"testing"
@@ -14,6 +14,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
+	"github.com/matheuscscp/cloudflare-gateway-controller/internal/conditions"
 )
 
 func createTestGateway(g Gomega, name, namespace, gcName string) *gatewayv1.Gateway {
@@ -112,11 +113,11 @@ func TestHTTPRouteAccepted(t *testing.T) {
 		var result gatewayv1.HTTPRoute
 		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
 		g.Expect(result.Status.Parents).To(HaveLen(1))
-		accepted := findCondition(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
+		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
 		g.Expect(accepted).NotTo(BeNil())
 		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
 
-		resolvedRefs := findCondition(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionResolvedRefs))
+		resolvedRefs := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionResolvedRefs))
 		g.Expect(resolvedRefs).NotTo(BeNil())
 		g.Expect(resolvedRefs.Status).To(Equal(metav1.ConditionTrue))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
@@ -207,7 +208,7 @@ func TestHTTPRouteDeletion(t *testing.T) {
 		var result gatewayv1.HTTPRoute
 		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
 		g.Expect(result.Status.Parents).To(HaveLen(1))
-		accepted := findCondition(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
+		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
 		g.Expect(accepted).NotTo(BeNil())
 		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
@@ -245,7 +246,7 @@ func TestHTTPRouteGatewayNotReady(t *testing.T) {
 			Name: "test-gw-class-httproute-notready",
 		},
 		Spec: gatewayv1.GatewayClassSpec{
-			ControllerName: gatewayv1.GatewayController(apiv1.ControllerName),
+			ControllerName: apiv1.ControllerName,
 			ParametersRef: &gatewayv1.ParametersReference{
 				Group:     "",
 				Kind:      "Secret",
@@ -275,7 +276,7 @@ func TestHTTPRouteGatewayNotReady(t *testing.T) {
 	g.Eventually(func(g Gomega) {
 		var result gatewayv1.Gateway
 		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
-		accepted := findCondition(result.Status.Conditions, string(gatewayv1.GatewayConditionAccepted))
+		accepted := conditions.Find(result.Status.Conditions, string(gatewayv1.GatewayConditionAccepted))
 		g.Expect(accepted).NotTo(BeNil())
 		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
@@ -327,7 +328,7 @@ func TestHTTPRouteGatewayNotReady(t *testing.T) {
 		var result gatewayv1.HTTPRoute
 		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
 		g.Expect(result.Status.Parents).To(HaveLen(1))
-		accepted := findCondition(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
+		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
 		g.Expect(accepted).NotTo(BeNil())
 		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
 		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.RouteReasonAccepted)))

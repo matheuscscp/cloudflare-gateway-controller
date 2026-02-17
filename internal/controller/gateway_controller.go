@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -33,6 +32,7 @@ import (
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 	cfclient "github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
+	"github.com/matheuscscp/cloudflare-gateway-controller/internal/conditions"
 )
 
 // DefaultCloudflaredImage is the default cloudflared container image.
@@ -68,7 +68,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := r.Get(ctx, types.NamespacedName{Name: string(gw.Spec.GatewayClassName)}, &gc); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if gc.Spec.ControllerName != gatewayv1.GatewayController(apiv1.ControllerName) {
+	if gc.Spec.ControllerName != apiv1.ControllerName {
 		return ctrl.Result{}, nil
 	}
 
@@ -123,7 +123,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	readyStatus := metav1.ConditionFalse
 	readyReason := apiv1.ReasonFailed
 	readyMsg := ""
-	var conditions []*acmetav1.ConditionApplyConfiguration
+	var condPatches []*acmetav1.ConditionApplyConfiguration
 
 	// Read credentials
 	cfg, err := readCredentials(ctx, r.Client, gc, gw)
@@ -131,7 +131,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		credMsg := fmt.Sprintf("Failed to read credentials: %v", err)
 		readyReason = apiv1.ReasonInvalidParams
 		readyMsg = credMsg
-		conditions = []*acmetav1.ConditionApplyConfiguration{
+		condPatches = []*acmetav1.ConditionApplyConfiguration{
 			acmetav1.Condition().
 				WithType(string(gatewayv1.GatewayConditionAccepted)).
 				WithStatus(metav1.ConditionFalse).
@@ -211,7 +211,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		// unset, container defaults, etc.) are left untouched, avoiding spurious
 		// updates that would trigger a watch loop.
 		deployApply := r.buildCloudflaredDeploymentApply(gw, replicas)
-		if err := r.Apply(ctx, deployApply, client.FieldOwner(apiv1.ControllerName), client.ForceOwnership); err != nil {
+		if err := r.Apply(ctx, deployApply, client.FieldOwner(apiv1.ShortControllerName), client.ForceOwnership); err != nil {
 			return r.reconcileError(ctx, gw, fmt.Errorf("applying cloudflared deployment: %w", err))
 		}
 		log.V(1).Info("Reconciled cloudflared Deployment")
@@ -267,7 +267,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		} else {
 			readyMsg = "Waiting for cloudflared deployment to become ready"
 		}
-		conditions = []*acmetav1.ConditionApplyConfiguration{
+		condPatches = []*acmetav1.ConditionApplyConfiguration{
 			acmetav1.Condition().
 				WithType(string(gatewayv1.GatewayConditionAccepted)).
 				WithStatus(metav1.ConditionTrue).
@@ -290,16 +290,16 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 				WithReason(readyReason).
 				WithMessage(readyMsg),
 		}
-		conditions = append(conditions, routeReferenceGrantsCondition(gw.Generation, now, deniedRoutes))
-		conditions = append(conditions, backendReferenceGrantsCondition(gw.Generation, now, deniedBackendRefs))
-		conditions = append(conditions, dnsCond)
+		condPatches = append(condPatches, routeReferenceGrantsCondition(gw.Generation, now, deniedRoutes))
+		condPatches = append(condPatches, backendReferenceGrantsCondition(gw.Generation, now, deniedBackendRefs))
+		condPatches = append(condPatches, dnsCond)
 	}
 
 	// Skip the status patch if no conditions or listener statuses changed.
 	requeueAfter := apiv1.ReconcileInterval(gw.Annotations)
 	changed := false
-	for _, c := range conditions {
-		if applyConditionChanged(gw.Status.Conditions, c, gw.Generation) {
+	for _, c := range condPatches {
+		if conditions.ApplyChanged(gw.Status.Conditions, c, gw.Generation) {
 			changed = true
 			break
 		}
@@ -314,10 +314,10 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	statusPatch := acgatewayv1.Gateway(gw.Name, gw.Namespace).
 		WithResourceVersion(gw.ResourceVersion).
 		WithStatus(acgatewayv1.GatewayStatus().
-			WithConditions(conditions...).
+			WithConditions(condPatches...).
 			WithListeners(listenerPatches...),
 		)
-	if err := r.Status().Apply(ctx, statusPatch, client.FieldOwner(apiv1.ControllerName), client.ForceOwnership); err != nil {
+	if err := r.Status().Apply(ctx, statusPatch, client.FieldOwner(apiv1.ShortControllerName), client.ForceOwnership); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -335,10 +335,10 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 // to update only the Ready condition without clobbering other conditions.
 func (r *GatewayReconciler) reconcileError(ctx context.Context, gw *gatewayv1.Gateway, reconcileErr error) (ctrl.Result, error) {
 	msg := reconcileErr.Error()
-	if conditionChanged(gw.Status.Conditions, apiv1.ConditionReady, metav1.ConditionUnknown, apiv1.ReasonProgressingWithRetry, msg, gw.Generation) {
+	if conditions.Changed(gw.Status.Conditions, apiv1.ConditionReady, metav1.ConditionUnknown, apiv1.ReasonProgressingWithRetry, msg, gw.Generation) {
 		patch := client.MergeFrom(gw.DeepCopy())
 		now := metav1.Now()
-		cond := findCondition(gw.Status.Conditions, apiv1.ConditionReady)
+		cond := conditions.Find(gw.Status.Conditions, apiv1.ConditionReady)
 		if cond != nil {
 			cond.Status = metav1.ConditionUnknown
 			cond.Reason = apiv1.ReasonProgressingWithRetry
@@ -505,7 +505,7 @@ func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cfclient.Tunnel
 	if zoneName == "" {
 		// Only clean up if DNS was previously enabled (condition was True,
 		// meaning records may exist). Skip API calls otherwise.
-		prev := findCondition(existingConditions, apiv1.ConditionDNSManagement)
+		prev := conditions.Find(existingConditions, apiv1.ConditionDNSManagement)
 		if prev != nil && prev.Status == metav1.ConditionTrue {
 			if err := r.cleanupAllDNS(ctx, tc, tunnelID); err != nil {
 				return dnsCondition(metav1.ConditionFalse, generation, existingConditions,
@@ -605,7 +605,7 @@ func dnsCondition(status metav1.ConditionStatus, generation int64, existingCondi
 		WithObservedGeneration(generation).
 		WithReason(reason).
 		WithMessage(message)
-	if prev := findCondition(existingConditions, apiv1.ConditionDNSManagement); prev != nil &&
+	if prev := conditions.Find(existingConditions, apiv1.ConditionDNSManagement); prev != nil &&
 		prev.Status == status && prev.Reason == reason && prev.Message == message {
 		cond.WithLastTransitionTime(prev.LastTransitionTime)
 	} else {
@@ -835,7 +835,7 @@ func listenersChanged(existing []gatewayv1.ListenerStatus, desired []*acgatewayv
 			return true
 		}
 		for i := range d.Conditions {
-			if applyConditionChanged(e.Conditions, &d.Conditions[i], generation) {
+			if conditions.ApplyChanged(e.Conditions, &d.Conditions[i], generation) {
 				return true
 			}
 		}
@@ -1069,7 +1069,7 @@ func buildTunnelTokenSecret(gw *gatewayv1.Gateway, tunnelToken string) *corev1.S
 func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gateway, replicas *int32) *acappsv1.DeploymentApplyConfiguration {
 	selectorLabels := map[string]string{
 		"app.kubernetes.io/name":       "cloudflared",
-		"app.kubernetes.io/managed-by": filepath.Base(apiv1.ControllerName),
+		"app.kubernetes.io/managed-by": apiv1.ShortControllerName,
 		"app.kubernetes.io/instance":   gw.Name,
 	}
 	templateLabels := maps.Clone(selectorLabels)

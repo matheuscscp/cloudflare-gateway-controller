@@ -20,6 +20,7 @@ import (
 	acgatewayv1 "sigs.k8s.io/gateway-api/applyconfiguration/apis/v1"
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
+	"github.com/matheuscscp/cloudflare-gateway-controller/internal/conditions"
 )
 
 type gatewayParent struct {
@@ -128,7 +129,7 @@ func (r *HTTPRouteReconciler) routeStatusChanged(route *gatewayv1.HTTPRoute, par
 	// Count existing entries for our controller.
 	var ours int
 	for _, p := range route.Status.Parents {
-		if p.ControllerName == gatewayv1.GatewayController(apiv1.ControllerName) {
+		if p.ControllerName == apiv1.ControllerName {
 			ours++
 		}
 	}
@@ -142,8 +143,8 @@ func (r *HTTPRouteReconciler) routeStatusChanged(route *gatewayv1.HTTPRoute, par
 		if existing == nil {
 			return true
 		}
-		if conditionChanged(existing.Conditions, acceptedType, acceptedStatus, acceptedReason, acceptedMessage, route.Generation) ||
-			conditionChanged(existing.Conditions, resolvedRefsType, resolvedRefsStatus, resolvedRefsReason, resolvedRefsMessage, route.Generation) {
+		if conditions.Changed(existing.Conditions, acceptedType, acceptedStatus, acceptedReason, acceptedMessage, route.Generation) ||
+			conditions.Changed(existing.Conditions, resolvedRefsType, resolvedRefsStatus, resolvedRefsReason, resolvedRefsMessage, route.Generation) {
 			return true
 		}
 	}
@@ -154,7 +155,7 @@ func (r *HTTPRouteReconciler) routeStatusChanged(route *gatewayv1.HTTPRoute, par
 // managed by our controller.
 func findRouteParentStatus(statuses []gatewayv1.RouteParentStatus, gw *gatewayv1.Gateway) *gatewayv1.RouteParentStatus {
 	for i, s := range statuses {
-		if s.ControllerName != gatewayv1.GatewayController(apiv1.ControllerName) {
+		if s.ControllerName != apiv1.ControllerName {
 			continue
 		}
 		if string(s.ParentRef.Name) != gw.Name {
@@ -194,7 +195,7 @@ func (r *HTTPRouteReconciler) resolveParents(ctx context.Context, route *gateway
 		if err := r.Get(ctx, types.NamespacedName{Name: string(gw.Spec.GatewayClassName)}, &gc); err != nil {
 			continue
 		}
-		if gc.Spec.ControllerName != gatewayv1.GatewayController(apiv1.ControllerName) {
+		if gc.Spec.ControllerName != apiv1.ControllerName {
 			continue
 		}
 		granted, err := httpRouteReferenceGranted(ctx, r.Client, route.Namespace, &gw)
@@ -237,7 +238,7 @@ func buildRouteParentStatus(route *gatewayv1.HTTPRoute, gw *gatewayv1.Gateway,
 			WithNamespace(gatewayv1.Namespace(gw.Namespace)).
 			WithName(gatewayv1.ObjectName(gw.Name)),
 		).
-		WithControllerName(gatewayv1.GatewayController(apiv1.ControllerName)).
+		WithControllerName(apiv1.ControllerName).
 		WithConditions(
 			acmetav1.Condition().
 				WithType(string(gatewayv1.RouteConditionAccepted)).
@@ -265,7 +266,7 @@ func (r *HTTPRouteReconciler) applyRouteStatus(ctx context.Context, route *gatew
 		WithStatus(acgatewayv1.HTTPRouteStatus().
 			WithParents(parentStatuses...),
 		)
-	return r.Status().Apply(ctx, statusPatch, client.FieldOwner(apiv1.ControllerName), client.ForceOwnership)
+	return r.Status().Apply(ctx, statusPatch, client.FieldOwner(apiv1.ShortControllerName), client.ForceOwnership)
 }
 
 // parentRefMatches reports whether the given parentRef points to the specified Gateway,

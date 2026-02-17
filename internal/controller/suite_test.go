@@ -1,23 +1,26 @@
 // Copyright 2026 Matheus Pimenta.
 // SPDX-License-Identifier: AGPL-3.0
 
-package controller
+package controller_test
 
 import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	semver "github.com/Masterminds/semver/v3"
+	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	eventsv1 "k8s.io/api/events/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -25,7 +28,9 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
+	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 	cfclient "github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
+	"github.com/matheuscscp/cloudflare-gateway-controller/internal/controller"
 )
 
 // testGatewayAPIVersion must match the major.minor version of the
@@ -40,6 +45,18 @@ var (
 	testCancel context.CancelFunc
 	testMock   *mockTunnelClient
 )
+
+// gatewayAPICRDPath returns the path to the Gateway API CRD directory.
+// It computes it from GOMODCACHE and testGatewayAPIVersion.
+func gatewayAPICRDPath() string {
+	out, err := exec.Command("go", "env", "GOMODCACHE").Output()
+	if err != nil {
+		panic(fmt.Sprintf("failed to run 'go env GOMODCACHE': %v", err))
+	}
+	gomodcache := strings.TrimSpace(string(out))
+
+	return filepath.Join(gomodcache, "sigs.k8s.io", "gateway-api@v"+testGatewayAPIVersion.Original(), "config", "crd", "standard")
+}
 
 func newTestScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
@@ -56,7 +73,7 @@ func TestMain(m *testing.M) {
 	scheme := newTestScheme()
 
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths: []string{os.Getenv("GATEWAY_API_CRDS")},
+		CRDDirectoryPaths: []string{gatewayAPICRDPath()},
 		Scheme:            scheme,
 	}
 
@@ -70,18 +87,16 @@ func TestMain(m *testing.M) {
 		Metrics: metricsserver.Options{
 			BindAddress: "0",
 		},
-		NewClient: func(config *rest.Config, options client.Options) (client.Client, error) {
-			options.Cache = nil // Disable cached reads for tests
-			return client.New(config, options)
-		},
 	})
 	if err != nil {
 		panic(fmt.Sprintf("failed to create manager: %v", err))
 	}
 
-	if err := (&GatewayClassReconciler{
+	eventRecorder := mgr.GetEventRecorder(apiv1.ShortControllerName)
+
+	if err := (&controller.GatewayClassReconciler{
 		Client:            mgr.GetClient(),
-		EventRecorder:     &events.FakeRecorder{},
+		EventRecorder:     eventRecorder,
 		GatewayAPIVersion: *testGatewayAPIVersion,
 	}).SetupWithManager(testCtx, mgr); err != nil {
 		panic(fmt.Sprintf("failed to setup GatewayClass controller: %v", err))
@@ -91,20 +106,20 @@ func TestMain(m *testing.M) {
 		tunnelID:    "test-tunnel-id",
 		tunnelToken: "test-tunnel-token",
 	}
-	if err := (&GatewayReconciler{
+	if err := (&controller.GatewayReconciler{
 		Client:        mgr.GetClient(),
-		EventRecorder: &events.FakeRecorder{},
+		EventRecorder: eventRecorder,
 		NewTunnelClient: func(_ cfclient.ClientConfig) (cfclient.TunnelClient, error) {
 			return testMock, nil
 		},
-		CloudflaredImage: DefaultCloudflaredImage,
+		CloudflaredImage: controller.DefaultCloudflaredImage,
 	}).SetupWithManager(mgr); err != nil {
 		panic(fmt.Sprintf("failed to setup Gateway controller: %v", err))
 	}
 
-	if err := (&HTTPRouteReconciler{
+	if err := (&controller.HTTPRouteReconciler{
 		Client:        mgr.GetClient(),
-		EventRecorder: &events.FakeRecorder{},
+		EventRecorder: eventRecorder,
 	}).SetupWithManager(mgr); err != nil {
 		panic(fmt.Sprintf("failed to setup HTTPRoute controller: %v", err))
 	}
@@ -173,4 +188,17 @@ func TestMain(m *testing.M) {
 	}
 
 	os.Exit(code)
+}
+
+// findEvent returns the first events.k8s.io/v1 Event for the given object name
+// matching the specified type and reason.
+func findEvent(g Gomega, objectName, eventType, reason string) *eventsv1.Event {
+	var events eventsv1.EventList
+	g.Expect(testClient.List(testCtx, &events, client.InNamespace("default"))).To(Succeed())
+	for i, e := range events.Items {
+		if e.Regarding.Name == objectName && e.Type == eventType && e.Reason == reason {
+			return &events.Items[i]
+		}
+	}
+	return nil
 }

@@ -70,35 +70,37 @@ func (r *GatewayClassReconciler) SetupWithManager(ctx context.Context, mgr ctrl.
 				predicate.GenerationChangedPredicate{},
 				predicate.AnnotationChangedPredicate{})))).
 		WatchesMetadata(&apiextensionsv1.CustomResourceDefinition{},
-			handler.EnqueueRequestsFromMapFunc(r.managedGatewayClasses),
+			handler.EnqueueRequestsFromMapFunc(r.managedGatewayClasses(false)),
 			builder.WithPredicates(debugPredicate(apiv1.KindCustomResourceDefinition,
 				gatewayClassCRDChangedPredicate))).
 		WatchesMetadata(&corev1.Secret{},
-			handler.EnqueueRequestsFromMapFunc(r.managedGatewayClasses),
+			handler.EnqueueRequestsFromMapFunc(r.managedGatewayClasses(true)),
 			builder.WithPredicates(debugPredicate(apiv1.KindSecret,
 				predicate.ResourceVersionChangedPredicate{}))).
 		Complete(r)
 }
 
-func (r *GatewayClassReconciler) managedGatewayClasses(ctx context.Context, obj client.Object) []reconcile.Request {
-	matchingFields := client.MatchingFields{
-		indexSpecControllerName: apiv1.ControllerName,
-	}
-	if s, ok := obj.(*corev1.Secret); ok {
-		matchingFields[indexSpecParametersRef] = s.Namespace + "/" + s.Name
-	}
+func (r *GatewayClassReconciler) managedGatewayClasses(withSecret bool) func(ctx context.Context, obj client.Object) []reconcile.Request {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		matchingFields := client.MatchingFields{
+			indexSpecControllerName: string(apiv1.ControllerName),
+		}
+		if withSecret {
+			matchingFields[indexSpecParametersRef] = obj.GetNamespace() + "/" + obj.GetName()
+		}
 
-	var classes gatewayv1.GatewayClassList
-	if err := r.List(ctx, &classes, matchingFields); err != nil {
-		log.FromContext(ctx).Error(err, "failed to list managed GatewayClasses")
-		return nil
-	}
+		var classes gatewayv1.GatewayClassList
+		if err := r.List(ctx, &classes, matchingFields); err != nil {
+			log.FromContext(ctx).Error(err, "failed to list managed GatewayClasses")
+			return nil
+		}
 
-	var requests []reconcile.Request
-	for _, gc := range classes.Items {
-		requests = append(requests, reconcile.Request{
-			NamespacedName: client.ObjectKey{Name: gc.Name},
-		})
+		var requests []reconcile.Request
+		for _, gc := range classes.Items {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: client.ObjectKey{Name: gc.Name},
+			})
+		}
+		return requests
 	}
-	return requests
 }

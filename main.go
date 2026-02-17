@@ -5,8 +5,11 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"os"
+	"runtime/debug"
 
+	"github.com/Masterminds/semver/v3"
 	"github.com/spf13/pflag"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -58,7 +61,7 @@ func main() {
 		},
 		HealthProbeBindAddress: ":8081",
 		LeaderElection:         *leaderElect,
-		LeaderElectionID:       apiv1.ControllerName,
+		LeaderElectionID:       apiv1.ShortControllerName,
 		Client: ctrlclient.Options{
 			Cache: &ctrlclient.CacheOptions{
 				DisableFor: []ctrlclient.Object{
@@ -74,10 +77,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	eventRecorder := mgr.GetEventRecorder(apiv1.ShortControllerName)
+
 	if err := (&controller.GatewayClassReconciler{
 		Client:            mgr.GetClient(),
-		EventRecorder:     mgr.GetEventRecorder(apiv1.ControllerName + "/gatewayclass"),
-		GatewayAPIVersion: controller.GatewayAPIVersion(),
+		EventRecorder:     eventRecorder,
+		GatewayAPIVersion: gatewayAPIVersion(),
 	}).SetupWithManager(ctx, mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GatewayClass")
 		os.Exit(1)
@@ -85,7 +90,7 @@ func main() {
 
 	if err := (&controller.GatewayReconciler{
 		Client:           mgr.GetClient(),
-		EventRecorder:    mgr.GetEventRecorder(apiv1.ControllerName + "/gateway"),
+		EventRecorder:    eventRecorder,
 		NewTunnelClient:  cfclient.NewTunnelClient,
 		CloudflaredImage: *cloudflaredImage,
 	}).SetupWithManager(mgr); err != nil {
@@ -95,7 +100,7 @@ func main() {
 
 	if err := (&controller.HTTPRouteReconciler{
 		Client:        mgr.GetClient(),
-		EventRecorder: mgr.GetEventRecorder(apiv1.ControllerName + "/httproute"),
+		EventRecorder: eventRecorder,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "HTTPRoute")
 		os.Exit(1)
@@ -114,4 +119,23 @@ func main() {
 		setupLog.Error(err, "unable to start controller")
 		os.Exit(1)
 	}
+}
+
+// gatewayAPIVersion returns the parsed semver version of the
+// sigs.k8s.io/gateway-api module dependency from the build info.
+func gatewayAPIVersion() semver.Version {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		panic("failed to read build info")
+	}
+	for _, dep := range info.Deps {
+		if dep.Path == "sigs.k8s.io/gateway-api" {
+			v, err := semver.NewVersion(dep.Version)
+			if err != nil {
+				panic(fmt.Sprintf("failed to parse gateway-api version '%s': %v", dep.Version, err))
+			}
+			return *v
+		}
+	}
+	panic("gateway-api dependency not found in build info")
 }

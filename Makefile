@@ -12,6 +12,9 @@ endif
 SHELL = /usr/bin/env bash -o pipefail
 .SHELLFLAGS = -ec
 
+# Allows for defining additional Go test args, e.g. '-tags integration'.
+GO_TEST_ARGS ?=
+
 .PHONY: all
 all: test build ## Run all build and test targets.
 
@@ -37,8 +40,7 @@ tidy: ## Run go mod tidy.
 .PHONY: test
 test: tidy fmt vet envtest ## Run all unit tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
-	GATEWAY_API_CRDS="$(GATEWAY_API_CRDS)" \
-	go test ./... -coverprofile cover.out
+	go test ./... $(GO_TEST_ARGS) -coverprofile cover.out
 
 ##@ Build
 
@@ -68,10 +70,6 @@ ENVTEST ?= $(LOCALBIN)/setup-envtest-$(ENVTEST_VERSION)
 ## Tool Versions
 CONTROLLER_GEN_VERSION ?= v0.19.0
 ENVTEST_VERSION ?= $(shell go list -m -f "{{ .Version }}" sigs.k8s.io/controller-runtime | awk -F'[v.]' '{printf "release-%d.%d", $$2, $$3}')
-
-## Gateway API CRDs from the Go module cache
-GATEWAY_API_VERSION ?= $(shell go list -m -f '{{ .Version }}' sigs.k8s.io/gateway-api)
-GATEWAY_API_CRDS ?= $(shell go env GOMODCACHE)/sigs.k8s.io/gateway-api@$(GATEWAY_API_VERSION)/config/crd/standard
 
 .PHONY: controller-gen
 controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary.
