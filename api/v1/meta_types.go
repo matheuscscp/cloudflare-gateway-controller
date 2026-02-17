@@ -43,7 +43,7 @@ const (
 // specific Gateway, ensuring the GatewayClass is not deleted while the Gateway
 // references it.
 func FinalizerGatewayClass(gw *gatewayv1.Gateway) string {
-	return string(gatewayv1.GatewayClassFinalizerGatewaysExist) + "/" + gw.Namespace + "." + gw.Name
+	return string(gatewayv1.GatewayClassFinalizerGatewaysExist) + "/" + gw.Name + "." + gw.Namespace
 }
 
 // Annotations.

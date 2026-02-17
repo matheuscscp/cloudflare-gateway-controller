@@ -48,7 +48,7 @@ func TestFinalizerGatewayClass(t *testing.T) {
 			Namespace: "my-ns",
 		},
 	}
-	want := "gateway-exists-finalizer.gateway.networking.k8s.io/my-ns.my-gw"
+	want := "gateway-exists-finalizer.gateway.networking.k8s.io/my-gw.my-ns"
 	if got := apiv1.FinalizerGatewayClass(gw); got != want {
 		t.Errorf("FinalizerGatewayClass() = %q, want %q", got, want)
 	}
