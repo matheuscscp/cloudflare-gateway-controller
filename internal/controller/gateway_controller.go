@@ -31,7 +31,7 @@ import (
 	acgatewayv1 "sigs.k8s.io/gateway-api/applyconfiguration/apis/v1"
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
-	cfclient "github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
+	"github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/conditions"
 )
 
@@ -43,8 +43,8 @@ const DefaultCloudflaredImage = "ghcr.io/matheuscscp/cloudflare-gateway-controll
 type GatewayReconciler struct {
 	client.Client
 	events.EventRecorder
-	NewTunnelClient  cfclient.ClientFactory
-	CloudflaredImage string
+	NewCloudflareClient cloudflare.ClientFactory
+	CloudflaredImage    string
 }
 
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gatewayclasses,verbs=get;list;watch;update
@@ -152,7 +152,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		}
 	} else {
 		// Create tunnel client
-		tc, err := r.NewTunnelClient(cfg)
+		tc, err := r.NewCloudflareClient(cfg)
 		if err != nil {
 			return r.reconcileError(ctx, gw, fmt.Errorf("creating tunnel client: %w", err))
 		}
@@ -167,7 +167,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		if tunnelID == "" {
 			tunnelID, err = tc.CreateTunnel(ctx, name)
 			if err != nil {
-				if !cfclient.IsConflict(err) {
+				if !cloudflare.IsConflict(err) {
 					return r.reconcileError(ctx, gw, fmt.Errorf("creating tunnel: %w", err))
 				}
 				tunnelID, err = tc.GetTunnelIDByName(ctx, name)
@@ -408,7 +408,7 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("reading credentials for tunnel deletion: %w", err)
 		}
-		tc, err := r.NewTunnelClient(cfg)
+		tc, err := r.NewCloudflareClient(cfg)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("creating tunnel client for deletion: %w", err)
 		}
@@ -501,7 +501,7 @@ func removeOwnerRef(obj client.Object, ownerUID types.UID) bool {
 // DNS was previously enabled (condition was True), all CNAME records pointing
 // to the tunnel across all account zones are deleted. DNS errors are captured
 // in the condition rather than failing the whole reconciliation.
-func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cfclient.Client, tunnelID, zoneName string, generation int64, existingConditions []metav1.Condition, routes []*gatewayv1.HTTPRoute) *acmetav1.ConditionApplyConfiguration {
+func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cloudflare.Client, tunnelID, zoneName string, generation int64, existingConditions []metav1.Condition, routes []*gatewayv1.HTTPRoute) *acmetav1.ConditionApplyConfiguration {
 	log := log.FromContext(ctx)
 
 	if zoneName == "" {
@@ -618,7 +618,7 @@ func dnsCondition(status metav1.ConditionStatus, generation int64, existingCondi
 
 // cleanupAllDNS deletes all CNAME records pointing to the tunnel across all
 // account zones. This is used when the zoneName annotation is removed.
-func (r *GatewayReconciler) cleanupAllDNS(ctx context.Context, tc cfclient.Client, tunnelID string) error {
+func (r *GatewayReconciler) cleanupAllDNS(ctx context.Context, tc cloudflare.Client, tunnelID string) error {
 	log := log.FromContext(ctx)
 	tunnelTarget := tunnelID + ".cfargotunnel.com"
 
@@ -688,34 +688,34 @@ func (r *GatewayReconciler) removeGatewayClassFinalizer(ctx context.Context, gc 
 // readCredentials reads the Cloudflare API credentials from the Secret referenced
 // by the Gateway's infrastructure parametersRef or the GatewayClass parametersRef.
 // Cross-namespace references are validated against ReferenceGrants.
-func readCredentials(ctx context.Context, r client.Reader, gc *gatewayv1.GatewayClass, gw *gatewayv1.Gateway) (cfclient.ClientConfig, error) {
+func readCredentials(ctx context.Context, r client.Reader, gc *gatewayv1.GatewayClass, gw *gatewayv1.Gateway) (cloudflare.ClientConfig, error) {
 	var secretNamespace, secretName string
 
 	if gw.Spec.Infrastructure != nil && gw.Spec.Infrastructure.ParametersRef != nil {
 		ref := gw.Spec.Infrastructure.ParametersRef
 		if string(ref.Kind) != apiv1.KindSecret || (ref.Group != "" && ref.Group != "core" && ref.Group != gatewayv1.Group("")) {
-			return cfclient.ClientConfig{}, fmt.Errorf("infrastructure parametersRef must reference a core/v1 Secret")
+			return cloudflare.ClientConfig{}, fmt.Errorf("infrastructure parametersRef must reference a core/v1 Secret")
 		}
 		secretNamespace = gw.Namespace
 		secretName = string(ref.Name)
 	} else {
 		if gc.Spec.ParametersRef == nil {
-			return cfclient.ClientConfig{}, fmt.Errorf("gatewayclass %q has no parametersRef", gc.Name)
+			return cloudflare.ClientConfig{}, fmt.Errorf("gatewayclass %q has no parametersRef", gc.Name)
 		}
 		ref := gc.Spec.ParametersRef
 		if string(ref.Kind) != apiv1.KindSecret || (ref.Group != "" && ref.Group != "core" && ref.Group != gatewayv1.Group("")) {
-			return cfclient.ClientConfig{}, fmt.Errorf("parametersRef must reference a core/v1 Secret")
+			return cloudflare.ClientConfig{}, fmt.Errorf("parametersRef must reference a core/v1 Secret")
 		}
 		if ref.Namespace == nil {
-			return cfclient.ClientConfig{}, fmt.Errorf("parametersRef must specify a namespace")
+			return cloudflare.ClientConfig{}, fmt.Errorf("parametersRef must specify a namespace")
 		}
 		secretNamespace = string(*ref.Namespace)
 		secretName = ref.Name
 
 		if granted, err := secretReferenceGranted(ctx, r, gw.Namespace, secretNamespace, secretName); err != nil {
-			return cfclient.ClientConfig{}, fmt.Errorf("checking ReferenceGrant: %w", err)
+			return cloudflare.ClientConfig{}, fmt.Errorf("checking ReferenceGrant: %w", err)
 		} else if !granted {
-			return cfclient.ClientConfig{}, fmt.Errorf("cross-namespace reference to Secret %s/%s not allowed by any ReferenceGrant", secretNamespace, secretName)
+			return cloudflare.ClientConfig{}, fmt.Errorf("cross-namespace reference to Secret %s/%s not allowed by any ReferenceGrant", secretNamespace, secretName)
 		}
 	}
 
@@ -724,16 +724,16 @@ func readCredentials(ctx context.Context, r client.Reader, gc *gatewayv1.Gateway
 		Namespace: secretNamespace,
 		Name:      secretName,
 	}, &secret); err != nil {
-		return cfclient.ClientConfig{}, fmt.Errorf("getting secret %s/%s: %w", secretNamespace, secretName, err)
+		return cloudflare.ClientConfig{}, fmt.Errorf("getting secret %s/%s: %w", secretNamespace, secretName, err)
 	}
 
 	apiToken := string(secret.Data["CLOUDFLARE_API_TOKEN"])
 	accountID := string(secret.Data["CLOUDFLARE_ACCOUNT_ID"])
 	if apiToken == "" || accountID == "" {
-		return cfclient.ClientConfig{}, fmt.Errorf("secret %s/%s must contain CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID", secretNamespace, secretName)
+		return cloudflare.ClientConfig{}, fmt.Errorf("secret %s/%s must contain CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID", secretNamespace, secretName)
 	}
 
-	return cfclient.ClientConfig{
+	return cloudflare.ClientConfig{
 		APIToken:  apiToken,
 		AccountID: accountID,
 	}, nil
@@ -970,8 +970,8 @@ type deniedBackendRef struct {
 // Cross-namespace backendRefs are validated against ReferenceGrants. Denied refs are
 // returned separately so the caller can report them without blocking reconciliation.
 // A catch-all 404 rule is appended.
-func buildIngressRules(ctx context.Context, r client.Reader, routes []*gatewayv1.HTTPRoute) ([]cfclient.IngressRule, []deniedBackendRef, error) {
-	var rules []cfclient.IngressRule
+func buildIngressRules(ctx context.Context, r client.Reader, routes []*gatewayv1.HTTPRoute) ([]cloudflare.IngressRule, []deniedBackendRef, error) {
+	var rules []cloudflare.IngressRule
 	var denied []deniedBackendRef
 	for _, route := range routes {
 		for _, rule := range route.Spec.Rules {
@@ -1003,7 +1003,7 @@ func buildIngressRules(ctx context.Context, r client.Reader, routes []*gatewayv1
 			service := fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", string(ref.Name), ns, port)
 			path := pathFromMatches(rule.Matches)
 			for _, hostname := range route.Spec.Hostnames {
-				rules = append(rules, cfclient.IngressRule{
+				rules = append(rules, cloudflare.IngressRule{
 					Hostname: string(hostname),
 					Service:  service,
 					Path:     path,
@@ -1012,7 +1012,7 @@ func buildIngressRules(ctx context.Context, r client.Reader, routes []*gatewayv1
 		}
 	}
 	// Append catch-all rule.
-	rules = append(rules, cfclient.IngressRule{
+	rules = append(rules, cloudflare.IngressRule{
 		Service: "http_status:404",
 	})
 	return rules, denied, nil

@@ -31,7 +31,7 @@ import (
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
-	cfclient "github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
+	"github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/conditions"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/controller"
 )
@@ -112,7 +112,7 @@ func TestMain(m *testing.M) {
 	if err := (&controller.GatewayReconciler{
 		Client:        mgr.GetClient(),
 		EventRecorder: eventRecorder,
-		NewTunnelClient: func(_ cfclient.ClientConfig) (cfclient.Client, error) {
+		NewCloudflareClient: func(_ cloudflare.ClientConfig) (cloudflare.Client, error) {
 			return testMock, nil
 		},
 		CloudflaredImage: controller.DefaultCloudflaredImage,
@@ -194,7 +194,7 @@ type mockCloudflareClient struct {
 
 	// HTTPRoute-related tracking
 	lastTunnelConfigID      string
-	lastTunnelConfigIngress []cfclient.IngressRule
+	lastTunnelConfigIngress []cloudflare.IngressRule
 	ensureDNSCalls          []mockDNSCall
 	deleteDNSCalls          []mockDNSCall
 	zones                   map[string]string // hostname -> zoneID
@@ -226,7 +226,7 @@ func (m *mockCloudflareClient) GetTunnelToken(_ context.Context, _ string) (stri
 	return m.tunnelToken, nil
 }
 
-func (m *mockCloudflareClient) UpdateTunnelConfiguration(_ context.Context, tunnelID string, ingress []cfclient.IngressRule) error {
+func (m *mockCloudflareClient) UpdateTunnelConfiguration(_ context.Context, tunnelID string, ingress []cloudflare.IngressRule) error {
 	m.lastTunnelConfigID = tunnelID
 	m.lastTunnelConfigIngress = ingress
 	return nil

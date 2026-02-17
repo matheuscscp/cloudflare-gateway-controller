@@ -21,6 +21,7 @@ import (
 type ClientConfig struct {
 	APIToken  string
 	AccountID string
+	BaseURL   string // optional override for testing
 }
 
 // IngressRule represents a Cloudflare tunnel ingress rule mapping a hostname to a service.
@@ -50,24 +51,27 @@ func IsConflict(err error) bool {
 	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict
 }
 
-// ClientFactory creates a TunnelClient from a ClientConfig.
+// ClientFactory creates a Client from a ClientConfig.
 type ClientFactory func(cfg ClientConfig) (Client, error)
 
-// NewClient creates a new TunnelClient backed by the Cloudflare API.
+// NewClient creates a new Client backed by the Cloudflare API.
 func NewClient(cfg ClientConfig) (Client, error) {
-	client := cloudflare.NewClient(option.WithAPIToken(cfg.APIToken))
-	return &tunnelClient{
-		client:    client,
+	opts := []option.RequestOption{option.WithAPIToken(cfg.APIToken)}
+	if cfg.BaseURL != "" {
+		opts = append(opts, option.WithBaseURL(cfg.BaseURL))
+	}
+	return &client{
+		client:    cloudflare.NewClient(opts...),
 		accountID: cfg.AccountID,
 	}, nil
 }
 
-type tunnelClient struct {
+type client struct {
 	client    *cloudflare.Client
 	accountID string
 }
 
-func (c *tunnelClient) CreateTunnel(ctx context.Context, name string) (string, error) {
+func (c *client) CreateTunnel(ctx context.Context, name string) (string, error) {
 	tunnel, err := c.client.ZeroTrust.Tunnels.Cloudflared.New(ctx, zero_trust.TunnelCloudflaredNewParams{
 		AccountID: cloudflare.String(c.accountID),
 		Name:      cloudflare.String(name),
@@ -79,7 +83,7 @@ func (c *tunnelClient) CreateTunnel(ctx context.Context, name string) (string, e
 	return tunnel.ID, nil
 }
 
-func (c *tunnelClient) GetTunnelIDByName(ctx context.Context, name string) (string, error) {
+func (c *client) GetTunnelIDByName(ctx context.Context, name string) (string, error) {
 	pager := c.client.ZeroTrust.Tunnels.Cloudflared.ListAutoPaging(ctx, zero_trust.TunnelCloudflaredListParams{
 		AccountID: cloudflare.String(c.accountID),
 		Name:      cloudflare.String(name),
@@ -97,7 +101,7 @@ func (c *tunnelClient) GetTunnelIDByName(ctx context.Context, name string) (stri
 	return "", nil
 }
 
-func (c *tunnelClient) DeleteTunnel(ctx context.Context, tunnelID string) error {
+func (c *client) DeleteTunnel(ctx context.Context, tunnelID string) error {
 	_, err := c.client.ZeroTrust.Tunnels.Cloudflared.Delete(ctx, tunnelID, zero_trust.TunnelCloudflaredDeleteParams{
 		AccountID: cloudflare.String(c.accountID),
 	})
@@ -108,7 +112,7 @@ func (c *tunnelClient) DeleteTunnel(ctx context.Context, tunnelID string) error 
 	return err
 }
 
-func (c *tunnelClient) GetTunnelToken(ctx context.Context, tunnelID string) (string, error) {
+func (c *client) GetTunnelToken(ctx context.Context, tunnelID string) (string, error) {
 	token, err := c.client.ZeroTrust.Tunnels.Cloudflared.Token.Get(ctx, tunnelID, zero_trust.TunnelCloudflaredTokenGetParams{
 		AccountID: cloudflare.String(c.accountID),
 	})
@@ -118,7 +122,7 @@ func (c *tunnelClient) GetTunnelToken(ctx context.Context, tunnelID string) (str
 	return *token, nil
 }
 
-func (c *tunnelClient) UpdateTunnelConfiguration(ctx context.Context, tunnelID string, ingress []IngressRule) error {
+func (c *client) UpdateTunnelConfiguration(ctx context.Context, tunnelID string, ingress []IngressRule) error {
 	sdkIngress := make([]zero_trust.TunnelCloudflaredConfigurationUpdateParamsConfigIngress, 0, len(ingress))
 	for _, r := range ingress {
 		entry := zero_trust.TunnelCloudflaredConfigurationUpdateParamsConfigIngress{
@@ -139,7 +143,7 @@ func (c *tunnelClient) UpdateTunnelConfiguration(ctx context.Context, tunnelID s
 	return err
 }
 
-func (c *tunnelClient) ListZoneIDs(ctx context.Context) ([]string, error) {
+func (c *client) ListZoneIDs(ctx context.Context) ([]string, error) {
 	pager := c.client.Zones.ListAutoPaging(ctx, zones.ZoneListParams{})
 	var ids []string
 	for pager.Next() {
@@ -151,7 +155,7 @@ func (c *tunnelClient) ListZoneIDs(ctx context.Context) ([]string, error) {
 	return ids, nil
 }
 
-func (c *tunnelClient) FindZoneIDByHostname(ctx context.Context, hostname string) (string, error) {
+func (c *client) FindZoneIDByHostname(ctx context.Context, hostname string) (string, error) {
 	// Strip subdomain levels progressively until we find a matching zone.
 	parts := strings.Split(hostname, ".")
 	for i := range len(parts) - 1 {
@@ -172,7 +176,7 @@ func (c *tunnelClient) FindZoneIDByHostname(ctx context.Context, hostname string
 	return "", fmt.Errorf("no zone found for hostname %q", hostname)
 }
 
-func (c *tunnelClient) EnsureDNSCNAME(ctx context.Context, zoneID, hostname, target string) error {
+func (c *client) EnsureDNSCNAME(ctx context.Context, zoneID, hostname, target string) error {
 	pager := c.client.DNS.Records.ListAutoPaging(ctx, dns.RecordListParams{
 		ZoneID: cloudflare.F(zoneID),
 		Name:   cloudflare.F(dns.RecordListParamsName{Exact: cloudflare.F(hostname)}),
@@ -213,7 +217,7 @@ func (c *tunnelClient) EnsureDNSCNAME(ctx context.Context, zoneID, hostname, tar
 	return err
 }
 
-func (c *tunnelClient) DeleteDNSCNAME(ctx context.Context, zoneID, hostname string) error {
+func (c *client) DeleteDNSCNAME(ctx context.Context, zoneID, hostname string) error {
 	pager := c.client.DNS.Records.ListAutoPaging(ctx, dns.RecordListParams{
 		ZoneID: cloudflare.F(zoneID),
 		Name:   cloudflare.F(dns.RecordListParamsName{Exact: cloudflare.F(hostname)}),
@@ -231,7 +235,7 @@ func (c *tunnelClient) DeleteDNSCNAME(ctx context.Context, zoneID, hostname stri
 	return pager.Err()
 }
 
-func (c *tunnelClient) ListDNSCNAMEsByTarget(ctx context.Context, zoneID, target string) ([]string, error) {
+func (c *client) ListDNSCNAMEsByTarget(ctx context.Context, zoneID, target string) ([]string, error) {
 	pager := c.client.DNS.Records.ListAutoPaging(ctx, dns.RecordListParams{
 		ZoneID:  cloudflare.F(zoneID),
 		Type:    cloudflare.F(dns.RecordListParamsTypeCNAME),

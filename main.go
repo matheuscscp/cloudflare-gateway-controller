@@ -25,7 +25,7 @@ import (
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
-	cfclient "github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
+	"github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/controller"
 )
 
@@ -89,10 +89,10 @@ func main() {
 	}
 
 	if err := (&controller.GatewayReconciler{
-		Client:           mgr.GetClient(),
-		EventRecorder:    eventRecorder,
-		NewTunnelClient:  cfclient.NewClient,
-		CloudflaredImage: *cloudflaredImage,
+		Client:              mgr.GetClient(),
+		EventRecorder:       eventRecorder,
+		NewCloudflareClient: cloudflare.NewClient,
+		CloudflaredImage:    *cloudflaredImage,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Gateway")
 		os.Exit(1)
