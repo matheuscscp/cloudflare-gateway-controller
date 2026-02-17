@@ -68,7 +68,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	var gc gatewayv1.GatewayClass
 	if err := r.Get(ctx, types.NamespacedName{Name: string(gw.Spec.GatewayClassName)}, &gc); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		return ctrl.Result{}, err
 	}
 	if gc.Spec.ControllerName != apiv1.ControllerName {
 		return ctrl.Result{}, nil
@@ -479,37 +479,43 @@ func (r *GatewayReconciler) removeOwnerReferences(ctx context.Context, gw *gatew
 	// Remove owner reference from cloudflared Deployment.
 	var deploy appsv1.Deployment
 	deployKey := client.ObjectKey{Namespace: gw.Namespace, Name: apiv1.CloudflaredDeploymentName(gw)}
-	if err := r.Get(ctx, deployKey, &deploy); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return removed, fmt.Errorf("getting deployment: %w", err)
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := r.Get(ctx, deployKey, &deploy); err != nil {
+			return client.IgnoreNotFound(err)
 		}
-	} else {
-		deployPatch := client.MergeFrom(deploy.DeepCopy())
-		if removeOwnerRef(&deploy, gw.UID) {
-			if err := r.Patch(ctx, &deploy, deployPatch); err != nil {
-				return removed, fmt.Errorf("patching deployment: %w", err)
-			}
-			deploy.SetGroupVersionKind(appsv1.SchemeGroupVersion.WithKind(apiv1.KindDeployment))
-			removed = append(removed, &deploy)
+		deployPatch := client.MergeFromWithOptions(deploy.DeepCopy(), client.MergeFromWithOptimisticLock{})
+		if !removeOwnerRef(&deploy, gw.UID) {
+			return nil
 		}
+		if err := r.Patch(ctx, &deploy, deployPatch); err != nil {
+			return fmt.Errorf("patching deployment: %w", err)
+		}
+		deploy.SetGroupVersionKind(appsv1.SchemeGroupVersion.WithKind(apiv1.KindDeployment))
+		removed = append(removed, &deploy)
+		return nil
+	}); err != nil {
+		return removed, err
 	}
 
 	// Remove owner reference from tunnel token Secret.
 	var secret corev1.Secret
 	secretKey := client.ObjectKey{Namespace: gw.Namespace, Name: apiv1.TunnelTokenSecretName(gw)}
-	if err := r.Get(ctx, secretKey, &secret); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return removed, fmt.Errorf("getting secret: %w", err)
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := r.Get(ctx, secretKey, &secret); err != nil {
+			return client.IgnoreNotFound(err)
 		}
-	} else {
-		secretPatch := client.MergeFrom(secret.DeepCopy())
-		if removeOwnerRef(&secret, gw.UID) {
-			if err := r.Patch(ctx, &secret, secretPatch); err != nil {
-				return removed, fmt.Errorf("patching secret: %w", err)
-			}
-			secret.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind(apiv1.KindSecret))
-			removed = append(removed, &secret)
+		secretPatch := client.MergeFromWithOptions(secret.DeepCopy(), client.MergeFromWithOptimisticLock{})
+		if !removeOwnerRef(&secret, gw.UID) {
+			return nil
 		}
+		if err := r.Patch(ctx, &secret, secretPatch); err != nil {
+			return fmt.Errorf("patching secret: %w", err)
+		}
+		secret.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind(apiv1.KindSecret))
+		removed = append(removed, &secret)
+		return nil
+	}); err != nil {
+		return removed, err
 	}
 
 	return removed, nil
@@ -663,7 +669,7 @@ func (r *GatewayReconciler) removeGatewayClassFinalizer(ctx context.Context, gc 
 	finalizer := apiv1.FinalizerGatewayClass(gw)
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		if err := r.Get(ctx, types.NamespacedName{Name: gc.Name}, gc); err != nil {
-			return err
+			return client.IgnoreNotFound(err)
 		}
 		if !controllerutil.ContainsFinalizer(gc, finalizer) {
 			return nil
@@ -1123,7 +1129,7 @@ func (r *GatewayReconciler) removeRouteStatus(ctx context.Context, gw *gatewayv1
 	routeKey := client.ObjectKeyFromObject(route)
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		if err := r.Get(ctx, routeKey, route); err != nil {
-			return err
+			return client.IgnoreNotFound(err)
 		}
 		if findRouteParentStatus(route.Status.Parents, gw) == nil {
 			return nil
