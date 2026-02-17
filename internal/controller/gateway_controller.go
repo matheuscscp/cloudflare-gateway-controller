@@ -223,9 +223,6 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 			log.Info("HTTPRoutes denied due to missing or failed ReferenceGrant checks", "count", len(deniedRoutes))
 		}
 
-		// Update HTTPRoute status.parents for allowed routes.
-		r.updateRouteStatuses(ctx, gw, gatewayRoutes)
-
 		ingress, deniedBackendRefs, err := buildIngressRules(ctx, r.Client, gatewayRoutes)
 		if err != nil {
 			return r.reconcileError(ctx, gw, err)
@@ -237,9 +234,12 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 			return r.reconcileError(ctx, gw, fmt.Errorf("updating tunnel configuration: %w", err))
 		}
 
-		// Reconcile DNS CNAME records. The condition captures success, errors,
-		// or "not enabled" state.
-		dnsCond := r.reconcileDNS(ctx, tc, tunnelID, gw.Annotations[apiv1.AnnotationZoneName], gw.Generation, gw.Status.Conditions, gatewayRoutes)
+		// Reconcile DNS CNAME records.
+		zoneName := gw.Annotations[apiv1.AnnotationZoneName]
+		dnsErr := r.reconcileDNS(ctx, tc, tunnelID, zoneName, gw, gatewayRoutes)
+
+		// Update HTTPRoute status.parents for allowed routes (after DNS so we can report DNS status).
+		r.updateRouteStatuses(ctx, gw, gatewayRoutes, zoneName, dnsErr)
 
 		// Check Deployment readiness.
 		var deploy appsv1.Deployment
@@ -294,7 +294,6 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		}
 		condPatches = append(condPatches, routeReferenceGrantsCondition(gw.Generation, now, deniedRoutes))
 		condPatches = append(condPatches, backendReferenceGrantsCondition(gw.Generation, now, deniedBackendRefs))
-		condPatches = append(condPatches, dnsCond)
 	}
 
 	// Skip the status patch if no conditions or listener statuses changed.
@@ -522,59 +521,38 @@ func removeOwnerRef(obj client.Object, ownerUID types.UID) bool {
 	return false
 }
 
-// reconcileDNS reconciles DNS CNAME records for the Gateway's zone and returns
-// a DNSManagement condition reflecting the result. When zoneName is empty and
-// DNS was previously enabled (condition was True), all CNAME records pointing
-// to the tunnel across all account zones are deleted. DNS errors are captured
-// in the condition rather than failing the whole reconciliation.
-func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cloudflare.Client, tunnelID, zoneName string, generation int64, existingConditions []metav1.Condition, routes []*gatewayv1.HTTPRoute) *acmetav1.ConditionApplyConfiguration {
+// reconcileDNS reconciles DNS CNAME records for the Gateway's zone. When
+// zoneName is empty and DNS was previously enabled (condition was True on any
+// HTTPRoute), all CNAME records pointing to the tunnel across all account
+// zones are deleted. Returns a non-nil error string on failure, which is
+// reported on each HTTPRoute's DNSRecordsApplied condition.
+func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cloudflare.Client, tunnelID, zoneName string, gw *gatewayv1.Gateway, routes []*gatewayv1.HTTPRoute) *string {
 	log := log.FromContext(ctx)
 
 	if zoneName == "" {
-		// Only clean up if DNS was previously enabled (condition was True,
-		// meaning records may exist). Skip API calls otherwise.
-		prev := conditions.Find(existingConditions, apiv1.ConditionDNSManagement)
-		if prev != nil && prev.Status == metav1.ConditionTrue {
+		// Only clean up if DNS was previously enabled (condition was True
+		// on any HTTPRoute, meaning records may exist). Skip API calls otherwise.
+		if dnsWasPreviouslyEnabled(routes, gw) {
 			if err := r.cleanupAllDNS(ctx, tc, tunnelID); err != nil {
-				return dnsCondition(metav1.ConditionFalse, generation, existingConditions,
-					apiv1.ReasonReconciliationFailed, fmt.Sprintf("Failed to clean up DNS records: %v", err))
+				return new(fmt.Sprintf("Failed to clean up DNS records: %v", err))
 			}
 		}
-		return dnsCondition(metav1.ConditionFalse, generation, existingConditions,
-			apiv1.ReasonDNSNotEnabled, "DNS management is not enabled.\n\n"+
-				"Set the "+apiv1.AnnotationZoneName+" annotation to a subdomain to enable.\n\n"+
-				"For example, if the subdomain is example.com, the Gateway will create and reconcile CNAME records for\n\n"+
-				"hostnames like myapp.example.com that point to the tunnel.")
+		return nil
 	}
 
 	zoneID, err := tc.FindZoneIDByHostname(ctx, zoneName)
 	if err != nil {
-		return dnsCondition(metav1.ConditionFalse, generation, existingConditions,
-			apiv1.ReasonReconciliationFailed, fmt.Sprintf("Failed to find zone ID for %q: %v", zoneName, err))
+		return new(fmt.Sprintf("Failed to find zone ID for %q: %v", zoneName, err))
 	}
 
 	// Compute desired hostnames from all attached HTTPRoutes.
 	desired := make(map[string]struct{})
-	type skippedRoute struct {
-		key       string
-		hostnames []string
-	}
-	var skippedRoutes []skippedRoute
 	for _, route := range routes {
-		var routeSkipped []string
 		for _, h := range route.Spec.Hostnames {
 			hostname := string(h)
-			if hostname != zoneName && !strings.HasSuffix(hostname, "."+zoneName) {
-				routeSkipped = append(routeSkipped, hostname)
-				continue
+			if hostname == zoneName || strings.HasSuffix(hostname, "."+zoneName) {
+				desired[hostname] = struct{}{}
 			}
-			desired[hostname] = struct{}{}
-		}
-		if len(routeSkipped) > 0 {
-			skippedRoutes = append(skippedRoutes, skippedRoute{
-				key:       route.Namespace + "/" + route.Name,
-				hostnames: routeSkipped,
-			})
 		}
 	}
 
@@ -582,8 +560,7 @@ func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cloudflare.Clie
 	tunnelTarget := tunnelID + ".cfargotunnel.com"
 	actual, err := tc.ListDNSCNAMEsByTarget(ctx, zoneID, tunnelTarget)
 	if err != nil {
-		return dnsCondition(metav1.ConditionFalse, generation, existingConditions,
-			apiv1.ReasonReconciliationFailed, fmt.Sprintf("Failed to list DNS CNAMEs: %v", err))
+		return new(fmt.Sprintf("Failed to list DNS CNAMEs: %v", err))
 	}
 	actualSet := make(map[string]struct{}, len(actual))
 	for _, h := range actual {
@@ -594,8 +571,7 @@ func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cloudflare.Clie
 	for h := range desired {
 		if _, ok := actualSet[h]; !ok {
 			if err := tc.EnsureDNSCNAME(ctx, zoneID, h, tunnelTarget); err != nil {
-				return dnsCondition(metav1.ConditionFalse, generation, existingConditions,
-					apiv1.ReasonReconciliationFailed, fmt.Sprintf("Failed to ensure DNS CNAME for %q: %v", h, err))
+				return new(fmt.Sprintf("Failed to ensure DNS CNAME for %q: %v", h, err))
 			}
 			log.V(1).Info("Created DNS CNAME", "hostname", h)
 		}
@@ -605,41 +581,29 @@ func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cloudflare.Clie
 	for h := range actualSet {
 		if _, ok := desired[h]; !ok {
 			if err := tc.DeleteDNSCNAME(ctx, zoneID, h); err != nil {
-				return dnsCondition(metav1.ConditionFalse, generation, existingConditions,
-					apiv1.ReasonReconciliationFailed, fmt.Sprintf("Failed to delete stale DNS CNAME for %q: %v", h, err))
+				return new(fmt.Sprintf("Failed to delete stale DNS CNAME for %q: %v", h, err))
 			}
 			log.V(1).Info("Deleted stale DNS CNAME", "hostname", h)
 		}
 	}
 
-	var msg strings.Builder
-	fmt.Fprintf(&msg, "DNS records reconciled for %d hostname(s)", len(desired))
-	if len(skippedRoutes) > 0 {
-		fmt.Fprintf(&msg, "\nHostnames not in zone %q:", zoneName)
-		for _, s := range skippedRoutes {
-			fmt.Fprintf(&msg, "\n- HTTPRoute %s: %s", s.key, strings.Join(s.hostnames, ", "))
-		}
-	}
-	return dnsCondition(metav1.ConditionTrue, generation, existingConditions, apiv1.ReasonDNSReconciled, msg.String())
+	return nil
 }
 
-// dnsCondition builds a DNSManagement condition. If the existing condition has
-// the same status, reason, and message, LastTransitionTime is preserved to avoid
-// unnecessary status updates.
-func dnsCondition(status metav1.ConditionStatus, generation int64, existingConditions []metav1.Condition, reason, message string) *acmetav1.ConditionApplyConfiguration {
-	cond := acmetav1.Condition().
-		WithType(apiv1.ConditionDNSManagement).
-		WithStatus(status).
-		WithObservedGeneration(generation).
-		WithReason(reason).
-		WithMessage(message)
-	if prev := conditions.Find(existingConditions, apiv1.ConditionDNSManagement); prev != nil &&
-		prev.Status == status && prev.Reason == reason && prev.Message == message {
-		cond.WithLastTransitionTime(prev.LastTransitionTime)
-	} else {
-		cond.WithLastTransitionTime(metav1.Now())
+// dnsWasPreviouslyEnabled checks whether any HTTPRoute's status.parents entry
+// for the given Gateway has a DNSRecordsApplied condition with True status.
+func dnsWasPreviouslyEnabled(routes []*gatewayv1.HTTPRoute, gw *gatewayv1.Gateway) bool {
+	for _, route := range routes {
+		existing := findRouteParentStatus(route.Status.Parents, gw)
+		if existing == nil {
+			continue
+		}
+		cond := conditions.Find(existing.Conditions, apiv1.ConditionDNSRecordsApplied)
+		if cond != nil && cond.Status == metav1.ConditionTrue {
+			return true
+		}
 	}
-	return cond
+	return false
 }
 
 // cleanupAllDNS deletes all CNAME records pointing to the tunnel across all
@@ -1249,10 +1213,10 @@ func (r *GatewayReconciler) removeRouteStatuses(ctx context.Context, gw *gateway
 
 // updateRouteStatuses updates the status.parents entry for this Gateway
 // on each allowed HTTPRoute using merge-patch.
-func (r *GatewayReconciler) updateRouteStatuses(ctx context.Context, gw *gatewayv1.Gateway, routes []*gatewayv1.HTTPRoute) {
+func (r *GatewayReconciler) updateRouteStatuses(ctx context.Context, gw *gatewayv1.Gateway, routes []*gatewayv1.HTTPRoute, zoneName string, dnsErr *string) {
 	log := log.FromContext(ctx)
 	for _, route := range routes {
-		if err := r.updateRouteStatus(ctx, gw, route); err != nil {
+		if err := r.updateRouteStatus(ctx, gw, route, zoneName, dnsErr); err != nil {
 			log.Error(err, "Failed to update HTTPRoute status", "httproute", route.Namespace+"/"+route.Name)
 		}
 	}
@@ -1261,19 +1225,44 @@ func (r *GatewayReconciler) updateRouteStatuses(ctx context.Context, gw *gateway
 // updateRouteStatus updates the status.parents entry for this Gateway on the
 // given HTTPRoute using merge-patch. If the entry already exists with up-to-date
 // conditions, no patch is issued.
-func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1.Gateway, route *gatewayv1.HTTPRoute) error {
+func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1.Gateway, route *gatewayv1.HTTPRoute, zoneName string, dnsErr *string) error {
 	existing := findRouteParentStatus(route.Status.Parents, gw)
 
 	acceptedType := string(gatewayv1.RouteConditionAccepted)
 	resolvedRefsType := string(gatewayv1.RouteConditionResolvedRefs)
 
+	// Build per-route DNS condition if DNS is enabled on the Gateway.
+	var dnsStatus metav1.ConditionStatus
+	var dnsReason, dnsMessage string
+	dnsEnabled := zoneName != ""
+	if dnsEnabled {
+		if dnsErr != nil {
+			dnsStatus = metav1.ConditionFalse
+			dnsReason = apiv1.ReasonReconciliationFailed
+			dnsMessage = *dnsErr
+		} else {
+			dnsStatus = metav1.ConditionTrue
+			dnsReason = apiv1.ReasonDNSReconciled
+			dnsMessage = routeDNSMessage(route, zoneName)
+		}
+	}
+
 	// Check if update is needed.
-	if existing != nil &&
-		!conditions.Changed(existing.Conditions, acceptedType, metav1.ConditionTrue,
-			string(gatewayv1.RouteReasonAccepted), "HTTPRoute is accepted", route.Generation) &&
-		!conditions.Changed(existing.Conditions, resolvedRefsType, metav1.ConditionTrue,
-			string(gatewayv1.RouteReasonResolvedRefs), "References resolved", route.Generation) {
-		return nil
+	if existing != nil {
+		changed := conditions.Changed(existing.Conditions, acceptedType, metav1.ConditionTrue,
+			string(gatewayv1.RouteReasonAccepted), "HTTPRoute is accepted", route.Generation) ||
+			conditions.Changed(existing.Conditions, resolvedRefsType, metav1.ConditionTrue,
+				string(gatewayv1.RouteReasonResolvedRefs), "References resolved", route.Generation)
+		if dnsEnabled {
+			changed = changed || conditions.Changed(existing.Conditions, apiv1.ConditionDNSRecordsApplied,
+				dnsStatus, dnsReason, dnsMessage, route.Generation)
+		} else {
+			// DNS was disabled — check if we need to remove a stale condition.
+			changed = changed || conditions.Find(existing.Conditions, apiv1.ConditionDNSRecordsApplied) != nil
+		}
+		if !changed {
+			return nil
+		}
 	}
 
 	patch := client.MergeFrom(route.DeepCopy())
@@ -1300,7 +1289,56 @@ func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1
 	setRouteCondition(existing, resolvedRefsType, metav1.ConditionTrue,
 		string(gatewayv1.RouteReasonResolvedRefs), "References resolved", route.Generation, now)
 
+	if dnsEnabled {
+		setRouteCondition(existing, apiv1.ConditionDNSRecordsApplied, dnsStatus,
+			dnsReason, dnsMessage, route.Generation, now)
+	} else {
+		removeRouteCondition(existing, apiv1.ConditionDNSRecordsApplied)
+	}
+
 	return r.Status().Patch(ctx, route, patch)
+}
+
+// routeDNSMessage builds a per-route DNS condition message listing the
+// hostnames that were applied and those that were skipped (not in zone).
+func routeDNSMessage(route *gatewayv1.HTTPRoute, zoneName string) string {
+	var applied, skipped []string
+	for _, h := range route.Spec.Hostnames {
+		hostname := string(h)
+		if hostname == zoneName || strings.HasSuffix(hostname, "."+zoneName) {
+			applied = append(applied, hostname)
+		} else {
+			skipped = append(skipped, hostname)
+		}
+	}
+	var msg strings.Builder
+	msg.WriteString("Applied hostnames:")
+	if len(applied) == 0 {
+		msg.WriteString("\n(none)")
+	} else {
+		for _, h := range applied {
+			fmt.Fprintf(&msg, "\n- %s", h)
+		}
+	}
+	msg.WriteString("\nSkipped hostnames (not in zone):")
+	if len(skipped) == 0 {
+		msg.WriteString("\n(none)")
+	} else {
+		for _, h := range skipped {
+			fmt.Fprintf(&msg, "\n- %s", h)
+		}
+	}
+	return msg.String()
+}
+
+// removeRouteCondition removes a condition by type from the RouteParentStatus.
+func removeRouteCondition(parent *gatewayv1.RouteParentStatus, condType string) {
+	for i, c := range parent.Conditions {
+		if c.Type == condType {
+			parent.Conditions = append(parent.Conditions[:i], parent.Conditions[i+1:]...)
+			return
+		}
+	}
 }
 
 // setRouteCondition sets or updates a condition in the RouteParentStatus.

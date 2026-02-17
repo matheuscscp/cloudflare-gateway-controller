@@ -19,9 +19,9 @@ const (
 	// ReferenceGrant checks.
 	ConditionBackendReferenceGrants = "BackendReferenceGrants"
 
-	// ConditionDNSManagement is a Gateway condition that reports the state
-	// of DNS CNAME record management for the Gateway's zone.
-	ConditionDNSManagement = "DNSManagement"
+	// ConditionDNSRecordsApplied is an HTTPRoute status.parents condition that
+	// reports whether DNS CNAME records have been applied for the route's hostnames.
+	ConditionDNSRecordsApplied = "DNSRecordsApplied"
 )
 
 // Reasons for the Ready condition.
@@ -39,8 +39,7 @@ const (
 	ReasonReferencesDenied  = "ReferencesDenied"
 )
 
-// Reasons for the DNSManagement condition.
+// Reasons for the DNSRecordsApplied condition.
 const (
 	ReasonDNSReconciled = "Reconciled"
-	ReasonDNSNotEnabled = "NotEnabled"
 )

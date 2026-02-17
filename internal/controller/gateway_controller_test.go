@@ -82,12 +82,6 @@ func TestGatewayReconciler_AcceptedAndProgrammed(t *testing.T) {
 		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
 		g.Expect(ready.Reason).To(Equal(apiv1.ReasonReconciliationSucceeded))
 
-		// DNSManagement condition should be NotEnabled (no zoneName annotation)
-		dns := conditions.Find(result.Status.Conditions, apiv1.ConditionDNSManagement)
-		g.Expect(dns).NotTo(BeNil())
-		g.Expect(dns.Status).To(Equal(metav1.ConditionFalse))
-		g.Expect(dns.Reason).To(Equal(apiv1.ReasonDNSNotEnabled))
-
 		// Listener status
 		g.Expect(result.Status.Listeners).To(HaveLen(1))
 		ls := result.Status.Listeners[0]
@@ -620,12 +614,13 @@ func TestGatewayReconciler_DNSReconciliation(t *testing.T) {
 	g.Expect(testMock.ensureDNSCalls[0].Hostname).To(Equal("app.example.com"))
 	g.Expect(testMock.ensureDNSCalls[0].Target).To(Equal("test-tunnel-id.cfargotunnel.com"))
 
-	// Verify DNSManagement condition
-	gwKey := client.ObjectKeyFromObject(gw)
+	// Verify DNSManagement condition on HTTPRoute status.parents
+	routeKey := client.ObjectKeyFromObject(route)
 	g.Eventually(func(g Gomega) {
-		var result gatewayv1.Gateway
-		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
-		dns := conditions.Find(result.Status.Conditions, apiv1.ConditionDNSManagement)
+		var result gatewayv1.HTTPRoute
+		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(HaveLen(1))
+		dns := conditions.Find(result.Status.Parents[0].Conditions, apiv1.ConditionDNSRecordsApplied)
 		g.Expect(dns).NotTo(BeNil())
 		g.Expect(dns.Status).To(Equal(metav1.ConditionTrue))
 		g.Expect(dns.Reason).To(Equal(apiv1.ReasonDNSReconciled))
@@ -687,17 +682,6 @@ func TestGatewayReconciler_DNSStaleCleanup(t *testing.T) {
 		return len(testMock.deleteDNSCalls)
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(BeNumerically(">=", 1))
 	g.Expect(testMock.deleteDNSCalls[0].Hostname).To(Equal("stale.example.com"))
-
-	// Verify DNSManagement condition
-	gwKey := client.ObjectKeyFromObject(gw)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.Gateway
-		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
-		dns := conditions.Find(result.Status.Conditions, apiv1.ConditionDNSManagement)
-		g.Expect(dns).NotTo(BeNil())
-		g.Expect(dns.Status).To(Equal(metav1.ConditionTrue))
-		g.Expect(dns.Reason).To(Equal(apiv1.ReasonDNSReconciled))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
 func TestGatewayReconciler_DNSSkippedHostnames(t *testing.T) {
@@ -786,17 +770,18 @@ func TestGatewayReconciler_DNSSkippedHostnames(t *testing.T) {
 		}
 	})
 
-	// Verify DNSManagement condition shows Reconciled with skipped hostname details
-	gwKey := client.ObjectKeyFromObject(gw)
+	// Verify DNSRecordsApplied condition on HTTPRoute status.parents shows skipped hostname
+	routeKey := client.ObjectKeyFromObject(route)
 	g.Eventually(func(g Gomega) {
-		var result gatewayv1.Gateway
-		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
-		dns := conditions.Find(result.Status.Conditions, apiv1.ConditionDNSManagement)
+		var result gatewayv1.HTTPRoute
+		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(HaveLen(1))
+		dns := conditions.Find(result.Status.Parents[0].Conditions, apiv1.ConditionDNSRecordsApplied)
 		g.Expect(dns).NotTo(BeNil())
 		g.Expect(dns.Status).To(Equal(metav1.ConditionTrue))
 		g.Expect(dns.Reason).To(Equal(apiv1.ReasonDNSReconciled))
-		g.Expect(dns.Message).To(ContainSubstring("app.other.com"))
-		g.Expect(dns.Message).To(ContainSubstring("HTTPRoute " + ns.Name + "/test-route-dns-skip"))
+		g.Expect(dns.Message).To(ContainSubstring("Applied hostnames:\n(none)"))
+		g.Expect(dns.Message).To(ContainSubstring("Skipped hostnames (not in zone):\n- app.other.com"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
 	// Verify EnsureDNSCNAME was NOT called for the skipped hostname
