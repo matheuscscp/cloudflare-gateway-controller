@@ -48,6 +48,7 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Resolve parent Gateways that belong to our controller.
 	parents, err := r.resolveParents(ctx, &route)
 	if err != nil {
+		r.Eventf(&route, nil, corev1.EventTypeWarning, apiv1.ReasonProgressingWithRetry, "Reconcile", "Reconciliation failed: %v", err)
 		return ctrl.Result{}, fmt.Errorf("resolving parent Gateways: %w", err)
 	}
 	if len(parents) == 0 {

@@ -3,7 +3,10 @@
 
 package controller
 
-import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	acmetav1 "k8s.io/client-go/applyconfigurations/meta/v1"
+)
 
 func findCondition(conditions []metav1.Condition, conditionType string) *metav1.Condition {
 	for i := range conditions {
@@ -24,4 +27,13 @@ func conditionChanged(existing []metav1.Condition, condType string, status metav
 		return true
 	}
 	return prev.Status != status || prev.Reason != reason || prev.Message != message || prev.ObservedGeneration != generation
+}
+
+// applyConditionChanged reports whether the desired condition (from an apply
+// configuration) differs from the existing condition of the same type.
+func applyConditionChanged(existing []metav1.Condition, cond *acmetav1.ConditionApplyConfiguration, generation int64) bool {
+	if cond.Type == nil || cond.Status == nil || cond.Reason == nil || cond.Message == nil {
+		return true
+	}
+	return conditionChanged(existing, *cond.Type, metav1.ConditionStatus(*cond.Status), *cond.Reason, *cond.Message, generation)
 }
