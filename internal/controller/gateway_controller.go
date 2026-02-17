@@ -441,7 +441,12 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 		}
 	}
 
-	// If no other Gateways reference this GatewayClass, remove its finalizer
+	// Remove this Gateway's entry from status.parents on all referencing HTTPRoutes.
+	if err := r.removeRouteStatuses(ctx, gw); err != nil {
+		return ctrl.Result{}, fmt.Errorf("removing HTTPRoute status entries: %w", err)
+	}
+
+	// Remove this Gateway's finalizer from the GatewayClass.
 	if err := r.removeGatewayClassFinalizer(ctx, gc, gw); err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing GatewayClass finalizer: %w", err)
 	}
@@ -918,7 +923,9 @@ func backendReferenceGrantsCondition(generation int64, now metav1.Time, denied [
 // returned separately so the caller can report them without blocking reconciliation.
 func listGatewayRoutes(ctx context.Context, r client.Client, gw *gatewayv1.Gateway) (allowed, denied []*gatewayv1.HTTPRoute, err error) {
 	var allRoutes gatewayv1.HTTPRouteList
-	if err := r.List(ctx, &allRoutes); err != nil {
+	if err := r.List(ctx, &allRoutes, client.MatchingFields{
+		indexHTTPRouteParentGateway: gw.Namespace + "/" + gw.Name,
+	}); err != nil {
 		return nil, nil, fmt.Errorf("listing HTTPRoutes: %w", err)
 	}
 	for i := range allRoutes.Items {
@@ -934,16 +941,6 @@ func listGatewayRoutes(ctx context.Context, r client.Client, gw *gatewayv1.Gatew
 		}
 
 		if !hr.DeletionTimestamp.IsZero() {
-			continue
-		}
-		matches := false
-		for _, ref := range hr.Spec.ParentRefs {
-			if parentRefMatches(ref, gw, hr.Namespace) {
-				matches = true
-				break
-			}
-		}
-		if !matches {
 			continue
 		}
 		granted, grantErr := httpRouteReferenceGranted(ctx, r, hr.Namespace, gw)
@@ -1051,7 +1048,9 @@ func pathFromMatches(matches []gatewayv1.HTTPRouteMatch) string {
 // listener of the given Gateway. Routes without a sectionName count toward all listeners.
 func countAttachedRoutes(ctx context.Context, r client.Reader, gw *gatewayv1.Gateway) (map[gatewayv1.SectionName]int32, error) {
 	var routes gatewayv1.HTTPRouteList
-	if err := r.List(ctx, &routes); err != nil {
+	if err := r.List(ctx, &routes, client.MatchingFields{
+		indexHTTPRouteParentGateway: gw.Namespace + "/" + gw.Name,
+	}); err != nil {
 		return nil, fmt.Errorf("listing HTTPRoutes: %w", err)
 	}
 	counts := make(map[gatewayv1.SectionName]int32)
@@ -1210,6 +1209,39 @@ func findRouteParentStatus(statuses []gatewayv1.RouteParentStatus, gw *gatewayv1
 		}
 		if s.ParentRef.Namespace != nil && string(*s.ParentRef.Namespace) == gw.Namespace {
 			return &statuses[i]
+		}
+	}
+	return nil
+}
+
+// removeRouteStatuses removes this Gateway's entry from status.parents on all
+// HTTPRoutes that reference it. This is called during Gateway finalization.
+func (r *GatewayReconciler) removeRouteStatuses(ctx context.Context, gw *gatewayv1.Gateway) error {
+	var routes gatewayv1.HTTPRouteList
+	if err := r.List(ctx, &routes, client.MatchingFields{
+		indexHTTPRouteParentGateway: gw.Namespace + "/" + gw.Name,
+	}); err != nil {
+		return fmt.Errorf("listing HTTPRoutes for gateway %s/%s: %w", gw.Namespace, gw.Name, err)
+	}
+	for i := range routes.Items {
+		route := &routes.Items[i]
+		existing := findRouteParentStatus(route.Status.Parents, gw)
+		if existing == nil {
+			continue
+		}
+		patch := client.MergeFrom(route.DeepCopy())
+		var filtered []gatewayv1.RouteParentStatus
+		for _, s := range route.Status.Parents {
+			if s.ControllerName == apiv1.ControllerName &&
+				string(s.ParentRef.Name) == gw.Name &&
+				s.ParentRef.Namespace != nil && string(*s.ParentRef.Namespace) == gw.Namespace {
+				continue
+			}
+			filtered = append(filtered, s)
+		}
+		route.Status.Parents = filtered
+		if err := r.Status().Patch(ctx, route, patch); err != nil {
+			return fmt.Errorf("removing status entry from HTTPRoute %s/%s: %w", route.Namespace, route.Name, err)
 		}
 	}
 	return nil

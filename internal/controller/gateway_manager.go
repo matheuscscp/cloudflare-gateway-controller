@@ -19,7 +19,30 @@ import (
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 )
 
+const indexHTTPRouteParentGateway = ".spec.parentRefs[gateway]"
+
 func (r *GatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Index HTTPRoutes by their parent Gateway references (ns/name).
+	mgr.GetCache().IndexField(context.Background(), &gatewayv1.HTTPRoute{}, indexHTTPRouteParentGateway,
+		func(obj client.Object) []string {
+			route := obj.(*gatewayv1.HTTPRoute)
+			var keys []string
+			for _, ref := range route.Spec.ParentRefs {
+				if ref.Group != nil && *ref.Group != gatewayv1.Group(gatewayv1.GroupName) {
+					continue
+				}
+				if ref.Kind != nil && *ref.Kind != gatewayv1.Kind(apiv1.KindGateway) {
+					continue
+				}
+				ns := route.Namespace
+				if ref.Namespace != nil {
+					ns = string(*ref.Namespace)
+				}
+				keys = append(keys, ns+"/"+string(ref.Name))
+			}
+			return keys
+		})
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&gatewayv1.Gateway{},
 			builder.WithPredicates(debugPredicate(apiv1.KindGateway, predicate.Or(
