@@ -43,7 +43,7 @@ const DefaultCloudflaredImage = "ghcr.io/matheuscscp/cloudflare-gateway-controll
 type GatewayReconciler struct {
 	client.Client
 	events.EventRecorder
-	NewTunnelClient  cfclient.TunnelClientFactory
+	NewTunnelClient  cfclient.ClientFactory
 	CloudflaredImage string
 }
 
@@ -501,7 +501,7 @@ func removeOwnerRef(obj client.Object, ownerUID types.UID) bool {
 // DNS was previously enabled (condition was True), all CNAME records pointing
 // to the tunnel across all account zones are deleted. DNS errors are captured
 // in the condition rather than failing the whole reconciliation.
-func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cfclient.TunnelClient, tunnelID, zoneName string, generation int64, existingConditions []metav1.Condition, routes []*gatewayv1.HTTPRoute) *acmetav1.ConditionApplyConfiguration {
+func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cfclient.Client, tunnelID, zoneName string, generation int64, existingConditions []metav1.Condition, routes []*gatewayv1.HTTPRoute) *acmetav1.ConditionApplyConfiguration {
 	log := log.FromContext(ctx)
 
 	if zoneName == "" {
@@ -618,7 +618,7 @@ func dnsCondition(status metav1.ConditionStatus, generation int64, existingCondi
 
 // cleanupAllDNS deletes all CNAME records pointing to the tunnel across all
 // account zones. This is used when the zoneName annotation is removed.
-func (r *GatewayReconciler) cleanupAllDNS(ctx context.Context, tc cfclient.TunnelClient, tunnelID string) error {
+func (r *GatewayReconciler) cleanupAllDNS(ctx context.Context, tc cfclient.Client, tunnelID string) error {
 	log := log.FromContext(ctx)
 	tunnelTarget := tunnelID + ".cfargotunnel.com"
 

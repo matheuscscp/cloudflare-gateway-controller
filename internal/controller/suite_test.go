@@ -16,8 +16,10 @@ import (
 	semver "github.com/Masterminds/semver/v3"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	eventsv1 "k8s.io/api/events/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -30,6 +32,7 @@ import (
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 	cfclient "github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
+	"github.com/matheuscscp/cloudflare-gateway-controller/internal/conditions"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/controller"
 )
 
@@ -43,7 +46,7 @@ var (
 	testClient client.Client
 	testCtx    context.Context
 	testCancel context.CancelFunc
-	testMock   *mockTunnelClient
+	testMock   *mockCloudflareClient
 )
 
 // gatewayAPICRDPath returns the path to the Gateway API CRD directory.
@@ -102,14 +105,14 @@ func TestMain(m *testing.M) {
 		panic(fmt.Sprintf("failed to setup GatewayClass controller: %v", err))
 	}
 
-	testMock = &mockTunnelClient{
+	testMock = &mockCloudflareClient{
 		tunnelID:    "test-tunnel-id",
 		tunnelToken: "test-tunnel-token",
 	}
 	if err := (&controller.GatewayReconciler{
 		Client:        mgr.GetClient(),
 		EventRecorder: eventRecorder,
-		NewTunnelClient: func(_ cfclient.ClientConfig) (cfclient.TunnelClient, error) {
+		NewTunnelClient: func(_ cfclient.ClientConfig) (cfclient.Client, error) {
 			return testMock, nil
 		},
 		CloudflaredImage: controller.DefaultCloudflaredImage,
@@ -181,6 +184,167 @@ func TestMain(m *testing.M) {
 	}
 
 	os.Exit(code)
+}
+
+type mockCloudflareClient struct {
+	tunnelID     string
+	tunnelToken  string
+	deleteCalled bool
+	deletedID    string
+
+	// HTTPRoute-related tracking
+	lastTunnelConfigID      string
+	lastTunnelConfigIngress []cfclient.IngressRule
+	ensureDNSCalls          []mockDNSCall
+	deleteDNSCalls          []mockDNSCall
+	zones                   map[string]string // hostname -> zoneID
+	zoneIDs                 []string          // zone IDs returned by ListZoneIDs
+	listDNSCNAMEsByTarget   []string          // hostnames returned by ListDNSCNAMEsByTarget
+}
+
+type mockDNSCall struct {
+	ZoneID   string
+	Hostname string
+	Target   string
+}
+
+func (m *mockCloudflareClient) CreateTunnel(_ context.Context, _ string) (string, error) {
+	return m.tunnelID, nil
+}
+
+func (m *mockCloudflareClient) GetTunnelIDByName(_ context.Context, _ string) (string, error) {
+	return m.tunnelID, nil
+}
+
+func (m *mockCloudflareClient) DeleteTunnel(_ context.Context, tunnelID string) error {
+	m.deleteCalled = true
+	m.deletedID = tunnelID
+	return nil
+}
+
+func (m *mockCloudflareClient) GetTunnelToken(_ context.Context, _ string) (string, error) {
+	return m.tunnelToken, nil
+}
+
+func (m *mockCloudflareClient) UpdateTunnelConfiguration(_ context.Context, tunnelID string, ingress []cfclient.IngressRule) error {
+	m.lastTunnelConfigID = tunnelID
+	m.lastTunnelConfigIngress = ingress
+	return nil
+}
+
+func (m *mockCloudflareClient) ListZoneIDs(_ context.Context) ([]string, error) {
+	return m.zoneIDs, nil
+}
+
+func (m *mockCloudflareClient) FindZoneIDByHostname(_ context.Context, hostname string) (string, error) {
+	if m.zones != nil {
+		if zoneID, ok := m.zones[hostname]; ok {
+			return zoneID, nil
+		}
+	}
+	return "test-zone-id", nil
+}
+
+func (m *mockCloudflareClient) EnsureDNSCNAME(_ context.Context, zoneID, hostname, target string) error {
+	m.ensureDNSCalls = append(m.ensureDNSCalls, mockDNSCall{ZoneID: zoneID, Hostname: hostname, Target: target})
+	return nil
+}
+
+func (m *mockCloudflareClient) DeleteDNSCNAME(_ context.Context, zoneID, hostname string) error {
+	m.deleteDNSCalls = append(m.deleteDNSCalls, mockDNSCall{ZoneID: zoneID, Hostname: hostname})
+	return nil
+}
+
+func (m *mockCloudflareClient) ListDNSCNAMEsByTarget(_ context.Context, _, _ string) ([]string, error) {
+	return m.listDNSCNAMEsByTarget, nil
+}
+
+func createTestNamespace(g Gomega) *corev1.Namespace {
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: "test-",
+		},
+	}
+	g.Expect(testClient.Create(testCtx, ns)).To(Succeed())
+	return ns
+}
+
+func createTestSecret(g Gomega, namespace string) *corev1.Secret {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "cloudflare-creds",
+			Namespace: namespace,
+		},
+		Data: map[string][]byte{
+			"CLOUDFLARE_API_TOKEN":  []byte("test-api-token"),
+			"CLOUDFLARE_ACCOUNT_ID": []byte("test-account-id"),
+		},
+	}
+	g.Expect(testClient.Create(testCtx, secret)).To(Succeed())
+	return secret
+}
+
+func createTestGatewayClass(g Gomega, name string, secretNamespace string) *gatewayv1.GatewayClass {
+	ns := gatewayv1.Namespace(secretNamespace)
+	gc := &gatewayv1.GatewayClass{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+		},
+		Spec: gatewayv1.GatewayClassSpec{
+			ControllerName: apiv1.ControllerName,
+			ParametersRef: &gatewayv1.ParametersReference{
+				Group:     "",
+				Kind:      "Secret",
+				Name:      "cloudflare-creds",
+				Namespace: &ns,
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gc)).To(Succeed())
+	return gc
+}
+
+func createTestGateway(g Gomega, name, namespace, gcName string) *gatewayv1.Gateway {
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gcName),
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "http",
+					Protocol: gatewayv1.HTTPProtocolType,
+					Port:     80,
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	return gw
+}
+
+func waitForGatewayClassReady(g Gomega, gc *gatewayv1.GatewayClass) {
+	key := client.ObjectKeyFromObject(gc)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.GatewayClass
+		g.Expect(testClient.Get(testCtx, key, &result)).To(Succeed())
+		ready := conditions.Find(result.Status.Conditions, apiv1.ConditionReady)
+		g.Expect(ready).NotTo(BeNil())
+		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func waitForGatewayProgrammed(g Gomega, gw *gatewayv1.Gateway) {
+	key := client.ObjectKeyFromObject(gw)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, key, &result)).To(Succeed())
+		programmed := conditions.Find(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
+		g.Expect(programmed).NotTo(BeNil())
+		g.Expect(programmed.Status).To(Equal(metav1.ConditionTrue))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
 // findEvent returns the first events.k8s.io/v1 Event for the given object name

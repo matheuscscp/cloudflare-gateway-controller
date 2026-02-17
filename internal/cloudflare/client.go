@@ -30,8 +30,8 @@ type IngressRule struct {
 	Path     string
 }
 
-// TunnelClient abstracts Cloudflare tunnel operations.
-type TunnelClient interface {
+// Client abstracts Cloudflare tunnel operations.
+type Client interface {
 	CreateTunnel(ctx context.Context, name string) (tunnelID string, err error)
 	GetTunnelIDByName(ctx context.Context, name string) (tunnelID string, err error)
 	DeleteTunnel(ctx context.Context, tunnelID string) error
@@ -50,11 +50,11 @@ func IsConflict(err error) bool {
 	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict
 }
 
-// TunnelClientFactory creates a TunnelClient from a ClientConfig.
-type TunnelClientFactory func(cfg ClientConfig) (TunnelClient, error)
+// ClientFactory creates a TunnelClient from a ClientConfig.
+type ClientFactory func(cfg ClientConfig) (Client, error)
 
-// NewTunnelClient creates a new TunnelClient backed by the Cloudflare API.
-func NewTunnelClient(cfg ClientConfig) (TunnelClient, error) {
+// NewClient creates a new TunnelClient backed by the Cloudflare API.
+func NewClient(cfg ClientConfig) (Client, error) {
 	client := cloudflare.NewClient(option.WithAPIToken(cfg.APIToken))
 	return &tunnelClient{
 		client:    client,
