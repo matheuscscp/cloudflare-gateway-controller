@@ -26,10 +26,11 @@ const (
 
 // Reasons for the Ready condition.
 const (
-	ReasonReconciled           = "ReconciliationSucceeded"
-	ReasonFailed               = "ReconciliationFailed"
-	ReasonProgressingWithRetry = "ProgressingWithRetry"
-	ReasonInvalidParams        = "InvalidParameters"
+	ReasonReconciliationSucceeded = "ReconciliationSucceeded"
+	ReasonReconciliationDisabled  = "ReconciliationDisabled"
+	ReasonReconciliationFailed    = "ReconciliationFailed"
+	ReasonProgressingWithRetry    = "ProgressingWithRetry"
+	ReasonInvalidParameters       = "InvalidParameters"
 )
 
 // Reasons for the RouteReferenceGrants condition.

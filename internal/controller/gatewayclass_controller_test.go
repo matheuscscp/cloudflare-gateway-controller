@@ -52,10 +52,10 @@ func TestGatewayClassReconciler_Accepted(t *testing.T) {
 		ready := conditions.Find(result.Status.Conditions, apiv1.ConditionReady)
 		g.Expect(ready).NotTo(BeNil())
 		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
-		g.Expect(ready.Reason).To(Equal(apiv1.ReasonReconciled))
+		g.Expect(ready.Reason).To(Equal(apiv1.ReasonReconciliationSucceeded))
 
 		// Verify Normal event was emitted.
-		e := findEvent(g, gc.Name, corev1.EventTypeNormal, apiv1.ReasonReconciled)
+		e := findEvent(g, gc.Name, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded)
 		g.Expect(e).NotTo(BeNil())
 		g.Expect(e.Note).To(Equal("GatewayClass is ready"))
 		g.Expect(e.Action).To(Equal("Reconcile"))
@@ -105,7 +105,7 @@ func TestGatewayClassReconciler_AcceptedWithParametersRef(t *testing.T) {
 		ready := conditions.Find(result.Status.Conditions, apiv1.ConditionReady)
 		g.Expect(ready).NotTo(BeNil())
 		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
-		g.Expect(ready.Reason).To(Equal(apiv1.ReasonReconciled))
+		g.Expect(ready.Reason).To(Equal(apiv1.ReasonReconciliationSucceeded))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 

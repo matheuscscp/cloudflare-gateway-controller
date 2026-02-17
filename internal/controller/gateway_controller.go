@@ -77,12 +77,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	// Prune managed resources if the object is under deletion.
 	if !gw.DeletionTimestamp.IsZero() {
-		result, err := r.finalize(ctx, &gw, &gc)
-		if err != nil {
-			r.Eventf(&gw, nil, corev1.EventTypeWarning, apiv1.ReasonFailed, "Finalize", "Finalization failed: %v", err)
-			return ctrl.Result{}, err
-		}
-		return result, nil
+		return r.finalize(ctx, &gw, &gc)
 	}
 
 	// Add finalizer first if it doesn't exist to avoid the race condition
@@ -124,7 +119,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	listenerPatches := buildListenerStatusPatches(gw, attachedRoutes)
 	now := metav1.Now()
 	readyStatus := metav1.ConditionFalse
-	readyReason := apiv1.ReasonFailed
+	readyReason := apiv1.ReasonReconciliationFailed
 	readyMsg := ""
 	var condPatches []*acmetav1.ConditionApplyConfiguration
 
@@ -132,7 +127,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	cfg, err := readCredentials(ctx, r.Client, gc, gw)
 	if err != nil {
 		credMsg := fmt.Sprintf("Failed to read credentials: %v", err)
-		readyReason = apiv1.ReasonInvalidParams
+		readyReason = apiv1.ReasonInvalidParameters
 		readyMsg = credMsg
 		condPatches = []*acmetav1.ConditionApplyConfiguration{
 			acmetav1.Condition().
@@ -147,7 +142,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 				WithStatus(metav1.ConditionFalse).
 				WithObservedGeneration(gw.Generation).
 				WithLastTransitionTime(now).
-				WithReason(apiv1.ReasonInvalidParams).
+				WithReason(apiv1.ReasonInvalidParameters).
 				WithMessage(credMsg),
 		}
 	} else {
@@ -269,7 +264,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 			programmedReason = string(gatewayv1.GatewayReasonProgrammed)
 			programmedMsg = "Gateway is programmed"
 			readyStatus = metav1.ConditionTrue
-			readyReason = apiv1.ReasonReconciled
+			readyReason = apiv1.ReasonReconciliationSucceeded
 			readyMsg = "Gateway is ready"
 		} else {
 			readyMsg = "Waiting for cloudflared deployment to become ready"
@@ -331,7 +326,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	if readyStatus == metav1.ConditionFalse {
 		r.Eventf(gw, nil, corev1.EventTypeWarning, readyReason, "Reconcile", readyMsg)
 	} else {
-		r.Eventf(gw, nil, corev1.EventTypeNormal, apiv1.ReasonReconciled, "Reconcile", "Gateway reconciled")
+		r.Eventf(gw, nil, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded, "Reconcile", "Gateway reconciled")
 	}
 
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
@@ -375,7 +370,26 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 	// resources so Kubernetes GC doesn't delete them when the Gateway is removed.
 	// The user is responsible for manually cleaning up.
 	if gw.Annotations[apiv1.AnnotationReconcile] == apiv1.ValueDisabled {
-		if err := r.removeOwnerReferences(ctx, gw); err != nil {
+		removed, err := r.removeOwnerReferences(ctx, gw)
+		defer func() {
+			var removedInfo []string
+			for _, obj := range removed {
+				removedInfo = append(removedInfo, fmt.Sprintf("%s/%s/%s",
+					obj.GetObjectKind().GroupVersionKind().Kind,
+					obj.GetNamespace(),
+					obj.GetName()))
+			}
+			if len(removedInfo) > 0 {
+				log.FromContext(ctx).Info(
+					"finalization: Gateway disabled, removed owner references from managed objects",
+					"objects", removedInfo)
+			}
+			for _, obj := range removed {
+				r.Eventf(obj, gw, corev1.EventTypeNormal, apiv1.ReasonReconciliationDisabled,
+					"Finalize", "Gateway removed owner reference due to disabled finalization")
+			}
+		}()
+		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("removing owner references: %w", err)
 		}
 	} else {
@@ -427,6 +441,11 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 		}
 	}
 
+	// If no other Gateways reference this GatewayClass, remove its finalizer
+	if err := r.removeGatewayClassFinalizer(ctx, gc, gw); err != nil {
+		return ctrl.Result{}, fmt.Errorf("removing GatewayClass finalizer: %w", err)
+	}
+
 	// Remove finalizer from Gateway if needed
 	if controllerutil.ContainsFinalizer(gw, apiv1.Finalizer) {
 		gwPatch := client.MergeFrom(gw.DeepCopy())
@@ -436,31 +455,31 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 		}
 	}
 
-	// If no other Gateways reference this GatewayClass, remove its finalizer
-	if err := r.removeGatewayClassFinalizer(ctx, gc, gw); err != nil {
-		return ctrl.Result{}, fmt.Errorf("removing GatewayClass finalizer: %w", err)
-	}
-
 	return ctrl.Result{}, nil
 }
 
 // removeOwnerReferences removes the Gateway's owner references from managed
 // resources (cloudflared Deployment and tunnel token Secret) so they survive
 // garbage collection when the Gateway is deleted with reconciliation disabled.
-func (r *GatewayReconciler) removeOwnerReferences(ctx context.Context, gw *gatewayv1.Gateway) error {
+// Returns the list of resources that were modified.
+func (r *GatewayReconciler) removeOwnerReferences(ctx context.Context, gw *gatewayv1.Gateway) ([]client.Object, error) {
+	var removed []client.Object
+
 	// Remove owner reference from cloudflared Deployment.
 	var deploy appsv1.Deployment
 	deployKey := client.ObjectKey{Namespace: gw.Namespace, Name: apiv1.CloudflaredDeploymentName(gw)}
 	if err := r.Get(ctx, deployKey, &deploy); err != nil {
 		if !apierrors.IsNotFound(err) {
-			return fmt.Errorf("getting deployment: %w", err)
+			return removed, fmt.Errorf("getting deployment: %w", err)
 		}
 	} else {
 		deployPatch := client.MergeFrom(deploy.DeepCopy())
 		if removeOwnerRef(&deploy, gw.UID) {
 			if err := r.Patch(ctx, &deploy, deployPatch); err != nil {
-				return fmt.Errorf("patching deployment: %w", err)
+				return removed, fmt.Errorf("patching deployment: %w", err)
 			}
+			deploy.SetGroupVersionKind(appsv1.SchemeGroupVersion.WithKind(apiv1.KindDeployment))
+			removed = append(removed, &deploy)
 		}
 	}
 
@@ -469,18 +488,20 @@ func (r *GatewayReconciler) removeOwnerReferences(ctx context.Context, gw *gatew
 	secretKey := client.ObjectKey{Namespace: gw.Namespace, Name: apiv1.TunnelTokenSecretName(gw)}
 	if err := r.Get(ctx, secretKey, &secret); err != nil {
 		if !apierrors.IsNotFound(err) {
-			return fmt.Errorf("getting secret: %w", err)
+			return removed, fmt.Errorf("getting secret: %w", err)
 		}
 	} else {
 		secretPatch := client.MergeFrom(secret.DeepCopy())
 		if removeOwnerRef(&secret, gw.UID) {
 			if err := r.Patch(ctx, &secret, secretPatch); err != nil {
-				return fmt.Errorf("patching secret: %w", err)
+				return removed, fmt.Errorf("patching secret: %w", err)
 			}
+			secret.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind(apiv1.KindSecret))
+			removed = append(removed, &secret)
 		}
 	}
 
-	return nil
+	return removed, nil
 }
 
 // removeOwnerRef removes the owner reference with the given UID from the object.
@@ -511,7 +532,7 @@ func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cloudflare.Clie
 		if prev != nil && prev.Status == metav1.ConditionTrue {
 			if err := r.cleanupAllDNS(ctx, tc, tunnelID); err != nil {
 				return dnsCondition(metav1.ConditionFalse, generation, existingConditions,
-					apiv1.ReasonFailed, fmt.Sprintf("Failed to clean up DNS records: %v", err))
+					apiv1.ReasonReconciliationFailed, fmt.Sprintf("Failed to clean up DNS records: %v", err))
 			}
 		}
 		return dnsCondition(metav1.ConditionFalse, generation, existingConditions,
@@ -524,7 +545,7 @@ func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cloudflare.Clie
 	zoneID, err := tc.FindZoneIDByHostname(ctx, zoneName)
 	if err != nil {
 		return dnsCondition(metav1.ConditionFalse, generation, existingConditions,
-			apiv1.ReasonFailed, fmt.Sprintf("Failed to find zone ID for %q: %v", zoneName, err))
+			apiv1.ReasonReconciliationFailed, fmt.Sprintf("Failed to find zone ID for %q: %v", zoneName, err))
 	}
 
 	// Compute desired hostnames from all attached HTTPRoutes.
@@ -557,7 +578,7 @@ func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cloudflare.Clie
 	actual, err := tc.ListDNSCNAMEsByTarget(ctx, zoneID, tunnelTarget)
 	if err != nil {
 		return dnsCondition(metav1.ConditionFalse, generation, existingConditions,
-			apiv1.ReasonFailed, fmt.Sprintf("Failed to list DNS CNAMEs: %v", err))
+			apiv1.ReasonReconciliationFailed, fmt.Sprintf("Failed to list DNS CNAMEs: %v", err))
 	}
 	actualSet := make(map[string]struct{}, len(actual))
 	for _, h := range actual {
@@ -569,7 +590,7 @@ func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cloudflare.Clie
 		if _, ok := actualSet[h]; !ok {
 			if err := tc.EnsureDNSCNAME(ctx, zoneID, h, tunnelTarget); err != nil {
 				return dnsCondition(metav1.ConditionFalse, generation, existingConditions,
-					apiv1.ReasonFailed, fmt.Sprintf("Failed to ensure DNS CNAME for %q: %v", h, err))
+					apiv1.ReasonReconciliationFailed, fmt.Sprintf("Failed to ensure DNS CNAME for %q: %v", h, err))
 			}
 			log.V(1).Info("Created DNS CNAME", "hostname", h)
 		}
@@ -580,7 +601,7 @@ func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cloudflare.Clie
 		if _, ok := desired[h]; !ok {
 			if err := tc.DeleteDNSCNAME(ctx, zoneID, h); err != nil {
 				return dnsCondition(metav1.ConditionFalse, generation, existingConditions,
-					apiv1.ReasonFailed, fmt.Sprintf("Failed to delete stale DNS CNAME for %q: %v", h, err))
+					apiv1.ReasonReconciliationFailed, fmt.Sprintf("Failed to delete stale DNS CNAME for %q: %v", h, err))
 			}
 			log.V(1).Info("Deleted stale DNS CNAME", "hostname", h)
 		}

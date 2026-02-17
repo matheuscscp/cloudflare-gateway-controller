@@ -80,7 +80,7 @@ func TestGatewayReconciler_AcceptedAndProgrammed(t *testing.T) {
 		ready := conditions.Find(result.Status.Conditions, apiv1.ConditionReady)
 		g.Expect(ready).NotTo(BeNil())
 		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
-		g.Expect(ready.Reason).To(Equal(apiv1.ReasonReconciled))
+		g.Expect(ready.Reason).To(Equal(apiv1.ReasonReconciliationSucceeded))
 
 		// DNSManagement condition should be NotEnabled (no zoneName annotation)
 		dns := conditions.Find(result.Status.Conditions, apiv1.ConditionDNSManagement)

@@ -70,7 +70,7 @@ func (r *GatewayClassReconciler) reconcile(ctx context.Context, gc *gatewayv1.Ga
 	supportedVersionStatus := metav1.ConditionTrue
 	supportedVersionReason := string(gatewayv1.GatewayClassReasonSupportedVersion)
 	readyStatus := metav1.ConditionTrue
-	readyReason := apiv1.ReasonReconciled
+	readyReason := apiv1.ReasonReconciliationSucceeded
 	readyMessage := "GatewayClass is ready"
 	switch {
 	case !supportedVersion:
@@ -154,7 +154,7 @@ func (r *GatewayClassReconciler) reconcile(ctx context.Context, gc *gatewayv1.Ga
 	if readyStatus == metav1.ConditionFalse {
 		r.Eventf(gc, nil, corev1.EventTypeWarning, readyReason, "Reconcile", readyMessage)
 	} else {
-		r.Eventf(gc, nil, corev1.EventTypeNormal, apiv1.ReasonReconciled, "Reconcile", "GatewayClass is ready")
+		r.Eventf(gc, nil, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded, "Reconcile", "GatewayClass is ready")
 	}
 
 	return ctrl.Result{}, nil
