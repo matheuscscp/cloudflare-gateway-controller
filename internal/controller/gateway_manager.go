@@ -5,6 +5,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -19,13 +20,20 @@ import (
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 )
 
-const indexHTTPRouteParentGateway = ".spec.parentRefs[gateway]"
+const (
+	indexHTTPRouteParentGateway       = ".spec.parentRefs[gateway]"
+	indexGatewayClassGatewayFinalizer = ".metadata.finalizers[gateway]"
+)
 
 func (r *GatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Index HTTPRoutes by their parent Gateway references (ns/name).
+	// Index HTTPRoutes by their parent Gateway references (ns/name) and by
+	// existing status.parents entries managed by our controller. Including
+	// status.parents ensures that when a parentRef is removed, the old Gateway
+	// is still notified so it can clean up stale status entries.
 	mgr.GetCache().IndexField(context.Background(), &gatewayv1.HTTPRoute{}, indexHTTPRouteParentGateway,
 		func(obj client.Object) []string {
 			route := obj.(*gatewayv1.HTTPRoute)
+			seen := make(map[string]struct{})
 			var keys []string
 			for _, ref := range route.Spec.ParentRefs {
 				if ref.Group != nil && *ref.Group != gatewayv1.Group(gatewayv1.GroupName) {
@@ -38,7 +46,38 @@ func (r *GatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				if ref.Namespace != nil {
 					ns = string(*ref.Namespace)
 				}
-				keys = append(keys, ns+"/"+string(ref.Name))
+				key := ns + "/" + string(ref.Name)
+				if _, ok := seen[key]; !ok {
+					seen[key] = struct{}{}
+					keys = append(keys, key)
+				}
+			}
+			for _, s := range route.Status.Parents {
+				if s.ControllerName != apiv1.ControllerName {
+					continue
+				}
+				if s.ParentRef.Namespace == nil {
+					continue
+				}
+				key := string(*s.ParentRef.Namespace) + "/" + string(s.ParentRef.Name)
+				if _, ok := seen[key]; !ok {
+					seen[key] = struct{}{}
+					keys = append(keys, key)
+				}
+			}
+			return keys
+		})
+
+	// Index GatewayClasses by per-gateway finalizers so we can efficiently
+	// find and clean up stale finalizers when gatewayClassName changes.
+	gatewayFinalizerPrefix := string(gatewayv1.GatewayClassFinalizerGatewaysExist) + "/"
+	mgr.GetCache().IndexField(context.Background(), &gatewayv1.GatewayClass{}, indexGatewayClassGatewayFinalizer,
+		func(obj client.Object) []string {
+			var keys []string
+			for _, f := range obj.GetFinalizers() {
+				if strings.HasPrefix(f, gatewayFinalizerPrefix) {
+					keys = append(keys, f)
+				}
 			}
 			return keys
 		})
@@ -59,13 +98,16 @@ func (r *GatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // mapHTTPRouteToGateway maps an HTTPRoute event to reconcile requests for its
-// parent Gateways, so the Gateway controller can update AttachedRoutes counts
-// and rebuild tunnel ingress configuration.
+// parent Gateways (from spec.parentRefs) and any Gateways that have existing
+// status.parents entries managed by our controller. Including status.parents
+// ensures that when a parentRef is removed, the old Gateway still reconciles
+// and cleans up stale status entries.
 func mapHTTPRouteToGateway(_ context.Context, obj client.Object) []reconcile.Request {
 	route, ok := obj.(*gatewayv1.HTTPRoute)
 	if !ok {
 		return nil
 	}
+	seen := make(map[types.NamespacedName]struct{})
 	var requests []reconcile.Request
 	for _, ref := range route.Spec.ParentRefs {
 		if ref.Group != nil && *ref.Group != gatewayv1.Group(gatewayv1.GroupName) {
@@ -78,12 +120,27 @@ func mapHTTPRouteToGateway(_ context.Context, obj client.Object) []reconcile.Req
 		if ref.Namespace != nil {
 			ns = string(*ref.Namespace)
 		}
-		requests = append(requests, reconcile.Request{
-			NamespacedName: types.NamespacedName{
-				Namespace: ns,
-				Name:      string(ref.Name),
-			},
-		})
+		key := types.NamespacedName{Namespace: ns, Name: string(ref.Name)}
+		if _, ok := seen[key]; !ok {
+			seen[key] = struct{}{}
+			requests = append(requests, reconcile.Request{NamespacedName: key})
+		}
+	}
+	for _, s := range route.Status.Parents {
+		if s.ControllerName != apiv1.ControllerName {
+			continue
+		}
+		if s.ParentRef.Namespace == nil {
+			continue
+		}
+		key := types.NamespacedName{
+			Namespace: string(*s.ParentRef.Namespace),
+			Name:      string(s.ParentRef.Name),
+		}
+		if _, ok := seen[key]; !ok {
+			seen[key] = struct{}{}
+			requests = append(requests, reconcile.Request{NamespacedName: key})
+		}
 	}
 	return requests
 }

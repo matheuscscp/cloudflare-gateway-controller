@@ -217,19 +217,16 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		}
 		log.V(1).Info("Reconciled cloudflared Deployment")
 
-		// Filter HTTPRoutes by ReferenceGrant and update tunnel ingress configuration.
-		gatewayRoutes, deniedRoutes, err := listGatewayRoutes(ctx, r.Client, &allRoutes, gw)
+		// Filter HTTPRoutes by parentRef and ReferenceGrant, and update tunnel ingress.
+		gatewayRoutes, deniedRoutes, staleRoutes, err := listGatewayRoutes(ctx, r.Client, &allRoutes, gw)
 		if err != nil {
 			return r.reconcileError(ctx, gw, err)
 		}
-		if len(deniedRoutes) > 0 {
-			log.Info("HTTPRoutes denied due to missing or failed ReferenceGrant checks", "count", len(deniedRoutes))
-			// Remove stale status.parents entries for denied routes (e.g. after a
-			// ReferenceGrant was deleted).
-			for _, route := range deniedRoutes {
-				if err := r.removeRouteStatus(ctx, gw, route); err != nil {
-					log.Error(err, "Failed to remove status for denied HTTPRoute", "httproute", route.Namespace+"/"+route.Name)
-				}
+		// Remove stale status.parents entries for denied routes (ReferenceGrant
+		// deleted) and stale routes (parentRef removed).
+		for _, route := range append(deniedRoutes, staleRoutes...) {
+			if err := r.removeRouteStatus(ctx, gw, route); err != nil {
+				log.Error(err, "Failed to remove stale status for HTTPRoute", "httproute", route.Namespace+"/"+route.Name)
 			}
 		}
 
@@ -640,8 +637,39 @@ func (r *GatewayReconciler) cleanupAllDNS(ctx context.Context, tc cloudflare.Cli
 
 // ensureGatewayClassFinalizer adds the GatewayClass finalizer if not already present,
 // preventing the GatewayClass from being deleted while Gateways reference it.
+// If the Gateway's gatewayClassName was changed, the stale finalizer on the
+// previous GatewayClass is removed first.
 func (r *GatewayReconciler) ensureGatewayClassFinalizer(ctx context.Context, gc *gatewayv1.GatewayClass, gw *gatewayv1.Gateway) error {
 	finalizer := apiv1.FinalizerGatewayClass(gw)
+
+	// Remove the stale finalizer from any other GatewayClass (handles
+	// gatewayClassName changes).
+	var staleClasses gatewayv1.GatewayClassList
+	if err := r.List(ctx, &staleClasses, client.MatchingFields{
+		indexGatewayClassGatewayFinalizer: finalizer,
+	}); err != nil {
+		return fmt.Errorf("listing GatewayClasses with stale finalizer: %w", err)
+	}
+	for i := range staleClasses.Items {
+		other := &staleClasses.Items[i]
+		if other.Name == gc.Name {
+			continue
+		}
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			if err := r.Get(ctx, types.NamespacedName{Name: other.Name}, other); err != nil {
+				return client.IgnoreNotFound(err)
+			}
+			if !controllerutil.ContainsFinalizer(other, finalizer) {
+				return nil
+			}
+			gcPatch := client.MergeFromWithOptions(other.DeepCopy(), client.MergeFromWithOptimisticLock{})
+			controllerutil.RemoveFinalizer(other, finalizer)
+			return r.Patch(ctx, other, gcPatch)
+		}); err != nil {
+			return fmt.Errorf("removing stale finalizer from GatewayClass %s: %w", other.Name, err)
+		}
+	}
+
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		if err := r.Get(ctx, types.NamespacedName{Name: gc.Name}, gc); err != nil {
 			return err
@@ -864,20 +892,37 @@ func setCondition(existing []metav1.Condition, desired metav1.Condition) []metav
 }
 
 // listGatewayRoutes filters non-deleting HTTPRoutes from the pre-fetched list that
-// reference the given Gateway. Cross-namespace routes are only included if a
-// ReferenceGrant in the Gateway's namespace permits the reference. Routes denied
-// due to missing or failed ReferenceGrant checks are returned separately so the
-// caller can report them without blocking reconciliation.
-func listGatewayRoutes(ctx context.Context, r client.Client, allRoutes *gatewayv1.HTTPRouteList, gw *gatewayv1.Gateway) (allowed, denied []*gatewayv1.HTTPRoute, err error) {
+// reference the given Gateway via spec.parentRefs. Cross-namespace routes are only
+// included if a ReferenceGrant in the Gateway's namespace permits the reference.
+// Routes denied due to missing or failed ReferenceGrant checks are returned
+// separately so the caller can report them without blocking reconciliation.
+// Routes that appear in allRoutes but do not have a matching parentRef (e.g. stale
+// status.parents entries from a previous parentRef) are returned as stale.
+func listGatewayRoutes(ctx context.Context, r client.Client, allRoutes *gatewayv1.HTTPRouteList, gw *gatewayv1.Gateway) (allowed, denied, stale []*gatewayv1.HTTPRoute, err error) {
 	for i := range allRoutes.Items {
 		hr := &allRoutes.Items[i]
 
 		if !hr.DeletionTimestamp.IsZero() {
 			continue
 		}
+
+		// Check if the route actually has a parentRef to this Gateway.
+		hasParentRef := false
+		for _, ref := range hr.Spec.ParentRefs {
+			if parentRefMatches(ref, gw, hr.Namespace) {
+				hasParentRef = true
+				break
+			}
+		}
+		if !hasParentRef {
+			// Route appeared in the index via a stale status.parents entry.
+			stale = append(stale, hr)
+			continue
+		}
+
 		granted, grantErr := httpRouteReferenceGranted(ctx, r, hr.Namespace, gw)
 		if grantErr != nil {
-			return nil, nil, fmt.Errorf("checking ReferenceGrant for HTTPRoute %s/%s: %w", hr.Namespace, hr.Name, grantErr)
+			return nil, nil, nil, fmt.Errorf("checking ReferenceGrant for HTTPRoute %s/%s: %w", hr.Namespace, hr.Name, grantErr)
 		}
 		if !granted {
 			denied = append(denied, hr)
@@ -891,7 +936,7 @@ func listGatewayRoutes(ctx context.Context, r client.Client, allRoutes *gatewayv
 	slices.SortFunc(denied, func(a, b *gatewayv1.HTTPRoute) int {
 		return strings.Compare(a.Namespace+"/"+a.Name, b.Namespace+"/"+b.Name)
 	})
-	return allowed, denied, nil
+	return allowed, denied, stale, nil
 }
 
 // buildIngressRules converts a list of HTTPRoutes into Cloudflare tunnel ingress rules.
