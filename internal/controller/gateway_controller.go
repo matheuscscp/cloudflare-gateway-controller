@@ -55,7 +55,6 @@ type GatewayReconciler struct {
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=referencegrants,verbs=get;list;watch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;update
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes/status,verbs=update;patch
-// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;get;list;watch;update;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update
 
@@ -892,15 +891,6 @@ func backendReferenceGrantsCondition(generation int64, now metav1.Time, denied [
 func listGatewayRoutes(ctx context.Context, r client.Client, allRoutes *gatewayv1.HTTPRouteList, gw *gatewayv1.Gateway) (allowed, denied []*gatewayv1.HTTPRoute, err error) {
 	for i := range allRoutes.Items {
 		hr := &allRoutes.Items[i]
-
-		// Migration: remove stale finalizer left by the old HTTPRoute controller.
-		if controllerutil.ContainsFinalizer(hr, apiv1.Finalizer) {
-			fPatch := client.MergeFrom(hr.DeepCopy())
-			controllerutil.RemoveFinalizer(hr, apiv1.Finalizer)
-			if patchErr := r.Patch(ctx, hr, fPatch); patchErr != nil {
-				return nil, nil, fmt.Errorf("removing stale finalizer from HTTPRoute %s/%s: %w", hr.Namespace, hr.Name, patchErr)
-			}
-		}
 
 		if !hr.DeletionTimestamp.IsZero() {
 			continue

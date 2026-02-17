@@ -47,7 +47,6 @@ rules:
   resources:
   - gatewayclasses/finalizers
   - gateways/finalizers
-  - httproutes/finalizers
   verbs:
   - update
 - apiGroups:
