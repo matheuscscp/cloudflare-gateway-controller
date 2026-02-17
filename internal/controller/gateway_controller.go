@@ -146,10 +146,10 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 				WithMessage(credMsg),
 		}
 	} else {
-		// Create tunnel client
+		// Create cloudflare client
 		tc, err := r.NewCloudflareClient(cfg)
 		if err != nil {
-			return r.reconcileError(ctx, gw, fmt.Errorf("creating tunnel client: %w", err))
+			return r.reconcileError(ctx, gw, fmt.Errorf("creating cloudflare client: %w", err))
 		}
 
 		// Look up or create tunnel. The name is deterministic (gateway-{UID}),
@@ -424,7 +424,7 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 		}
 		tc, err := r.NewCloudflareClient(cfg)
 		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("creating tunnel client for deletion: %w", err)
+			return ctrl.Result{}, fmt.Errorf("creating cloudflare client for deletion: %w", err)
 		}
 		tunnelID, err := tc.GetTunnelIDByName(ctx, apiv1.TunnelName(gw))
 		if err != nil {
