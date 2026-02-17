@@ -14,13 +14,11 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	acmetav1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
-	acgatewayv1 "sigs.k8s.io/gateway-api/applyconfiguration/apis/v1"
 	"sigs.k8s.io/gateway-api/pkg/features"
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
@@ -114,40 +112,35 @@ func (r *GatewayClassReconciler) reconcile(ctx context.Context, gc *gatewayv1.Ga
 	}
 
 	now := metav1.Now()
-	featurePatches := make([]*acgatewayv1.SupportedFeatureApplyConfiguration, len(desiredFeatures))
-	for i, f := range desiredFeatures {
-		featurePatches[i] = acgatewayv1.SupportedFeature().WithName(f.Name)
-	}
-	statusPatch := acgatewayv1.GatewayClass(gc.Name).
-		WithResourceVersion(gc.ResourceVersion).
-		WithStatus(acgatewayv1.GatewayClassStatus().
-			WithConditions(
-				acmetav1.Condition().
-					WithType(acceptedType).
-					WithStatus(acceptedStatus).
-					WithObservedGeneration(gc.Generation).
-					WithLastTransitionTime(now).
-					WithReason(acceptedReason).
-					WithMessage(acceptedMessage),
-				acmetav1.Condition().
-					WithType(supportedVersionType).
-					WithStatus(supportedVersionStatus).
-					WithObservedGeneration(gc.Generation).
-					WithLastTransitionTime(now).
-					WithReason(supportedVersionReason).
-					WithMessage(supportedVersionMessage),
-				acmetav1.Condition().
-					WithType(apiv1.ConditionReady).
-					WithStatus(readyStatus).
-					WithObservedGeneration(gc.Generation).
-					WithLastTransitionTime(now).
-					WithReason(readyReason).
-					WithMessage(readyMessage),
-			).
-			WithSupportedFeatures(featurePatches...),
-		)
-
-	if err := r.Status().Apply(ctx, statusPatch, client.FieldOwner(apiv1.ShortControllerName), client.ForceOwnership); err != nil {
+	patch := client.MergeFrom(gc.DeepCopy())
+	gc.Status.Conditions = setConditions(gc.Status.Conditions, []metav1.Condition{
+		{
+			Type:               acceptedType,
+			Status:             acceptedStatus,
+			ObservedGeneration: gc.Generation,
+			LastTransitionTime: now,
+			Reason:             acceptedReason,
+			Message:            acceptedMessage,
+		},
+		{
+			Type:               supportedVersionType,
+			Status:             supportedVersionStatus,
+			ObservedGeneration: gc.Generation,
+			LastTransitionTime: now,
+			Reason:             supportedVersionReason,
+			Message:            supportedVersionMessage,
+		},
+		{
+			Type:               apiv1.ConditionReady,
+			Status:             readyStatus,
+			ObservedGeneration: gc.Generation,
+			LastTransitionTime: now,
+			Reason:             readyReason,
+			Message:            readyMessage,
+		},
+	}, now)
+	gc.Status.SupportedFeatures = desiredFeatures
+	if err := r.Status().Patch(ctx, gc, patch); err != nil {
 		return ctrl.Result{}, err
 	}
 

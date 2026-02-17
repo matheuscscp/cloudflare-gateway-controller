@@ -28,7 +28,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
-	acgatewayv1 "sigs.k8s.io/gateway-api/applyconfiguration/apis/v1"
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
@@ -118,12 +117,12 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		return r.reconcileError(ctx, gw, fmt.Errorf("listing HTTPRoutes: %w", err))
 	}
 
-	listenerPatches := buildListenerStatusPatches(gw, countAttachedRoutes(&allRoutes, gw))
+	desiredListeners := buildListenerStatuses(gw, countAttachedRoutes(&allRoutes, gw))
 	now := metav1.Now()
 	readyStatus := metav1.ConditionFalse
 	readyReason := apiv1.ReasonReconciliationFailed
 	readyMsg := ""
-	var condPatches []*acmetav1.ConditionApplyConfiguration
+	var desiredConds []metav1.Condition
 
 	// Read credentials
 	cfg, err := readCredentials(ctx, r.Client, gc, gw)
@@ -131,21 +130,23 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		credMsg := fmt.Sprintf("Failed to read credentials: %v", err)
 		readyReason = apiv1.ReasonInvalidParameters
 		readyMsg = credMsg
-		condPatches = []*acmetav1.ConditionApplyConfiguration{
-			acmetav1.Condition().
-				WithType(string(gatewayv1.GatewayConditionAccepted)).
-				WithStatus(metav1.ConditionFalse).
-				WithObservedGeneration(gw.Generation).
-				WithLastTransitionTime(now).
-				WithReason(string(gatewayv1.GatewayReasonInvalidParameters)).
-				WithMessage(credMsg),
-			acmetav1.Condition().
-				WithType(apiv1.ConditionReady).
-				WithStatus(metav1.ConditionFalse).
-				WithObservedGeneration(gw.Generation).
-				WithLastTransitionTime(now).
-				WithReason(apiv1.ReasonInvalidParameters).
-				WithMessage(credMsg),
+		desiredConds = []metav1.Condition{
+			{
+				Type:               string(gatewayv1.GatewayConditionAccepted),
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: gw.Generation,
+				LastTransitionTime: now,
+				Reason:             string(gatewayv1.GatewayReasonInvalidParameters),
+				Message:            credMsg,
+			},
+			{
+				Type:               apiv1.ConditionReady,
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: gw.Generation,
+				LastTransitionTime: now,
+				Reason:             apiv1.ReasonInvalidParameters,
+				Message:            credMsg,
+			},
 		}
 	} else {
 		// Create cloudflare client
@@ -278,54 +279,54 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		} else {
 			readyMsg = "Waiting for cloudflared deployment to become ready"
 		}
-		condPatches = []*acmetav1.ConditionApplyConfiguration{
-			acmetav1.Condition().
-				WithType(string(gatewayv1.GatewayConditionAccepted)).
-				WithStatus(metav1.ConditionTrue).
-				WithObservedGeneration(gw.Generation).
-				WithLastTransitionTime(now).
-				WithReason(string(gatewayv1.GatewayReasonAccepted)).
-				WithMessage("Gateway is accepted"),
-			acmetav1.Condition().
-				WithType(string(gatewayv1.GatewayConditionProgrammed)).
-				WithStatus(programmedStatus).
-				WithObservedGeneration(gw.Generation).
-				WithLastTransitionTime(now).
-				WithReason(programmedReason).
-				WithMessage(programmedMsg),
-			acmetav1.Condition().
-				WithType(apiv1.ConditionReady).
-				WithStatus(readyStatus).
-				WithObservedGeneration(gw.Generation).
-				WithLastTransitionTime(now).
-				WithReason(readyReason).
-				WithMessage(readyMsg),
+		desiredConds = []metav1.Condition{
+			{
+				Type:               string(gatewayv1.GatewayConditionAccepted),
+				Status:             metav1.ConditionTrue,
+				ObservedGeneration: gw.Generation,
+				LastTransitionTime: now,
+				Reason:             string(gatewayv1.GatewayReasonAccepted),
+				Message:            "Gateway is accepted",
+			},
+			{
+				Type:               string(gatewayv1.GatewayConditionProgrammed),
+				Status:             programmedStatus,
+				ObservedGeneration: gw.Generation,
+				LastTransitionTime: now,
+				Reason:             programmedReason,
+				Message:            programmedMsg,
+			},
+			{
+				Type:               apiv1.ConditionReady,
+				Status:             readyStatus,
+				ObservedGeneration: gw.Generation,
+				LastTransitionTime: now,
+				Reason:             readyReason,
+				Message:            readyMsg,
+			},
 		}
 	}
 
 	// Skip the status patch if no conditions or listener statuses changed.
 	requeueAfter := apiv1.ReconcileInterval(gw.Annotations)
 	changed := false
-	for _, c := range condPatches {
-		if conditions.ApplyChanged(gw.Status.Conditions, c, gw.Generation) {
+	for _, c := range desiredConds {
+		if conditions.Changed(gw.Status.Conditions, c.Type, c.Status, c.Reason, c.Message, gw.Generation) {
 			changed = true
 			break
 		}
 	}
-	if !changed && listenersChanged(gw.Status.Listeners, listenerPatches, gw.Generation) {
+	if !changed && listenersChanged(gw.Status.Listeners, desiredListeners) {
 		changed = true
 	}
 	if !changed {
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 
-	statusPatch := acgatewayv1.Gateway(gw.Name, gw.Namespace).
-		WithResourceVersion(gw.ResourceVersion).
-		WithStatus(acgatewayv1.GatewayStatus().
-			WithConditions(condPatches...).
-			WithListeners(listenerPatches...),
-		)
-	if err := r.Status().Apply(ctx, statusPatch, client.FieldOwner(apiv1.ShortControllerName), client.ForceOwnership); err != nil {
+	patch := client.MergeFrom(gw.DeepCopy())
+	gw.Status.Conditions = setConditions(gw.Status.Conditions, desiredConds, now)
+	gw.Status.Listeners = desiredListeners
+	if err := r.Status().Patch(ctx, gw, patch); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -339,30 +340,21 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 }
 
 // reconcileError handles business logic errors by best-effort patching Ready=Unknown
-// on the Gateway status and emitting a Warning event. It uses a merge patch (not SSA)
-// to update only the Ready condition without clobbering other conditions.
+// on the Gateway status and emitting a Warning event. Only the Ready condition is
+// updated; other conditions are preserved.
 func (r *GatewayReconciler) reconcileError(ctx context.Context, gw *gatewayv1.Gateway, reconcileErr error) (ctrl.Result, error) {
 	msg := reconcileErr.Error()
 	if conditions.Changed(gw.Status.Conditions, apiv1.ConditionReady, metav1.ConditionUnknown, apiv1.ReasonProgressingWithRetry, msg, gw.Generation) {
-		patch := client.MergeFrom(gw.DeepCopy())
 		now := metav1.Now()
-		cond := conditions.Find(gw.Status.Conditions, apiv1.ConditionReady)
-		if cond != nil {
-			cond.Status = metav1.ConditionUnknown
-			cond.Reason = apiv1.ReasonProgressingWithRetry
-			cond.Message = msg
-			cond.ObservedGeneration = gw.Generation
-			cond.LastTransitionTime = now
-		} else {
-			gw.Status.Conditions = append(gw.Status.Conditions, metav1.Condition{
-				Type:               apiv1.ConditionReady,
-				Status:             metav1.ConditionUnknown,
-				ObservedGeneration: gw.Generation,
-				LastTransitionTime: now,
-				Reason:             apiv1.ReasonProgressingWithRetry,
-				Message:            msg,
-			})
-		}
+		patch := client.MergeFrom(gw.DeepCopy())
+		gw.Status.Conditions = setCondition(gw.Status.Conditions, metav1.Condition{
+			Type:               apiv1.ConditionReady,
+			Status:             metav1.ConditionUnknown,
+			ObservedGeneration: gw.Generation,
+			LastTransitionTime: now,
+			Reason:             apiv1.ReasonProgressingWithRetry,
+			Message:            msg,
+		})
 		_ = r.Status().Patch(ctx, gw, patch)
 	}
 	r.Eventf(gw, nil, corev1.EventTypeWarning, apiv1.ReasonProgressingWithRetry, "Reconcile", "Reconciliation failed: %v", reconcileErr)
@@ -734,93 +726,96 @@ func readCredentials(ctx context.Context, r client.Reader, gc *gatewayv1.Gateway
 	}, nil
 }
 
-// buildListenerStatusPatches builds SSA apply configurations for each Gateway listener,
+// buildListenerStatuses builds the desired listener statuses for each Gateway listener,
 // setting Accepted/Programmed conditions based on protocol support and the attached route count.
-func buildListenerStatusPatches(gw *gatewayv1.Gateway, attachedRoutes map[gatewayv1.SectionName]int32) []*acgatewayv1.ListenerStatusApplyConfiguration {
+func buildListenerStatuses(gw *gatewayv1.Gateway, attachedRoutes map[gatewayv1.SectionName]int32) []gatewayv1.ListenerStatus {
 	now := metav1.Now()
-	patches := make([]*acgatewayv1.ListenerStatusApplyConfiguration, 0, len(gw.Spec.Listeners))
+	statuses := make([]gatewayv1.ListenerStatus, 0, len(gw.Spec.Listeners))
 	for _, l := range gw.Spec.Listeners {
 		supported := l.Protocol == gatewayv1.HTTPProtocolType || l.Protocol == gatewayv1.HTTPSProtocolType
 
-		var acceptedCond, programmedCond *acmetav1.ConditionApplyConfiguration
+		var acceptedCond, programmedCond metav1.Condition
 		if supported {
-			acceptedCond = acmetav1.Condition().
-				WithType(string(gatewayv1.ListenerConditionAccepted)).
-				WithStatus(metav1.ConditionTrue).
-				WithObservedGeneration(gw.Generation).
-				WithLastTransitionTime(now).
-				WithReason(string(gatewayv1.ListenerReasonAccepted)).
-				WithMessage("Listener is accepted")
-			programmedCond = acmetav1.Condition().
-				WithType(string(gatewayv1.ListenerConditionProgrammed)).
-				WithStatus(metav1.ConditionTrue).
-				WithObservedGeneration(gw.Generation).
-				WithLastTransitionTime(now).
-				WithReason(string(gatewayv1.ListenerReasonProgrammed)).
-				WithMessage("Listener is programmed")
+			acceptedCond = metav1.Condition{
+				Type:               string(gatewayv1.ListenerConditionAccepted),
+				Status:             metav1.ConditionTrue,
+				ObservedGeneration: gw.Generation,
+				LastTransitionTime: now,
+				Reason:             string(gatewayv1.ListenerReasonAccepted),
+				Message:            "Listener is accepted",
+			}
+			programmedCond = metav1.Condition{
+				Type:               string(gatewayv1.ListenerConditionProgrammed),
+				Status:             metav1.ConditionTrue,
+				ObservedGeneration: gw.Generation,
+				LastTransitionTime: now,
+				Reason:             string(gatewayv1.ListenerReasonProgrammed),
+				Message:            "Listener is programmed",
+			}
 		} else {
-			acceptedCond = acmetav1.Condition().
-				WithType(string(gatewayv1.ListenerConditionAccepted)).
-				WithStatus(metav1.ConditionFalse).
-				WithObservedGeneration(gw.Generation).
-				WithLastTransitionTime(now).
-				WithReason(string(gatewayv1.ListenerReasonUnsupportedProtocol)).
-				WithMessage(fmt.Sprintf("Protocol %q is not supported", l.Protocol))
-			programmedCond = acmetav1.Condition().
-				WithType(string(gatewayv1.ListenerConditionProgrammed)).
-				WithStatus(metav1.ConditionFalse).
-				WithObservedGeneration(gw.Generation).
-				WithLastTransitionTime(now).
-				WithReason(string(gatewayv1.ListenerReasonInvalid)).
-				WithMessage("Listener is not programmed due to unsupported protocol")
+			acceptedCond = metav1.Condition{
+				Type:               string(gatewayv1.ListenerConditionAccepted),
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: gw.Generation,
+				LastTransitionTime: now,
+				Reason:             string(gatewayv1.ListenerReasonUnsupportedProtocol),
+				Message:            fmt.Sprintf("Protocol %q is not supported", l.Protocol),
+			}
+			programmedCond = metav1.Condition{
+				Type:               string(gatewayv1.ListenerConditionProgrammed),
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: gw.Generation,
+				LastTransitionTime: now,
+				Reason:             string(gatewayv1.ListenerReasonInvalid),
+				Message:            "Listener is not programmed due to unsupported protocol",
+			}
 		}
 
-		ls := acgatewayv1.ListenerStatus().
-			WithName(l.Name).
-			WithSupportedKinds(
-				acgatewayv1.RouteGroupKind().
-					WithGroup(gatewayv1.Group(gatewayv1.GroupVersion.Group)).
-					WithKind(apiv1.KindHTTPRoute),
-			).
-			WithAttachedRoutes(attachedRoutes[l.Name]).
-			WithConditions(
+		statuses = append(statuses, gatewayv1.ListenerStatus{
+			Name: l.Name,
+			SupportedKinds: []gatewayv1.RouteGroupKind{
+				{
+					Group: new(gatewayv1.Group(gatewayv1.GroupVersion.Group)),
+					Kind:  apiv1.KindHTTPRoute,
+				},
+			},
+			AttachedRoutes: attachedRoutes[l.Name],
+			Conditions: []metav1.Condition{
 				acceptedCond,
 				programmedCond,
-				acmetav1.Condition().
-					WithType(string(gatewayv1.ListenerConditionConflicted)).
-					WithStatus(metav1.ConditionFalse).
-					WithObservedGeneration(gw.Generation).
-					WithLastTransitionTime(now).
-					WithReason(string(gatewayv1.ListenerReasonNoConflicts)).
-					WithMessage("No conflicts"),
-				acmetav1.Condition().
-					WithType(string(gatewayv1.ListenerConditionResolvedRefs)).
-					WithStatus(metav1.ConditionTrue).
-					WithObservedGeneration(gw.Generation).
-					WithLastTransitionTime(now).
-					WithReason(string(gatewayv1.ListenerReasonResolvedRefs)).
-					WithMessage("References resolved"),
-			)
-
-		patches = append(patches, ls)
+				{
+					Type:               string(gatewayv1.ListenerConditionConflicted),
+					Status:             metav1.ConditionFalse,
+					ObservedGeneration: gw.Generation,
+					LastTransitionTime: now,
+					Reason:             string(gatewayv1.ListenerReasonNoConflicts),
+					Message:            "No conflicts",
+				},
+				{
+					Type:               string(gatewayv1.ListenerConditionResolvedRefs),
+					Status:             metav1.ConditionTrue,
+					ObservedGeneration: gw.Generation,
+					LastTransitionTime: now,
+					Reason:             string(gatewayv1.ListenerReasonResolvedRefs),
+					Message:            "References resolved",
+				},
+			},
+		})
 	}
-	return patches
+	return statuses
 }
 
 // listenersChanged reports whether the desired listener statuses differ from
 // the existing ones. It checks listener count, attached routes per listener,
 // and each listener's conditions.
-func listenersChanged(existing []gatewayv1.ListenerStatus, desired []*acgatewayv1.ListenerStatusApplyConfiguration, generation int64) bool {
+func listenersChanged(existing, desired []gatewayv1.ListenerStatus) bool {
 	if len(existing) != len(desired) {
 		return true
 	}
 	for _, d := range desired {
-		if d.Name == nil {
-			return true
-		}
 		var e *gatewayv1.ListenerStatus
 		for i := range existing {
-			if existing[i].Name == gatewayv1.SectionName(*d.Name) {
+			if existing[i].Name == d.Name {
 				e = &existing[i]
 				break
 			}
@@ -828,16 +823,44 @@ func listenersChanged(existing []gatewayv1.ListenerStatus, desired []*acgatewayv
 		if e == nil {
 			return true
 		}
-		if d.AttachedRoutes != nil && e.AttachedRoutes != *d.AttachedRoutes {
+		if e.AttachedRoutes != d.AttachedRoutes {
 			return true
 		}
-		for i := range d.Conditions {
-			if conditions.ApplyChanged(e.Conditions, &d.Conditions[i], generation) {
+		for _, dc := range d.Conditions {
+			if conditions.Changed(e.Conditions, dc.Type, dc.Status, dc.Reason, dc.Message, dc.ObservedGeneration) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// setConditions replaces the existing condition list with the desired ones, preserving
+// LastTransitionTime when the status hasn't changed.
+func setConditions(existing, desired []metav1.Condition, now metav1.Time) []metav1.Condition {
+	result := make([]metav1.Condition, 0, len(desired))
+	for _, d := range desired {
+		c := d
+		if prev := conditions.Find(existing, d.Type); prev != nil && prev.Status == d.Status {
+			c.LastTransitionTime = prev.LastTransitionTime
+		}
+		result = append(result, c)
+	}
+	return result
+}
+
+// setCondition upserts a single condition in the list, preserving
+// LastTransitionTime when the status hasn't changed and keeping other
+// conditions untouched.
+func setCondition(existing []metav1.Condition, desired metav1.Condition) []metav1.Condition {
+	if prev := conditions.Find(existing, desired.Type); prev != nil {
+		if prev.Status == desired.Status {
+			desired.LastTransitionTime = prev.LastTransitionTime
+		}
+		*prev = desired
+		return existing
+	}
+	return append(existing, desired)
 }
 
 // listGatewayRoutes filters non-deleting HTTPRoutes from the pre-fetched list that
