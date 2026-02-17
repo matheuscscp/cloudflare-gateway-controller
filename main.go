@@ -36,6 +36,8 @@ func init() {
 }
 
 func main() {
+	ctx := ctrl.SetupSignalHandler()
+
 	cloudflaredImage := pflag.String("cloudflared-image", controller.DefaultCloudflaredImage, "cloudflared container image")
 	leaderElect := pflag.Bool("leader-elect", true, "enable leader election")
 
@@ -76,7 +78,7 @@ func main() {
 		Client:            mgr.GetClient(),
 		EventRecorder:     mgr.GetEventRecorder(apiv1.ControllerName + "/gatewayclass"),
 		GatewayAPIVersion: controller.GatewayAPIVersion(),
-	}).SetupWithManager(mgr); err != nil {
+	}).SetupWithManager(ctx, mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GatewayClass")
 		os.Exit(1)
 	}
@@ -108,8 +110,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
-		setupLog.Error(err, "problem running manager")
+	if err := mgr.Start(ctx); err != nil {
+		setupLog.Error(err, "unable to start controller")
 		os.Exit(1)
 	}
 }

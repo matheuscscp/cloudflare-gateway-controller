@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -20,7 +21,32 @@ import (
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 )
 
-func (r *GatewayClassReconciler) SetupWithManager(mgr ctrl.Manager) error {
+const (
+	indexSpecControllerName = ".spec.controllerName"
+	indexSpecParametersRef  = ".spec.parametersRef"
+)
+
+func (r *GatewayClassReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
+	// Index GatewayClasses by .spec.controllerName.
+	mgr.GetCache().IndexField(ctx, &gatewayv1.GatewayClass{}, indexSpecControllerName,
+		func(obj client.Object) []string {
+			gc := obj.(*gatewayv1.GatewayClass)
+			return []string{string(gc.Spec.ControllerName)}
+		})
+
+	// Index GatewayClasses by Secret ref.
+	mgr.GetCache().IndexField(ctx, &gatewayv1.GatewayClass{}, indexSpecParametersRef,
+		func(obj client.Object) []string {
+			gc := obj.(*gatewayv1.GatewayClass)
+			if gc.Spec.ParametersRef == nil ||
+				gc.Spec.ParametersRef.Group != "" ||
+				string(gc.Spec.ParametersRef.Kind) != apiv1.KindSecret ||
+				gc.Spec.ParametersRef.Namespace == nil {
+				return nil
+			}
+			return []string{string(*gc.Spec.ParametersRef.Namespace) + "/" + string(gc.Spec.ParametersRef.Name)}
+		})
+
 	gatewayClassCRDChangedPredicate := predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
 			return e.Object.GetName() == apiv1.CRDGatewayClass
@@ -55,34 +81,24 @@ func (r *GatewayClassReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 func (r *GatewayClassReconciler) managedGatewayClasses(ctx context.Context, obj client.Object) []reconcile.Request {
+	matchingFields := client.MatchingFields{
+		indexSpecControllerName: apiv1.ControllerName,
+	}
+	if s, ok := obj.(*corev1.Secret); ok {
+		matchingFields[indexSpecParametersRef] = s.Namespace + "/" + s.Name
+	}
+
 	var classes gatewayv1.GatewayClassList
-	if err := r.List(ctx, &classes); err != nil {
+	if err := r.List(ctx, &classes, matchingFields); err != nil {
+		log.FromContext(ctx).Error(err, "failed to list managed GatewayClasses")
 		return nil
 	}
 
-	var secret *corev1.Secret
-	if s, ok := obj.(*corev1.Secret); ok {
-		secret = s
-	}
-
 	var requests []reconcile.Request
-	for i := range classes.Items {
-		gc := &classes.Items[i]
-
-		if gc.Spec.ControllerName != apiv1.ControllerName {
-			continue
-		}
-
-		if secret == nil || (gc.Spec.ParametersRef != nil &&
-			gc.Spec.ParametersRef.Group == "" &&
-			string(gc.Spec.ParametersRef.Kind) == apiv1.KindSecret &&
-			gc.Spec.ParametersRef.Namespace != nil &&
-			string(*gc.Spec.ParametersRef.Namespace) == secret.Namespace &&
-			string(gc.Spec.ParametersRef.Name) == secret.Name) {
-			requests = append(requests, reconcile.Request{
-				NamespacedName: client.ObjectKey{Name: gc.Name},
-			})
-		}
+	for _, gc := range classes.Items {
+		requests = append(requests, reconcile.Request{
+			NamespacedName: client.ObjectKey{Name: gc.Name},
+		})
 	}
 	return requests
 }

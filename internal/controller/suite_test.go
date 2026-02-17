@@ -83,7 +83,7 @@ func TestMain(m *testing.M) {
 		Client:            mgr.GetClient(),
 		EventRecorder:     &events.FakeRecorder{},
 		GatewayAPIVersion: *testGatewayAPIVersion,
-	}).SetupWithManager(mgr); err != nil {
+	}).SetupWithManager(testCtx, mgr); err != nil {
 		panic(fmt.Sprintf("failed to setup GatewayClass controller: %v", err))
 	}
 
