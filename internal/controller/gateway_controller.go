@@ -222,11 +222,17 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		if err != nil {
 			return r.reconcileError(ctx, gw, err)
 		}
-		// Remove stale status.parents entries for denied routes (ReferenceGrant
-		// deleted) and stale routes (parentRef removed).
-		for _, route := range append(deniedRoutes, staleRoutes...) {
+		// Remove stale status.parents entries for routes whose parentRef was removed.
+		for _, route := range staleRoutes {
 			if err := r.removeRouteStatus(ctx, gw, route); err != nil {
 				log.Error(err, "Failed to remove stale status for HTTPRoute", "httproute", route.Namespace+"/"+route.Name)
+			}
+		}
+		// Set ResolvedRefs=False/RefNotPermitted on denied routes (cross-namespace
+		// parentRef not permitted by any ReferenceGrant).
+		for _, route := range deniedRoutes {
+			if err := r.updateDeniedRouteStatus(ctx, gw, route); err != nil {
+				log.Error(err, "Failed to update denied status for HTTPRoute", "httproute", route.Namespace+"/"+route.Name)
 			}
 		}
 
@@ -1191,8 +1197,8 @@ func (r *GatewayReconciler) removeRouteStatuses(ctx context.Context, gw *gateway
 }
 
 // removeRouteStatus removes this Gateway's entry from status.parents on a
-// single HTTPRoute. This is used for denied routes (missing ReferenceGrant)
-// and during Gateway finalization.
+// single HTTPRoute. This is used for stale routes (parentRef removed) and
+// during Gateway finalization.
 func (r *GatewayReconciler) removeRouteStatus(ctx context.Context, gw *gatewayv1.Gateway, route *gatewayv1.HTTPRoute) error {
 	routeKey := client.ObjectKeyFromObject(route)
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -1217,6 +1223,66 @@ func (r *GatewayReconciler) removeRouteStatus(ctx context.Context, gw *gatewayv1
 			return fmt.Errorf("removing status entry from HTTPRoute %s/%s: %w", route.Namespace, route.Name, err)
 		}
 		return nil
+	})
+}
+
+// updateDeniedRouteStatus sets ResolvedRefs=False/RefNotPermitted on the
+// status.parents entry for this Gateway on a denied HTTPRoute (cross-namespace
+// parentRef not permitted by any ReferenceGrant). Any stale conditions from a
+// previous reconciliation (e.g. Accepted, DNS) are removed.
+func (r *GatewayReconciler) updateDeniedRouteStatus(ctx context.Context, gw *gatewayv1.Gateway, route *gatewayv1.HTTPRoute) error {
+	resolvedRefsType := string(gatewayv1.RouteConditionResolvedRefs)
+	resolvedRefsStatus := metav1.ConditionFalse
+	resolvedRefsReason := string(gatewayv1.RouteReasonRefNotPermitted)
+	resolvedRefsMsg := fmt.Sprintf("Cross-namespace parentRef to Gateway %s/%s not permitted by any ReferenceGrant", gw.Namespace, gw.Name)
+
+	routeKey := client.ObjectKeyFromObject(route)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := r.Get(ctx, routeKey, route); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+
+		existing := findRouteParentStatus(route.Status.Parents, gw)
+
+		// Skip if the entry already has exactly the right condition.
+		if existing != nil &&
+			len(existing.Conditions) == 1 &&
+			!conditions.Changed(existing.Conditions, resolvedRefsType, resolvedRefsStatus,
+				resolvedRefsReason, resolvedRefsMsg, route.Generation) {
+			return nil
+		}
+
+		patch := client.MergeFromWithOptions(route.DeepCopy(), client.MergeFromWithOptimisticLock{})
+		now := metav1.Now()
+
+		if existing == nil {
+			route.Status.Parents = append(route.Status.Parents, gatewayv1.RouteParentStatus{
+				ParentRef: gatewayv1.ParentReference{
+					Group:     new(gatewayv1.Group(gatewayv1.GroupName)),
+					Kind:      new(gatewayv1.Kind(apiv1.KindGateway)),
+					Namespace: new(gatewayv1.Namespace(gw.Namespace)),
+					Name:      gatewayv1.ObjectName(gw.Name),
+				},
+				ControllerName: apiv1.ControllerName,
+			})
+			existing = &route.Status.Parents[len(route.Status.Parents)-1]
+		}
+
+		// Replace all conditions with just ResolvedRefs=False/RefNotPermitted,
+		// removing any stale Accepted or DNS conditions from a previous
+		// reconciliation when the route was allowed.
+		existing.Conditions = setConditions(existing.Conditions, []metav1.Condition{
+			{
+				Type:               resolvedRefsType,
+				Status:             resolvedRefsStatus,
+				ObservedGeneration: route.Generation,
+				LastTransitionTime: now,
+				Reason:             resolvedRefsReason,
+				Message:            resolvedRefsMsg,
+			},
+		}, now)
+
+		return r.Status().Patch(ctx, route, patch)
 	})
 }
 
