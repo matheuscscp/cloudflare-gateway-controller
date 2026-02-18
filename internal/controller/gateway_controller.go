@@ -660,8 +660,7 @@ func dnsWasPreviouslyEnabled(routes []*gatewayv1.HTTPRoute, gw *gatewayv1.Gatewa
 		if existing == nil {
 			continue
 		}
-		cond := conditions.Find(existing.Conditions, apiv1.ConditionDNSRecordsApplied)
-		if cond != nil && cond.Status == metav1.ConditionTrue {
+		if conditions.Find(existing.Conditions, apiv1.ConditionDNSRecordsApplied) != nil {
 			return true
 		}
 	}
