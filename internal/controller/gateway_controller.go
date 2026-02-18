@@ -131,6 +131,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if err := r.Patch(ctx, &gw, gwPatch); err != nil {
 			return ctrl.Result{}, fmt.Errorf("adding finalizer: %w", err)
 		}
+		log.V(1).Info("Added finalizer to Gateway")
 		return ctrl.Result{RequeueAfter: 1}, nil
 	}
 
@@ -203,6 +204,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 			}
 		}
 		changes = append(changes, "created tunnel")
+		log.V(1).Info("Created tunnel", "tunnelID", tunnelID)
 	}
 
 	// Get tunnel token
@@ -272,7 +274,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		return r.reconcileError(ctx, gw, err)
 	}
 	if len(routesWithDeniedRefs) > 0 {
-		log.Info("BackendRefs denied due to missing or failed ReferenceGrant checks", "routes", len(routesWithDeniedRefs))
+		log.V(1).Info("BackendRefs denied due to missing or failed ReferenceGrant checks", "routes", len(routesWithDeniedRefs))
 	}
 	currentIngress, err := tc.GetTunnelConfiguration(ctx, tunnelID)
 	if err != nil {
@@ -283,12 +285,16 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 			return r.reconcileError(ctx, gw, fmt.Errorf("updating tunnel configuration: %w", err))
 		}
 		changes = append(changes, "updated tunnel configuration")
+		log.V(1).Info("Updated tunnel configuration")
 	}
 
 	// Reconcile DNS CNAME records.
 	zoneName := gw.Annotations[apiv1.AnnotationZoneName]
 	dnsChanges, dnsErr := r.reconcileDNS(ctx, tc, tunnelID, zoneName, gw, gatewayRoutes)
 	changes = append(changes, dnsChanges...)
+	if dnsErr != nil {
+		log.Error(fmt.Errorf("%s", *dnsErr), "DNS reconciliation failed")
+	}
 
 	// Check Deployment readiness and progress.
 	var deploy appsv1.Deployment
@@ -362,8 +368,9 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		},
 	}
 
-	// Emit event for resource changes.
+	// Emit log and event for resource changes.
 	if len(changes) > 0 {
+		log.Info("Gateway reconciled", "changes", changes)
 		r.Eventf(gw, nil, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded,
 			apiv1.EventActionReconcile, strings.Join(changes, "\n"))
 	}
@@ -390,6 +397,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	if err := r.Status().Patch(ctx, gw, patch); err != nil {
 		return ctrl.Result{}, err
 	}
+	log.V(1).Info("Patched Gateway status")
 
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
@@ -423,8 +431,10 @@ func (r *GatewayReconciler) reconcileError(ctx context.Context, gw *gatewayv1.Ga
 		gw.Status.Conditions = setCondition(gw.Status.Conditions, c)
 	}
 	if err := r.Status().Patch(ctx, gw, patch); err != nil {
-		log.FromContext(ctx).Error(err, "faield to patch status with error",
+		log.FromContext(ctx).Error(err, "Failed to patch Gateway status with error conditions",
 			"originalError", msg)
+	} else {
+		log.FromContext(ctx).V(1).Info("Patched Gateway status with error conditions")
 	}
 
 	r.Eventf(gw, nil, corev1.EventTypeWarning, apiv1.ReasonProgressingWithRetry,
@@ -435,6 +445,8 @@ func (r *GatewayReconciler) reconcileError(ctx context.Context, gw *gatewayv1.Ga
 // finalize cleans up managed resources (cloudflared Deployment and Cloudflare tunnel)
 // before allowing the Gateway to be deleted, then removes the finalizer.
 func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway, gc *gatewayv1.GatewayClass) (ctrl.Result, error) {
+	log := log.FromContext(ctx)
+
 	// When reconciliation is disabled, remove owner references from managed
 	// resources so Kubernetes GC doesn't delete them when the Gateway is removed.
 	// The user is responsible for manually cleaning up.
@@ -449,8 +461,8 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 					obj.GetName()))
 			}
 			if len(removedInfo) > 0 {
-				log.FromContext(ctx).Info(
-					"finalization: Gateway disabled, removed owner references from managed objects",
+				log.Info(
+					"Finalization: Gateway disabled, removed owner references from managed objects",
 					"objects", removedInfo)
 			}
 			for _, obj := range removed {
@@ -473,6 +485,7 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 		if err := r.Delete(ctx, deploy); client.IgnoreNotFound(err) != nil {
 			return ctrl.Result{}, fmt.Errorf("deleting cloudflared deployment: %w", err)
 		}
+		log.V(1).Info("Deleted cloudflared Deployment")
 		deployKey := client.ObjectKeyFromObject(deploy)
 		for {
 			if err := r.Get(ctx, deployKey, deploy); apierrors.IsNotFound(err) {
@@ -486,6 +499,7 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 			case <-time.After(time.Second):
 			}
 		}
+		log.V(1).Info("Cloudflared Deployment is gone")
 
 		cfg, err := readCredentials(ctx, r.Client, gc, gw)
 		if err != nil {
@@ -504,9 +518,11 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 			if err := r.cleanupAllDNS(ctx, tc, tunnelID); err != nil {
 				return ctrl.Result{}, fmt.Errorf("cleaning up DNS during finalization: %w", err)
 			}
+			log.V(1).Info("Cleaned up DNS CNAME records")
 			if err := tc.DeleteTunnel(ctx, tunnelID); err != nil {
 				return ctrl.Result{}, fmt.Errorf("deleting tunnel: %w", err)
 			}
+			log.V(1).Info("Deleted tunnel", "tunnelID", tunnelID)
 		}
 	}
 
@@ -514,11 +530,13 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 	if err := r.removeRouteStatuses(ctx, gw); err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing HTTPRoute status entries: %w", err)
 	}
+	log.V(1).Info("Removed HTTPRoute status entries")
 
 	// Remove this Gateway's finalizer from all GatewayClasses.
 	if err := r.removeGatewayClassFinalizer(ctx, gw); err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing GatewayClass finalizer: %w", err)
 	}
+	log.V(1).Info("Removed GatewayClass finalizer")
 
 	// Remove finalizer from Gateway if needed
 	if controllerutil.ContainsFinalizer(gw, apiv1.Finalizer) {
@@ -527,6 +545,7 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 		if err := r.Patch(ctx, gw, gwPatch); err != nil {
 			return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
 		}
+		log.V(1).Info("Removed finalizer from Gateway")
 	}
 
 	return ctrl.Result{}, nil
@@ -537,6 +556,7 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 // garbage collection when the Gateway is deleted with reconciliation disabled.
 // Returns the list of resources that were modified.
 func (r *GatewayReconciler) removeOwnerReferences(ctx context.Context, gw *gatewayv1.Gateway) ([]client.Object, error) {
+	log := log.FromContext(ctx)
 	var removed []client.Object
 
 	// Remove owner reference from cloudflared Deployment.
@@ -559,6 +579,7 @@ func (r *GatewayReconciler) removeOwnerReferences(ctx context.Context, gw *gatew
 	}); err != nil {
 		return removed, err
 	}
+	log.V(1).Info("Removed owner reference from Deployment", "deployment", deployKey)
 
 	// Remove owner reference from tunnel token Secret.
 	var secret corev1.Secret
@@ -580,6 +601,7 @@ func (r *GatewayReconciler) removeOwnerReferences(ctx context.Context, gw *gatew
 	}); err != nil {
 		return removed, err
 	}
+	log.V(1).Info("Removed owner reference from Secret", "secret", secretKey)
 
 	return removed, nil
 }
@@ -734,7 +756,11 @@ func (r *GatewayReconciler) ensureGatewayClassFinalizer(ctx context.Context, gc 
 		}
 		gcPatch := client.MergeFromWithOptions(gc.DeepCopy(), client.MergeFromWithOptimisticLock{})
 		controllerutil.AddFinalizer(gc, finalizer)
-		return r.Patch(ctx, gc, gcPatch)
+		if err := r.Patch(ctx, gc, gcPatch); err != nil {
+			return err
+		}
+		log.FromContext(ctx).V(1).Info("Added finalizer to GatewayClass", "gatewayclass", gc.Name)
+		return nil
 	})
 }
 
@@ -771,7 +797,11 @@ func (r *GatewayReconciler) removeGatewayClassFinalizer(ctx context.Context, gw 
 			}
 			gcPatch := client.MergeFromWithOptions(gc.DeepCopy(), client.MergeFromWithOptimisticLock{})
 			controllerutil.RemoveFinalizer(gc, finalizer)
-			return r.Patch(ctx, gc, gcPatch)
+			if err := r.Patch(ctx, gc, gcPatch); err != nil {
+				return err
+			}
+			log.FromContext(ctx).V(1).Info("Removed finalizer from GatewayClass", "gatewayclass", gc.Name)
+			return nil
 		}); err != nil {
 			return fmt.Errorf("removing finalizer from GatewayClass %s: %w", gc.Name, err)
 		}
@@ -1331,6 +1361,7 @@ func (r *GatewayReconciler) removeRouteStatus(ctx context.Context, gw *gatewayv1
 		return nil
 	})
 	if patched {
+		log.FromContext(ctx).V(1).Info("Removed status entry from HTTPRoute", "httproute", routeKey)
 		r.Eventf(route, gw, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded,
 			apiv1.EventActionReconcile, "Removed status entry for Gateway %s/%s", gw.Namespace, gw.Name)
 	}
@@ -1398,6 +1429,7 @@ func (r *GatewayReconciler) updateDeniedRouteStatus(ctx context.Context, gw *gat
 		return r.Status().Patch(ctx, route, patch)
 	})
 	if patched {
+		log.FromContext(ctx).V(1).Info("Patched denied HTTPRoute status", "httproute", routeKey)
 		r.Eventf(route, gw, corev1.EventTypeWarning, resolvedRefsReason,
 			apiv1.EventActionReconcile, resolvedRefsMsg)
 	}
@@ -1529,6 +1561,7 @@ func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1
 		return r.Status().Patch(ctx, route, patch)
 	})
 	if patched {
+		log.FromContext(ctx).V(1).Info("Patched HTTPRoute status", "httproute", routeKey)
 		eventType := corev1.EventTypeNormal
 		if routeReadyStatus != metav1.ConditionTrue {
 			eventType = corev1.EventTypeWarning

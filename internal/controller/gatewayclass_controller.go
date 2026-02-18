@@ -59,6 +59,8 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 }
 
 func (r *GatewayClassReconciler) reconcile(ctx context.Context, gc *gatewayv1.GatewayClass) (ctrl.Result, error) {
+	log := log.FromContext(ctx)
+
 	supportedVersion, supportedVersionMessage := r.checkSupportedVersion(ctx)
 	validParams, validParamsMessage := r.checkParametersRef(ctx, gc)
 
@@ -145,11 +147,13 @@ func (r *GatewayClassReconciler) reconcile(ctx context.Context, gc *gatewayv1.Ga
 	}
 
 	if readyStatus == metav1.ConditionFalse {
+		log.Error(fmt.Errorf("%s", readyMessage), "GatewayClass failed")
 		r.Eventf(gc, nil, corev1.EventTypeWarning, readyReason,
 			apiv1.EventActionReconcile, readyMessage)
 	} else {
+		log.Info("GatewayClass reconciled")
 		r.Eventf(gc, nil, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded,
-			apiv1.EventActionReconcile, "GatewayClass is ready")
+			apiv1.EventActionReconcile, "GatewayClass reconciled")
 	}
 
 	return ctrl.Result{}, nil
