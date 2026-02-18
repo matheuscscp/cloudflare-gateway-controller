@@ -364,7 +364,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 
 	// Emit event for resource changes.
 	if len(changes) > 0 {
-		r.Eventf(gw, nil, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded, "Reconcile", strings.Join(changes, ", "))
+		r.Eventf(gw, nil, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded, apiv1.EventActionReconcile, strings.Join(changes, ", "))
 	}
 
 	// Skip the status patch if no conditions or listener statuses changed.
@@ -426,7 +426,7 @@ func (r *GatewayReconciler) reconcileError(ctx context.Context, gw *gatewayv1.Ga
 			"originalError", msg)
 	}
 
-	r.Eventf(gw, nil, corev1.EventTypeWarning, apiv1.ReasonProgressingWithRetry, "Reconcile", "Reconciliation failed: %v", reconcileErr)
+	r.Eventf(gw, nil, corev1.EventTypeWarning, apiv1.ReasonProgressingWithRetry, apiv1.EventActionReconcile, "Reconciliation failed: %v", reconcileErr)
 	return ctrl.Result{}, reconcileErr
 }
 
@@ -453,7 +453,7 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 			}
 			for _, obj := range removed {
 				r.Eventf(obj, gw, corev1.EventTypeNormal, apiv1.ReasonReconciliationDisabled,
-					"Finalize", "Gateway removed owner reference due to disabled finalization")
+					apiv1.EventActionFinalize, "Gateway removed owner reference due to disabled finalization")
 			}
 		}()
 		if err != nil {
@@ -1330,7 +1330,7 @@ func (r *GatewayReconciler) removeRouteStatus(ctx context.Context, gw *gatewayv1
 	})
 	if patched {
 		r.Eventf(route, gw, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded,
-			"Reconcile", "Removed status entry for Gateway %s/%s", gw.Namespace, gw.Name)
+			apiv1.EventActionReconcile, "Removed status entry for Gateway %s/%s", gw.Namespace, gw.Name)
 	}
 	return err
 }
@@ -1397,7 +1397,7 @@ func (r *GatewayReconciler) updateDeniedRouteStatus(ctx context.Context, gw *gat
 	})
 	if patched {
 		r.Eventf(route, gw, corev1.EventTypeWarning, resolvedRefsReason,
-			"Reconcile", resolvedRefsMsg)
+			apiv1.EventActionReconcile, resolvedRefsMsg)
 	}
 	return err
 }
@@ -1532,7 +1532,7 @@ func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1
 			eventType = corev1.EventTypeWarning
 		}
 		r.Eventf(route, gw, eventType, routeReadyReason,
-			"Reconcile", "Ready=%s: %s", routeReadyStatus, routeReadyMsg)
+			apiv1.EventActionReconcile, "Ready=%s: %s", routeReadyStatus, routeReadyMsg)
 	}
 	return err
 }
