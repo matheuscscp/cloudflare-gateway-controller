@@ -508,7 +508,8 @@ func TestGatewayReconciler_InfrastructureParametersRef(t *testing.T) {
 		}
 	})
 
-	// Verify the Gateway is accepted (no ReferenceGrant needed for local ref)
+	// Verify the Gateway is accepted and programmed using the local credentials
+	// (no ReferenceGrant needed for local ref).
 	gwKey := client.ObjectKeyFromObject(gw)
 	g.Eventually(func(g Gomega) {
 		var result gatewayv1.Gateway
@@ -521,6 +522,11 @@ func TestGatewayReconciler_InfrastructureParametersRef(t *testing.T) {
 		programmed := conditions.Find(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
 		g.Expect(programmed).NotTo(BeNil())
 		g.Expect(programmed.Status).To(Equal(metav1.ConditionTrue))
+
+		// The Cloudflare client must have been constructed with the local credentials
+		// from infrastructure.parametersRef, not the GatewayClass credentials.
+		g.Expect(testMock.lastClientConfig.APIToken).To(Equal("local-api-token"))
+		g.Expect(testMock.lastClientConfig.AccountID).To(Equal("local-account-id"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 

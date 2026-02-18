@@ -119,7 +119,8 @@ func TestMain(m *testing.M) {
 		ResourceManager: ssa.NewResourceManager(client, nil, ssa.Owner{
 			Field: apiv1.ShortControllerName,
 		}),
-		NewCloudflareClient: func(_ cloudflare.ClientConfig) (cloudflare.Client, error) {
+		NewCloudflareClient: func(cfg cloudflare.ClientConfig) (cloudflare.Client, error) {
+			testMock.lastClientConfig = cfg
 			return testMock, nil
 		},
 		CloudflaredImage: controller.DefaultCloudflaredImage,
@@ -198,6 +199,9 @@ type mockCloudflareClient struct {
 	tunnelToken  string
 	deleteCalled bool
 	deletedID    string
+
+	// Credentials tracking
+	lastClientConfig cloudflare.ClientConfig
 
 	// HTTPRoute-related tracking
 	lastTunnelConfigID      string

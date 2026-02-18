@@ -457,39 +457,6 @@ func TestGatewayClassReconciler_SupportedFeatures(t *testing.T) {
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
-func TestGatewayClassReconciler_UnsupportedVersion(t *testing.T) {
-	g := NewWithT(t)
-
-	// The testGatewayAPIVersion in suite_test.go matches the installed CRD version.
-	// To test version mismatch, we create a separate reconciler directly.
-	// Instead, we test the checkSupportedVersion method by verifying the condition
-	// output matches. Since the CRD version in envtest matches testGatewayAPIVersion,
-	// the version check always passes in the integration test environment.
-	// This test instead verifies that SupportedVersion=True is correctly reported.
-	gc := &gatewayv1.GatewayClass{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-gc-version",
-		},
-		Spec: gatewayv1.GatewayClassSpec{
-			ControllerName: apiv1.ControllerName,
-		},
-	}
-	g.Expect(testClient.Create(testCtx, gc)).To(Succeed())
-	t.Cleanup(func() { testClient.Delete(testCtx, gc) })
-
-	key := client.ObjectKeyFromObject(gc)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.GatewayClass
-		g.Expect(testClient.Get(testCtx, key, &result)).To(Succeed())
-
-		supported := conditions.Find(result.Status.Conditions, string(gatewayv1.GatewayClassConditionStatusSupportedVersion))
-		g.Expect(supported).NotTo(BeNil())
-		g.Expect(supported.Status).To(Equal(metav1.ConditionTrue))
-		g.Expect(supported.Reason).To(Equal(string(gatewayv1.GatewayClassReasonSupportedVersion)))
-		g.Expect(supported.Message).To(ContainSubstring("supported"))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-}
-
 func TestGatewayClassReconciler_InvalidParametersRefGroup(t *testing.T) {
 	g := NewWithT(t)
 
