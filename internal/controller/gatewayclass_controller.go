@@ -159,9 +159,11 @@ func (r *GatewayClassReconciler) reconcile(ctx context.Context, gc *gatewayv1.Ga
 	return ctrl.Result{}, nil
 }
 
-// checkSupportedVersion verifies that the installed Gateway API CRD major.minor
-// version matches the version this binary was compiled against. Returns false
-// with a human-readable reason if the versions are incompatible.
+// checkSupportedVersion verifies that the installed Gateway API CRD version is
+// compatible with the version this binary was compiled against. The CRD must
+// have the same major version and a minor version >= the binary's, since semver
+// guarantees backwards compatibility within a major version. Returns false with
+// a human-readable reason if the versions are incompatible.
 func (r *GatewayClassReconciler) checkSupportedVersion(ctx context.Context) (bool, string) {
 	crd := &metav1.PartialObjectMetadata{}
 	crd.SetGroupVersionKind(apiextensionsv1.SchemeGroupVersion.WithKind(apiv1.KindCustomResourceDefinition))
@@ -179,9 +181,9 @@ func (r *GatewayClassReconciler) checkSupportedVersion(ctx context.Context) (boo
 		return false, fmt.Sprintf("Failed to parse CRD bundle version %q: %v", bundleVersion, err)
 	}
 
-	if crdVersion.Major() != r.GatewayAPIVersion.Major() || crdVersion.Minor() != r.GatewayAPIVersion.Minor() {
-		return false, fmt.Sprintf("Gateway API CRD version %q does not match binary version %q (major.minor mismatch)",
-			bundleVersion, r.GatewayAPIVersion.Original())
+	if crdVersion.Major() != r.GatewayAPIVersion.Major() || crdVersion.Minor() < r.GatewayAPIVersion.Minor() {
+		return false, fmt.Sprintf("Gateway API CRD version %q is not compatible with binary version %q (need same major and minor >= %d)",
+			bundleVersion, r.GatewayAPIVersion.Original(), r.GatewayAPIVersion.Minor())
 	}
 
 	return true, fmt.Sprintf("Gateway API CRD version %q is supported", bundleVersion)
