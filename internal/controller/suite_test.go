@@ -14,6 +14,7 @@ import (
 	"time"
 
 	semver "github.com/Masterminds/semver/v3"
+	"github.com/fluxcd/pkg/ssa"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -115,6 +116,9 @@ func TestMain(m *testing.M) {
 	if err := (&controller.GatewayReconciler{
 		Client:        client,
 		EventRecorder: eventRecorder,
+		ResourceManager: ssa.NewResourceManager(client, nil, ssa.Owner{
+			Field: apiv1.ShortControllerName,
+		}),
 		NewCloudflareClient: func(_ cloudflare.ClientConfig) (cloudflare.Client, error) {
 			return testMock, nil
 		},

@@ -5,6 +5,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"slices"
@@ -12,10 +13,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fluxcd/pkg/ssa"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	acappsv1 "k8s.io/client-go/applyconfigurations/apps/v1"
@@ -42,6 +45,7 @@ const DefaultCloudflaredImage = "ghcr.io/matheuscscp/cloudflare-gateway-controll
 type GatewayReconciler struct {
 	client.Client
 	events.EventRecorder
+	ResourceManager     *ssa.ResourceManager
 	NewCloudflareClient cloudflare.ClientFactory
 	CloudflaredImage    string
 }
@@ -207,15 +211,19 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 			}
 		}
 
-		// Apply cloudflared Deployment via Server-Side Apply. Only the fields we
-		// declare are managed; Kubernetes-defaulted fields (strategy, replicas when
-		// unset, container defaults, etc.) are left untouched, avoiding spurious
-		// updates that would trigger a watch loop.
-		deployApply := r.buildCloudflaredDeploymentApply(gw, replicas)
-		if err := r.Apply(ctx, deployApply, client.FieldOwner(apiv1.ShortControllerName), client.ForceOwnership); err != nil {
+		// Apply cloudflared Deployment via Server-Side Apply with dry-run diff.
+		// Only the fields we declare are managed; the SSA manager detects drift
+		// by comparing a server-side dry-run result with the existing object,
+		// skipping the actual apply when no drift is detected.
+		deployObj, err := r.buildCloudflaredDeployment(gw, replicas)
+		if err != nil {
+			return r.reconcileError(ctx, gw, fmt.Errorf("building cloudflared deployment: %w", err))
+		}
+		deployEntry, err := r.ResourceManager.Apply(ctx, deployObj, ssa.ApplyOptions{Force: true})
+		if err != nil {
 			return r.reconcileError(ctx, gw, fmt.Errorf("applying cloudflared deployment: %w", err))
 		}
-		log.V(1).Info("Reconciled cloudflared Deployment")
+		log.V(1).Info("Reconciled cloudflared Deployment", "action", deployEntry.Action)
 
 		// Filter HTTPRoutes by parentRef and ReferenceGrant, and update tunnel ingress.
 		gatewayRoutes, deniedRoutes, staleRoutes, err := listGatewayRoutes(ctx, r.Client, &allRoutes, gw)
@@ -1059,6 +1067,22 @@ func buildTunnelTokenSecret(gw *gatewayv1.Gateway, tunnelToken string) *corev1.S
 			"TUNNEL_TOKEN": []byte(tunnelToken),
 		},
 	}
+}
+
+// buildCloudflaredDeployment builds the desired cloudflared Deployment as an
+// unstructured object suitable for server-side apply via the SSA manager.
+func (r *GatewayReconciler) buildCloudflaredDeployment(gw *gatewayv1.Gateway, replicas *int32) (*unstructured.Unstructured, error) {
+	apply := r.buildCloudflaredDeploymentApply(gw, replicas)
+	data, err := json.Marshal(apply)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling deployment: %w", err)
+	}
+	obj := &unstructured.Unstructured{}
+	if err := obj.UnmarshalJSON(data); err != nil {
+		return nil, fmt.Errorf("unmarshaling deployment: %w", err)
+	}
+	obj.SetGroupVersionKind(appsv1.SchemeGroupVersion.WithKind(apiv1.KindDeployment))
+	return obj, nil
 }
 
 func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gateway, replicas *int32) *acappsv1.DeploymentApplyConfiguration {

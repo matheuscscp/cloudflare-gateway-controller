@@ -10,6 +10,7 @@ import (
 	"runtime/debug"
 
 	"github.com/Masterminds/semver/v3"
+	"github.com/fluxcd/pkg/ssa"
 	"github.com/spf13/pflag"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -81,6 +82,9 @@ func main() {
 
 	client := mgr.GetClient()
 	eventRecorder := mgr.GetEventRecorder(apiv1.ShortControllerName)
+	resourceManager := ssa.NewResourceManager(client, nil, ssa.Owner{
+		Field: apiv1.ShortControllerName,
+	})
 
 	if err := (&controller.GatewayClassReconciler{
 		Client:            client,
@@ -94,6 +98,7 @@ func main() {
 	if err := (&controller.GatewayReconciler{
 		Client:              client,
 		EventRecorder:       eventRecorder,
+		ResourceManager:     resourceManager,
 		NewCloudflareClient: cloudflare.NewClient,
 		CloudflaredImage:    *cloudflaredImage,
 	}).SetupWithManager(mgr); err != nil {
