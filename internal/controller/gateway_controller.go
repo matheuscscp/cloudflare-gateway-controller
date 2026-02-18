@@ -421,7 +421,10 @@ func (r *GatewayReconciler) reconcileError(ctx context.Context, gw *gatewayv1.Ga
 	for _, c := range desiredConds {
 		gw.Status.Conditions = setCondition(gw.Status.Conditions, c)
 	}
-	_ = r.Status().Patch(ctx, gw, patch)
+	if err := r.Status().Patch(ctx, gw, patch); err != nil {
+		log.FromContext(ctx).Error(err, "faield to patch status with error",
+			"originalError", msg)
+	}
 
 	r.Eventf(gw, nil, corev1.EventTypeWarning, apiv1.ReasonProgressingWithRetry, "Reconcile", "Reconciliation failed: %v", reconcileErr)
 	return ctrl.Result{}, reconcileErr
