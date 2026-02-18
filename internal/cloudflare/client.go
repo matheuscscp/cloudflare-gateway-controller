@@ -37,6 +37,7 @@ type Client interface {
 	GetTunnelIDByName(ctx context.Context, name string) (tunnelID string, err error)
 	DeleteTunnel(ctx context.Context, tunnelID string) error
 	GetTunnelToken(ctx context.Context, tunnelID string) (token string, err error)
+	GetTunnelConfiguration(ctx context.Context, tunnelID string) ([]IngressRule, error)
 	UpdateTunnelConfiguration(ctx context.Context, tunnelID string, ingress []IngressRule) error
 	ListZoneIDs(ctx context.Context) ([]string, error)
 	FindZoneIDByHostname(ctx context.Context, hostname string) (string, error)
@@ -125,6 +126,24 @@ func (c *client) GetTunnelToken(ctx context.Context, tunnelID string) (string, e
 		return "", err
 	}
 	return *token, nil
+}
+
+func (c *client) GetTunnelConfiguration(ctx context.Context, tunnelID string) ([]IngressRule, error) {
+	resp, err := c.client.ZeroTrust.Tunnels.Cloudflared.Configurations.Get(ctx, tunnelID, zero_trust.TunnelCloudflaredConfigurationGetParams{
+		AccountID: cloudflare.String(c.accountID),
+	})
+	if err != nil {
+		return nil, err
+	}
+	rules := make([]IngressRule, 0, len(resp.Config.Ingress))
+	for _, r := range resp.Config.Ingress {
+		rules = append(rules, IngressRule{
+			Hostname: r.Hostname,
+			Service:  r.Service,
+			Path:     r.Path,
+		})
+	}
+	return rules, nil
 }
 
 func (c *client) UpdateTunnelConfiguration(ctx context.Context, tunnelID string, ingress []IngressRule) error {

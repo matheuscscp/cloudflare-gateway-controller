@@ -229,6 +229,10 @@ func (m *mockCloudflareClient) GetTunnelToken(_ context.Context, _ string) (stri
 	return m.tunnelToken, nil
 }
 
+func (m *mockCloudflareClient) GetTunnelConfiguration(_ context.Context, _ string) ([]cloudflare.IngressRule, error) {
+	return m.lastTunnelConfigIngress, nil
+}
+
 func (m *mockCloudflareClient) UpdateTunnelConfiguration(_ context.Context, tunnelID string, ingress []cloudflare.IngressRule) error {
 	m.lastTunnelConfigID = tunnelID
 	m.lastTunnelConfigIngress = ingress

@@ -243,8 +243,14 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		if len(routesWithDeniedRefs) > 0 {
 			log.Info("BackendRefs denied due to missing or failed ReferenceGrant checks", "routes", len(routesWithDeniedRefs))
 		}
-		if err := tc.UpdateTunnelConfiguration(ctx, tunnelID, ingress); err != nil {
-			return r.reconcileError(ctx, gw, fmt.Errorf("updating tunnel configuration: %w", err))
+		currentIngress, err := tc.GetTunnelConfiguration(ctx, tunnelID)
+		if err != nil {
+			return r.reconcileError(ctx, gw, fmt.Errorf("getting tunnel configuration: %w", err))
+		}
+		if !ingressRulesEqual(currentIngress, ingress) {
+			if err := tc.UpdateTunnelConfiguration(ctx, tunnelID, ingress); err != nil {
+				return r.reconcileError(ctx, gw, fmt.Errorf("updating tunnel configuration: %w", err))
+			}
 		}
 
 		// Reconcile DNS CNAME records.
@@ -1424,6 +1430,25 @@ func routeDNSMessage(route *gatewayv1.HTTPRoute, zoneName string) string {
 		}
 	}
 	return msg.String()
+}
+
+// ingressRulesEqual reports whether two slices of ingress rules contain the
+// same rules regardless of order. It sorts copies of both slices before comparing.
+func ingressRulesEqual(a, b []cloudflare.IngressRule) bool {
+	cmp := func(x, y cloudflare.IngressRule) int {
+		if c := strings.Compare(x.Hostname, y.Hostname); c != 0 {
+			return c
+		}
+		if c := strings.Compare(x.Service, y.Service); c != 0 {
+			return c
+		}
+		return strings.Compare(x.Path, y.Path)
+	}
+	sortedA := slices.Clone(a)
+	sortedB := slices.Clone(b)
+	slices.SortFunc(sortedA, cmp)
+	slices.SortFunc(sortedB, cmp)
+	return slices.Equal(sortedA, sortedB)
 }
 
 // hostnameInZone reports whether a hostname is a direct (single-level)

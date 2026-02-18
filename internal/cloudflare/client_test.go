@@ -273,6 +273,86 @@ func TestGetTunnelToken(t *testing.T) {
 	})
 }
 
+func TestGetTunnelConfiguration(t *testing.T) {
+	t.Run("success with path", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /accounts/{accountID}/cfd_tunnel/{tunnelID}/configurations", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, envelope(map[string]any{
+				"tunnel_id": r.PathValue("tunnelID"),
+				"config": map[string]any{
+					"ingress": []map[string]any{
+						{"hostname": "app.example.com", "service": "http://localhost:8080", "path": "/api"},
+						{"service": "http_status:404"},
+					},
+				},
+			}))
+		})
+		c := newTestClient(t, mux)
+
+		rules, err := c.GetTunnelConfiguration(context.Background(), "tunnel-123")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(rules).To(Equal([]cloudflare.IngressRule{
+			{Hostname: "app.example.com", Service: "http://localhost:8080", Path: "/api"},
+			{Service: "http_status:404"},
+		}))
+	})
+
+	t.Run("success without path", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /accounts/{accountID}/cfd_tunnel/{tunnelID}/configurations", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, envelope(map[string]any{
+				"tunnel_id": r.PathValue("tunnelID"),
+				"config": map[string]any{
+					"ingress": []map[string]any{
+						{"hostname": "app.example.com", "service": "http://localhost:8080"},
+						{"service": "http_status:404"},
+					},
+				},
+			}))
+		})
+		c := newTestClient(t, mux)
+
+		rules, err := c.GetTunnelConfiguration(context.Background(), "tunnel-123")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(rules).To(Equal([]cloudflare.IngressRule{
+			{Hostname: "app.example.com", Service: "http://localhost:8080"},
+			{Service: "http_status:404"},
+		}))
+	})
+
+	t.Run("empty ingress", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /accounts/{accountID}/cfd_tunnel/{tunnelID}/configurations", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, envelope(map[string]any{
+				"tunnel_id": r.PathValue("tunnelID"),
+				"config": map[string]any{
+					"ingress": []map[string]any{},
+				},
+			}))
+		})
+		c := newTestClient(t, mux)
+
+		rules, err := c.GetTunnelConfiguration(context.Background(), "tunnel-123")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(rules).To(BeEmpty())
+	})
+
+	t.Run("API error", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /accounts/{accountID}/cfd_tunnel/{tunnelID}/configurations", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
+		})
+		c := newTestClient(t, mux)
+
+		_, err := c.GetTunnelConfiguration(context.Background(), "tunnel-123")
+		g.Expect(err).To(HaveOccurred())
+	})
+}
+
 func TestUpdateTunnelConfiguration(t *testing.T) {
 	t.Run("with path", func(t *testing.T) {
 		g := NewWithT(t)
