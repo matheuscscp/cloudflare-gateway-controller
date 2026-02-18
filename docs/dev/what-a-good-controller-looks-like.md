@@ -17,17 +17,24 @@ When optimistic locking is used, `RetryOnConflict` is always used together.
 When `RetryOnConflict` is used, `NotFound` errors when `.Get()`ing the object being
 patched must be ignored if the goal of the patch is to remove something (e.g. a finalizer
 or a status entry), or to add an entry that becomes irrelevant when the object does not
-exist (e.g. `RefNotPermitted` in the status of a deleted HTTPRoute).
+exist (e.g. `RefNotPermitted` in the status of a deleted HTTPRoute). However, `NotFound`
+must NOT be ignored if the deletion of the object requires the controller to take further
+action — in that case the error should propagate so a new reconciliation is triggered. For
+example, when updating an HTTPRoute's status entry for an allowed route, a `NotFound` error
+means the route was deleted and the controller needs a fresh `Reconcile()` to clean up
+resources associated with that route.
 
 ## Conditions and kstatus
 
 Every object should have a `Ready` condition following the kstatus standard:
 
 - `Ready=True` indicates the object is fully ready.
-- `Ready=False` indicates a terminal failure. A terminal state occurs only when the object
-  configuration is invalid, e.g. strings that do not match an expected format, field
-  combinations that are not allowed, etc. Infrastructure failures (API errors, network
-  issues, etc.) are always transient.
+- `Ready=False` indicates a terminal failure. A terminal state occurs when the object
+  configuration is invalid (e.g. strings that do not match an expected format, field
+  combinations that are not allowed), or when a managed object reaches a terminal state
+  that the controller cannot recover from (e.g. a Deployment exceeding its progress
+  deadline — the controller has done all it can, and human/AI intervention is needed).
+  Infrastructure failures (API errors, network issues, etc.) are always transient.
 - If we return a transient error to controller-runtime, we set `Ready=Unknown` with
   `Reason=ProgressingWithRetry` and `Message=<error>`.
 - If we are waiting on managed objects to become ready, we set `Ready=Unknown` with
