@@ -41,6 +41,46 @@ import (
 // This value is updated automatically by the upgrade-cloudflared workflow.
 const DefaultCloudflaredImage = "ghcr.io/matheuscscp/cloudflare-gateway-controller/cloudflared:2026.2.0@sha256:404528c1cd63c3eb882c257ae524919e4376115e6fe57befca8d603656a91a4c"
 
+// ssaApplyOptions configures Server-Side Apply to recreate objects with
+// immutable field changes and to clean up field managers left behind by
+// kubectl so the controller can reclaim full ownership of managed fields.
+var ssaApplyOptions = ssa.ApplyOptions{
+	Force: true,
+	Cleanup: ssa.ApplyCleanupOptions{
+		Annotations: []string{
+			corev1.LastAppliedConfigAnnotation,
+		},
+		FieldManagers: []ssa.FieldManager{
+			{
+				// Undo changes made with 'kubectl apply --server-side --force-conflicts'.
+				Name:          "kubectl",
+				OperationType: metav1.ManagedFieldsOperationApply,
+			},
+			{
+				// Undo changes made with 'kubectl create', 'kubectl scale', etc.
+				Name:          "kubectl",
+				OperationType: metav1.ManagedFieldsOperationUpdate,
+			},
+			{
+				// Undo changes made with 'kubectl edit' or 'kubectl patch'.
+				Name:          "kubectl-edit",
+				OperationType: metav1.ManagedFieldsOperationUpdate,
+			},
+			{
+				// Undo changes made with 'kubectl apply' (client-side apply).
+				Name:          "kubectl-client-side-apply",
+				OperationType: metav1.ManagedFieldsOperationUpdate,
+			},
+			{
+				// Reclaim fields from objects created before the first SSA apply,
+				// e.g. if someone pre-creates a Deployment matching our naming convention.
+				Name:          "before-first-apply",
+				OperationType: metav1.ManagedFieldsOperationUpdate,
+			},
+		},
+	},
+}
+
 // GatewayReconciler reconciles Gateway objects.
 type GatewayReconciler struct {
 	client.Client
@@ -219,7 +259,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		if err != nil {
 			return r.reconcileError(ctx, gw, fmt.Errorf("building cloudflared deployment: %w", err))
 		}
-		deployEntry, err := r.ResourceManager.Apply(ctx, deployObj, ssa.ApplyOptions{Force: true})
+		deployEntry, err := r.ResourceManager.Apply(ctx, deployObj, ssaApplyOptions)
 		if err != nil {
 			return r.reconcileError(ctx, gw, fmt.Errorf("applying cloudflared deployment: %w", err))
 		}
