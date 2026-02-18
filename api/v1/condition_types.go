@@ -19,6 +19,6 @@ const (
 	ReasonReconciliationSucceeded = "ReconciliationSucceeded"
 	ReasonReconciliationDisabled  = "ReconciliationDisabled"
 	ReasonReconciliationFailed    = "ReconciliationFailed"
-	ReasonProgressing             = "Progressing"
 	ReasonProgressingWithRetry    = "ProgressingWithRetry"
+	ReasonProgressing             = "Progressing"
 )
