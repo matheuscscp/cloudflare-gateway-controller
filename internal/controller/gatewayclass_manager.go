@@ -19,6 +19,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
+	"github.com/matheuscscp/cloudflare-gateway-controller/internal/predicates"
 )
 
 func (r *GatewayClassReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -41,16 +42,16 @@ func (r *GatewayClassReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&gatewayv1.GatewayClass{},
-			builder.WithPredicates(debugPredicate(apiv1.KindGatewayClass, predicate.Or(
+			builder.WithPredicates(predicates.Debug(apiv1.KindGatewayClass, predicate.Or(
 				predicate.GenerationChangedPredicate{},
 				predicate.AnnotationChangedPredicate{})))).
 		WatchesMetadata(&apiextensionsv1.CustomResourceDefinition{},
 			handler.EnqueueRequestsFromMapFunc(r.managedGatewayClasses(false)),
-			builder.WithPredicates(debugPredicate(apiv1.KindCustomResourceDefinition,
+			builder.WithPredicates(predicates.Debug(apiv1.KindCustomResourceDefinition,
 				gatewayClassCRDChangedPredicate))).
 		WatchesMetadata(&corev1.Secret{},
 			handler.EnqueueRequestsFromMapFunc(r.managedGatewayClasses(true)),
-			builder.WithPredicates(debugPredicate(apiv1.KindSecret,
+			builder.WithPredicates(predicates.Debug(apiv1.KindSecret,
 				predicate.ResourceVersionChangedPredicate{}))).
 		Complete(r)
 }

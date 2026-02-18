@@ -115,7 +115,7 @@ func (r *GatewayClassReconciler) reconcile(ctx context.Context, gc *gatewayv1.Ga
 
 	now := metav1.Now()
 	patch := client.MergeFrom(gc.DeepCopy())
-	gc.Status.Conditions = setConditions(gc.Status.Conditions, []metav1.Condition{
+	gc.Status.Conditions = conditions.Set(gc.Status.Conditions, []metav1.Condition{
 		{
 			Type:               acceptedType,
 			Status:             acceptedStatus,

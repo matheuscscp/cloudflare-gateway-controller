@@ -1,7 +1,7 @@
 // Copyright 2026 Matheus Pimenta.
 // SPDX-License-Identifier: AGPL-3.0
 
-package controller
+package predicates
 
 import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -9,9 +9,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
 
-// debugPredicate wraps a predicate and logs when it matches, to help identify
+// Debug wraps a predicate and logs when it matches, to help identify
 // which watch event triggers a reconciliation.
-func debugPredicate(source string, inner predicate.Predicate) predicate.Predicate {
+func Debug(source string, inner predicate.Predicate) predicate.Predicate {
 	return predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
 			if inner.Create(e) {

@@ -19,24 +19,25 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
+	"github.com/matheuscscp/cloudflare-gateway-controller/internal/predicates"
 )
 
 func (r *GatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&gatewayv1.Gateway{},
-			builder.WithPredicates(debugPredicate(apiv1.KindGateway, predicate.Or(
+			builder.WithPredicates(predicates.Debug(apiv1.KindGateway, predicate.Or(
 				predicate.GenerationChangedPredicate{},
 				predicate.AnnotationChangedPredicate{})))).
 		Owns(&appsv1.Deployment{},
-			builder.WithPredicates(debugPredicate(apiv1.KindDeployment,
+			builder.WithPredicates(predicates.Debug(apiv1.KindDeployment,
 				predicate.ResourceVersionChangedPredicate{}))).
 		Watches(&gatewayv1.HTTPRoute{},
 			handler.EnqueueRequestsFromMapFunc(mapHTTPRouteToGateway),
-			builder.WithPredicates(debugPredicate(apiv1.KindHTTPRoute,
+			builder.WithPredicates(predicates.Debug(apiv1.KindHTTPRoute,
 				predicate.ResourceVersionChangedPredicate{}))).
 		WatchesMetadata(&corev1.Secret{},
 			handler.EnqueueRequestsFromMapFunc(r.mapSecretToGateway),
-			builder.WithPredicates(debugPredicate(apiv1.KindSecret,
+			builder.WithPredicates(predicates.Debug(apiv1.KindSecret,
 				predicate.ResourceVersionChangedPredicate{}))).
 		Complete(r)
 }

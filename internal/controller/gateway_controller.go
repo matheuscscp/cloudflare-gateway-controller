@@ -370,7 +370,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	}
 
 	// Check if Ready is transitioning to a terminal failure state (must be
-	// computed before setConditions mutates gw.Status.Conditions).
+	// computed before conditions.Set mutates gw.Status.Conditions).
 	readyTerminal := readyStatus == metav1.ConditionFalse &&
 		conditions.Changed(gw.Status.Conditions, apiv1.ConditionReady, readyStatus, readyReason, readyMsg, gw.Generation)
 
@@ -396,7 +396,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 
 	if changed {
 		patch := client.MergeFrom(gw.DeepCopy())
-		gw.Status.Conditions = setConditions(gw.Status.Conditions, desiredConds)
+		gw.Status.Conditions = conditions.Set(gw.Status.Conditions, desiredConds)
 		gw.Status.Listeners = desiredListeners
 		if err := r.Status().Patch(ctx, gw, patch); err != nil {
 			return ctrl.Result{}, err
@@ -457,7 +457,7 @@ func (r *GatewayReconciler) reconcileError(ctx context.Context, gw *gatewayv1.Ga
 
 	patch := client.MergeFrom(gw.DeepCopy())
 	for _, c := range desiredConds {
-		gw.Status.Conditions = setCondition(gw.Status.Conditions, c)
+		gw.Status.Conditions = conditions.Upsert(gw.Status.Conditions, c)
 	}
 	if err := r.Status().Patch(ctx, gw, patch); err != nil {
 		log.FromContext(ctx).Error(err, "Failed to patch Gateway status with error conditions",
@@ -479,7 +479,7 @@ func (r *GatewayReconciler) finalizeError(ctx context.Context, gw *gatewayv1.Gat
 	now := metav1.Now()
 
 	patch := client.MergeFrom(gw.DeepCopy())
-	gw.Status.Conditions = setCondition(gw.Status.Conditions, metav1.Condition{
+	gw.Status.Conditions = conditions.Upsert(gw.Status.Conditions, metav1.Condition{
 		Type:               apiv1.ConditionReady,
 		Status:             metav1.ConditionUnknown,
 		ObservedGeneration: gw.Generation,
@@ -1033,34 +1033,6 @@ func listenersChanged(existing, desired []gatewayv1.ListenerStatus) bool {
 	return false
 }
 
-// setConditions replaces the existing condition list with the desired ones, preserving
-// LastTransitionTime when the status hasn't changed.
-func setConditions(existing, desired []metav1.Condition) []metav1.Condition {
-	result := make([]metav1.Condition, 0, len(desired))
-	for _, d := range desired {
-		c := d
-		if prev := conditions.Find(existing, d.Type); prev != nil && prev.Status == d.Status {
-			c.LastTransitionTime = prev.LastTransitionTime
-		}
-		result = append(result, c)
-	}
-	return result
-}
-
-// setCondition upserts a single condition in the list, preserving
-// LastTransitionTime when the status hasn't changed and keeping other
-// conditions untouched.
-func setCondition(existing []metav1.Condition, desired metav1.Condition) []metav1.Condition {
-	if prev := conditions.Find(existing, desired.Type); prev != nil {
-		if prev.Status == desired.Status {
-			desired.LastTransitionTime = prev.LastTransitionTime
-		}
-		*prev = desired
-		return existing
-	}
-	return append(existing, desired)
-}
-
 // listGatewayRoutes filters non-deleting HTTPRoutes from the pre-fetched list that
 // reference the given Gateway via spec.parentRefs. Cross-namespace routes are only
 // included if a ReferenceGrant in the Gateway's namespace permits the reference.
@@ -1475,7 +1447,7 @@ func (r *GatewayReconciler) updateDeniedRouteStatus(ctx context.Context, gw *gat
 		// Replace all conditions with just ResolvedRefs=False/RefNotPermitted,
 		// removing any stale Accepted or DNS conditions from a previous
 		// reconciliation when the route was allowed.
-		existing.Conditions = setConditions(existing.Conditions, []metav1.Condition{
+		existing.Conditions = conditions.Set(existing.Conditions, []metav1.Condition{
 			{
 				Type:               resolvedRefsType,
 				Status:             resolvedRefsStatus,
@@ -1604,20 +1576,32 @@ func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1
 			existing = &route.Status.Parents[len(route.Status.Parents)-1]
 		}
 
-		setRouteCondition(existing, acceptedType, metav1.ConditionTrue,
-			string(gatewayv1.RouteReasonAccepted), "HTTPRoute is accepted", route.Generation, now)
-		setRouteCondition(existing, resolvedRefsType, resolvedRefsStatus,
-			resolvedRefsReason, resolvedRefsMsg, route.Generation, now)
+		existing.Conditions = conditions.Upsert(existing.Conditions, metav1.Condition{
+			Type: acceptedType, Status: metav1.ConditionTrue,
+			ObservedGeneration: route.Generation, LastTransitionTime: now,
+			Reason: string(gatewayv1.RouteReasonAccepted), Message: "HTTPRoute is accepted",
+		})
+		existing.Conditions = conditions.Upsert(existing.Conditions, metav1.Condition{
+			Type: resolvedRefsType, Status: resolvedRefsStatus,
+			ObservedGeneration: route.Generation, LastTransitionTime: now,
+			Reason: resolvedRefsReason, Message: resolvedRefsMsg,
+		})
 
 		if dnsEnabled {
-			setRouteCondition(existing, apiv1.ConditionDNSRecordsApplied, dnsStatus,
-				dnsReason, dnsMessage, route.Generation, now)
+			existing.Conditions = conditions.Upsert(existing.Conditions, metav1.Condition{
+				Type: apiv1.ConditionDNSRecordsApplied, Status: dnsStatus,
+				ObservedGeneration: route.Generation, LastTransitionTime: now,
+				Reason: dnsReason, Message: dnsMessage,
+			})
 		} else {
-			removeRouteCondition(existing, apiv1.ConditionDNSRecordsApplied)
+			existing.Conditions = conditions.Remove(existing.Conditions, apiv1.ConditionDNSRecordsApplied)
 		}
 
-		setRouteCondition(existing, apiv1.ConditionReady, routeReadyStatus,
-			routeReadyReason, routeReadyMsg, route.Generation, now)
+		existing.Conditions = conditions.Upsert(existing.Conditions, metav1.Condition{
+			Type: apiv1.ConditionReady, Status: routeReadyStatus,
+			ObservedGeneration: route.Generation, LastTransitionTime: now,
+			Reason: routeReadyReason, Message: routeReadyMsg,
+		})
 
 		patched = true
 		return r.Status().Patch(ctx, route, patch)
@@ -1691,38 +1675,4 @@ func ingressRulesEqual(a, b []cloudflare.IngressRule) bool {
 func hostnameInZone(hostname, zoneName string) bool {
 	prefix, ok := strings.CutSuffix(hostname, "."+zoneName)
 	return ok && !strings.Contains(prefix, ".")
-}
-
-// removeRouteCondition removes a condition by type from the RouteParentStatus.
-func removeRouteCondition(parent *gatewayv1.RouteParentStatus, condType string) {
-	for i, c := range parent.Conditions {
-		if c.Type == condType {
-			parent.Conditions = append(parent.Conditions[:i], parent.Conditions[i+1:]...)
-			return
-		}
-	}
-}
-
-// setRouteCondition sets or updates a condition in the RouteParentStatus.
-func setRouteCondition(parent *gatewayv1.RouteParentStatus, condType string, status metav1.ConditionStatus, reason, message string, generation int64, now metav1.Time) {
-	for i, c := range parent.Conditions {
-		if c.Type == condType {
-			if c.Status != status {
-				parent.Conditions[i].LastTransitionTime = now
-			}
-			parent.Conditions[i].Status = status
-			parent.Conditions[i].Reason = reason
-			parent.Conditions[i].Message = message
-			parent.Conditions[i].ObservedGeneration = generation
-			return
-		}
-	}
-	parent.Conditions = append(parent.Conditions, metav1.Condition{
-		Type:               condType,
-		Status:             status,
-		ObservedGeneration: generation,
-		LastTransitionTime: now,
-		Reason:             reason,
-		Message:            message,
-	})
 }
