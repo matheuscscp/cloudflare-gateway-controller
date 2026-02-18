@@ -997,24 +997,23 @@ func TestGatewayReconciler_HTTPRouteDeletion(t *testing.T) {
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
-func TestGatewayReconciler_HTTPRouteGatewayNotReady(t *testing.T) {
+func TestGatewayReconciler_GatewayClassNotReadyThenRecovers(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
 	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
 
-	// Create a GatewayClass with a missing secret so the Gateway never becomes programmed
-	// (and thus has no tunnel ID).
+	// Create a GatewayClass pointing to a nonexistent secret so it becomes not ready.
 	gc := &gatewayv1.GatewayClass{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-gw-class-httproute-notready",
+			Name: "test-gw-class-notready-recovers",
 		},
 		Spec: gatewayv1.GatewayClassSpec{
 			ControllerName: apiv1.ControllerName,
 			ParametersRef: &gatewayv1.ParametersReference{
 				Group:     "",
 				Kind:      "Secret",
-				Name:      "nonexistent-secret",
+				Name:      "cloudflare-creds",
 				Namespace: func() *gatewayv1.Namespace { ns := gatewayv1.Namespace(ns.Name); return &ns }(),
 			},
 		},
@@ -1027,7 +1026,18 @@ func TestGatewayReconciler_HTTPRouteGatewayNotReady(t *testing.T) {
 		}
 	})
 
-	gw := createTestGateway(g, "test-gw-httproute-notready", ns.Name, gc.Name)
+	// Wait for GatewayClass to become not ready (secret doesn't exist yet).
+	gcKey := client.ObjectKeyFromObject(gc)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.GatewayClass
+		g.Expect(testClient.Get(testCtx, gcKey, &result)).To(Succeed())
+		ready := conditions.Find(result.Status.Conditions, apiv1.ConditionReady)
+		g.Expect(ready).NotTo(BeNil())
+		g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Create Gateway and HTTPRoute while GatewayClass is not ready.
+	gw := createTestGateway(g, "test-gw-notready-recovers", ns.Name, gc.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
@@ -1035,19 +1045,9 @@ func TestGatewayReconciler_HTTPRouteGatewayNotReady(t *testing.T) {
 		}
 	})
 
-	// Wait for Gateway to be not accepted (due to missing secret)
-	gwKey := client.ObjectKeyFromObject(gw)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.Gateway
-		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
-		accepted := conditions.Find(result.Status.Conditions, string(gatewayv1.GatewayConditionAccepted))
-		g.Expect(accepted).NotTo(BeNil())
-		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-
 	route := &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-httproute-notready",
+			Name:      "test-httproute-notready-recovers",
 			Namespace: ns.Name,
 		},
 		Spec: gatewayv1.HTTPRouteSpec{
@@ -1083,14 +1083,39 @@ func TestGatewayReconciler_HTTPRouteGatewayNotReady(t *testing.T) {
 		}
 	})
 
-	// HTTPRoute should NOT get a parent status because the Gateway controller
-	// fails at credential check and never reaches the route status update.
+	// Gateway should not be reconciled while GatewayClass is not ready.
+	// Conditions stay at webhook defaults (Unknown/Pending).
+	gwKey := client.ObjectKeyFromObject(gw)
 	routeKey := client.ObjectKeyFromObject(route)
 	g.Consistently(func(g Gomega) {
-		var result gatewayv1.HTTPRoute
-		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
-		g.Expect(result.Status.Parents).To(BeEmpty())
+		var gwResult gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &gwResult)).To(Succeed())
+		for _, c := range gwResult.Status.Conditions {
+			g.Expect(c.Status).To(Equal(metav1.ConditionUnknown))
+			g.Expect(c.Reason).To(Equal("Pending"))
+		}
+
+		var routeResult gatewayv1.HTTPRoute
+		g.Expect(testClient.Get(testCtx, routeKey, &routeResult)).To(Succeed())
+		g.Expect(routeResult.Status.Parents).To(BeEmpty())
 	}).WithTimeout(3 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Now create the secret so the GatewayClass becomes ready.
+	createTestSecret(g, ns.Name)
+
+	// The GatewayClass watch should trigger Gateway reconciliation.
+	// Gateway should become Programmed and HTTPRoute should get parent status.
+	waitForGatewayClassReady(g, gc)
+	waitForGatewayProgrammed(g, gw)
+
+	g.Eventually(func(g Gomega) {
+		var routeResult gatewayv1.HTTPRoute
+		g.Expect(testClient.Get(testCtx, routeKey, &routeResult)).To(Succeed())
+		g.Expect(routeResult.Status.Parents).To(HaveLen(1))
+		accepted := conditions.Find(routeResult.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
 func TestGatewayReconciler_DeploymentPatches(t *testing.T) {

@@ -16,6 +16,7 @@ import (
 
 // Index field constants. Named as index<Kind><Field>.
 const (
+	indexGatewayGatewayClassName      = ".gateway.gatewayClassName"
 	indexGatewayTunnelTokenSecret     = ".gateway.tunnelTokenSecret"
 	indexGatewayClassControllerName   = ".gatewayClass.controllerName"
 	indexGatewayClassParametersRef    = ".gatewayClass.parametersRef"
@@ -26,6 +27,14 @@ const (
 
 // SetupIndexes registers all shared cache indexes.
 func SetupIndexes(ctx context.Context, mgr ctrl.Manager) {
+	// Index Gateways by spec.gatewayClassName so we can map GatewayClass
+	// events to affected Gateways for reconciliation.
+	mgr.GetCache().IndexField(ctx, &gatewayv1.Gateway{}, indexGatewayGatewayClassName,
+		func(obj client.Object) []string {
+			gw := obj.(*gatewayv1.Gateway)
+			return []string{string(gw.Spec.GatewayClassName)}
+		})
+
 	// Index Gateways by their managed tunnel token Secret (ns/name) so we
 	// can map Secret events to the owning Gateway for reconciliation.
 	mgr.GetCache().IndexField(ctx, &gatewayv1.Gateway{}, indexGatewayTunnelTokenSecret,

@@ -135,6 +135,13 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{RequeueAfter: 1}, nil
 	}
 
+	// Skip reconciliation if the GatewayClass is not ready (e.g. incompatible
+	// CRD version). The GatewayClass watch will re-trigger when it becomes ready.
+	if ready := conditions.Find(gc.Status.Conditions, apiv1.ConditionReady); ready == nil || ready.Status != metav1.ConditionTrue {
+		log.V(1).Info("GatewayClass is not ready, skipping reconciliation")
+		return ctrl.Result{}, nil
+	}
+
 	// Skip reconciliation if the object is suspended.
 	if gw.Annotations[apiv1.AnnotationReconcile] == apiv1.ValueDisabled {
 		log.V(1).Info("Reconciliation is disabled")

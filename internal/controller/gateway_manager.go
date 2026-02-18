@@ -40,6 +40,10 @@ func (r *GatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				predicate.ResourceVersionChangedPredicate{}))).
 
 		// Other relationships.
+		Watches(&gatewayv1.GatewayClass{},
+			handler.EnqueueRequestsFromMapFunc(r.mapGatewayClassToGateway),
+			builder.WithPredicates(predicates.Debug(apiv1.KindGatewayClass,
+				predicate.ResourceVersionChangedPredicate{}))).
 		Watches(&gatewayv1.HTTPRoute{},
 			handler.EnqueueRequestsFromMapFunc(mapHTTPRouteToGateway),
 			builder.WithPredicates(predicates.Debug(apiv1.KindHTTPRoute,
@@ -95,6 +99,25 @@ func mapHTTPRouteToGateway(_ context.Context, obj client.Object) []reconcile.Req
 			seen[key] = struct{}{}
 			requests = append(requests, reconcile.Request{NamespacedName: key})
 		}
+	}
+	return requests
+}
+
+// mapGatewayClassToGateway maps a GatewayClass event to reconcile requests for
+// all Gateways that reference it via spec.gatewayClassName.
+func (r *GatewayReconciler) mapGatewayClassToGateway(ctx context.Context, obj client.Object) []reconcile.Request {
+	var gateways gatewayv1.GatewayList
+	if err := r.List(ctx, &gateways, client.MatchingFields{
+		indexGatewayGatewayClassName: obj.GetName(),
+	}); err != nil {
+		log.FromContext(ctx).Error(err, "failed to list Gateways for GatewayClass")
+		return nil
+	}
+	var requests []reconcile.Request
+	for _, gw := range gateways.Items {
+		requests = append(requests, reconcile.Request{
+			NamespacedName: client.ObjectKeyFromObject(&gw),
+		})
 	}
 	return requests
 }
