@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/predicates"
@@ -28,17 +29,25 @@ func (r *GatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			builder.WithPredicates(predicates.Debug(apiv1.KindGateway, predicate.Or(
 				predicate.GenerationChangedPredicate{},
 				predicate.AnnotationChangedPredicate{})))).
+
+		// Owned resources: Cloudflared Deployment and tunnel token Secret.
 		Owns(&appsv1.Deployment{},
 			builder.WithPredicates(predicates.Debug(apiv1.KindDeployment,
-				predicate.ResourceVersionChangedPredicate{}))).
-		Watches(&gatewayv1.HTTPRoute{},
-			handler.EnqueueRequestsFromMapFunc(mapHTTPRouteToGateway),
-			builder.WithPredicates(predicates.Debug(apiv1.KindHTTPRoute,
 				predicate.ResourceVersionChangedPredicate{}))).
 		WatchesMetadata(&corev1.Secret{},
 			handler.EnqueueRequestsFromMapFunc(r.mapSecretToGateway),
 			builder.WithPredicates(predicates.Debug(apiv1.KindSecret,
 				predicate.ResourceVersionChangedPredicate{}))).
+
+		// Other relationships.
+		Watches(&gatewayv1.HTTPRoute{},
+			handler.EnqueueRequestsFromMapFunc(mapHTTPRouteToGateway),
+			builder.WithPredicates(predicates.Debug(apiv1.KindHTTPRoute,
+				predicate.ResourceVersionChangedPredicate{}))).
+		Watches(&gatewayv1beta1.ReferenceGrant{},
+			handler.EnqueueRequestsFromMapFunc(r.mapReferenceGrantToGateway),
+			builder.WithPredicates(predicates.Debug(apiv1.KindReferenceGrant,
+				predicate.GenerationChangedPredicate{}))).
 		Complete(r)
 }
 
@@ -85,6 +94,72 @@ func mapHTTPRouteToGateway(_ context.Context, obj client.Object) []reconcile.Req
 		if _, ok := seen[key]; !ok {
 			seen[key] = struct{}{}
 			requests = append(requests, reconcile.Request{NamespacedName: key})
+		}
+	}
+	return requests
+}
+
+// mapReferenceGrantToGateway maps a ReferenceGrant event to reconcile requests
+// for Gateways whose attached HTTPRoutes have cross-namespace backend Service
+// references affected by the grant. The grant's from entries (Kind=HTTPRoute)
+// combined with the grant's own namespace (where the Service lives) form exact
+// index queries to find the affected routes, whose parentRefs yield the Gateways.
+func (r *GatewayReconciler) mapReferenceGrantToGateway(ctx context.Context, obj client.Object) []reconcile.Request {
+	grant, ok := obj.(*gatewayv1beta1.ReferenceGrant)
+	if !ok {
+		return nil
+	}
+
+	// Check if the grant's "to" entries include Services.
+	serviceGranted := false
+	for _, to := range grant.Spec.To {
+		if (to.Group == "" || to.Group == "core") && to.Kind == gatewayv1beta1.Kind(apiv1.KindService) {
+			serviceGranted = true
+			break
+		}
+	}
+	if !serviceGranted {
+		return nil
+	}
+
+	// For each "from" entry with Kind=HTTPRoute, query the index to find
+	// routes in that namespace with cross-namespace backends in the grant's
+	// namespace, then collect their parent Gateways.
+	seen := make(map[types.NamespacedName]struct{})
+	var requests []reconcile.Request
+	for _, from := range grant.Spec.From {
+		if from.Group != gatewayv1beta1.Group(gatewayv1.GroupName) ||
+			from.Kind != gatewayv1beta1.Kind(apiv1.KindHTTPRoute) {
+			continue
+		}
+
+		var routes gatewayv1.HTTPRouteList
+		if err := r.List(ctx, &routes, client.MatchingFields{
+			indexHTTPRouteBackendServiceNS: string(from.Namespace) + "/" + grant.Namespace,
+		}); err != nil {
+			log.FromContext(ctx).Error(err, "failed to list HTTPRoutes for ReferenceGrant",
+				"fromNamespace", from.Namespace, "grantNamespace", grant.Namespace)
+			continue
+		}
+
+		for i := range routes.Items {
+			for _, ref := range routes.Items[i].Spec.ParentRefs {
+				if ref.Group != nil && *ref.Group != gatewayv1.Group(gatewayv1.GroupName) {
+					continue
+				}
+				if ref.Kind != nil && *ref.Kind != gatewayv1.Kind(apiv1.KindGateway) {
+					continue
+				}
+				ns := routes.Items[i].Namespace
+				if ref.Namespace != nil {
+					ns = string(*ref.Namespace)
+				}
+				key := types.NamespacedName{Namespace: ns, Name: string(ref.Name)}
+				if _, ok := seen[key]; !ok {
+					seen[key] = struct{}{}
+					requests = append(requests, reconcile.Request{NamespacedName: key})
+				}
+			}
 		}
 	}
 	return requests

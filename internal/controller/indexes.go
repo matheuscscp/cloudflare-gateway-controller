@@ -21,6 +21,7 @@ const (
 	indexGatewayClassParametersRef    = ".gatewayClass.parametersRef"
 	indexGatewayClassGatewayFinalizer = ".gatewayClass.gatewayFinalizer"
 	indexHTTPRouteParentGateway       = ".httpRoute.parentGateway"
+	indexHTTPRouteBackendServiceNS    = ".httpRoute.backendServiceNamespace"
 )
 
 // SetupIndexes registers all shared cache indexes.
@@ -104,6 +105,30 @@ func SetupIndexes(ctx context.Context, mgr ctrl.Manager) {
 				if _, ok := seen[key]; !ok {
 					seen[key] = struct{}{}
 					keys = append(keys, key)
+				}
+			}
+			return keys
+		})
+
+	// Index HTTPRoutes by routeNamespace/backendServiceNamespace for
+	// cross-namespace backend Service references. This lets us efficiently
+	// map ReferenceGrant events to affected Gateways: the grant's from
+	// namespace + grant's own namespace form an exact index query.
+	mgr.GetCache().IndexField(ctx, &gatewayv1.HTTPRoute{}, indexHTTPRouteBackendServiceNS,
+		func(obj client.Object) []string {
+			route := obj.(*gatewayv1.HTTPRoute)
+			seen := make(map[string]struct{})
+			var keys []string
+			for _, rule := range route.Spec.Rules {
+				for _, ref := range rule.BackendRefs {
+					if ref.Namespace == nil || string(*ref.Namespace) == route.Namespace {
+						continue
+					}
+					key := route.Namespace + "/" + string(*ref.Namespace)
+					if _, ok := seen[key]; !ok {
+						seen[key] = struct{}{}
+						keys = append(keys, key)
+					}
 				}
 			}
 			return keys
