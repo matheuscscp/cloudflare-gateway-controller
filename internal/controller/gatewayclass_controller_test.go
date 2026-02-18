@@ -57,7 +57,7 @@ func TestGatewayClassReconciler_Accepted(t *testing.T) {
 		// Verify Normal event was emitted.
 		e := findEvent(g, gc.Name, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded)
 		g.Expect(e).NotTo(BeNil())
-		g.Expect(e.Note).To(Equal("GatewayClass is ready"))
+		g.Expect(e.Note).To(Equal("GatewayClass reconciled"))
 		g.Expect(e.Action).To(Equal(apiv1.EventActionReconcile))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }

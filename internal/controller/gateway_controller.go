@@ -376,12 +376,16 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	}
 
 	// Skip the status patch if no conditions or listener statuses changed.
+	// Always patch when Progressing so the resource version bumps, signalling
+	// to users that the controller is alive and making progress.
 	requeueAfter := apiv1.ReconcileInterval(gw.Annotations)
-	changed := false
-	for _, c := range desiredConds {
-		if conditions.Changed(gw.Status.Conditions, c.Type, c.Status, c.Reason, c.Message, gw.Generation) {
-			changed = true
-			break
+	changed := readyReason == apiv1.ReasonProgressing
+	if !changed {
+		for _, c := range desiredConds {
+			if conditions.Changed(gw.Status.Conditions, c.Type, c.Status, c.Reason, c.Message, gw.Generation) {
+				changed = true
+				break
+			}
 		}
 	}
 	if !changed && listenersChanged(gw.Status.Listeners, desiredListeners) {
