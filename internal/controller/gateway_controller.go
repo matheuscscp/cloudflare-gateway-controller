@@ -296,10 +296,6 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		zoneName := gw.Annotations[apiv1.AnnotationZoneName]
 		dnsErr := r.reconcileDNS(ctx, tc, tunnelID, zoneName, gw, gatewayRoutes)
 
-		// Update HTTPRoute status.parents for allowed routes (after DNS so we can report DNS status).
-		r.updateRouteStatuses(ctx, gw, gatewayRoutes, routesWithDeniedRefs, zoneName, dnsErr)
-
-		// Check Deployment readiness.
 		// Check Deployment readiness and progress.
 		var deploy appsv1.Deployment
 		deployAvailable := false
@@ -336,6 +332,12 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 			readyReason = apiv1.ReasonProgressing
 			readyMsg = "Waiting for cloudflared deployment to become ready"
 		}
+
+		// Update HTTPRoute status.parents for allowed routes (after DNS and
+		// Deployment checks so we can report DNS status and Gateway readiness).
+		r.updateRouteStatuses(ctx, gw, gatewayRoutes, routesWithDeniedRefs, zoneName, dnsErr,
+			readyStatus, readyReason, readyMsg)
+
 		desiredConds = []metav1.Condition{
 			{
 				Type:               string(gatewayv1.GatewayConditionAccepted),
@@ -1372,11 +1374,11 @@ func (r *GatewayReconciler) updateDeniedRouteStatus(ctx context.Context, gw *gat
 
 // updateRouteStatuses updates the status.parents entry for this Gateway
 // on each allowed HTTPRoute using merge-patch.
-func (r *GatewayReconciler) updateRouteStatuses(ctx context.Context, gw *gatewayv1.Gateway, routes []*gatewayv1.HTTPRoute, routesWithDeniedRefs map[types.NamespacedName][]string, zoneName string, dnsErr *string) {
+func (r *GatewayReconciler) updateRouteStatuses(ctx context.Context, gw *gatewayv1.Gateway, routes []*gatewayv1.HTTPRoute, routesWithDeniedRefs map[types.NamespacedName][]string, zoneName string, dnsErr *string, readyStatus metav1.ConditionStatus, readyReason, readyMsg string) {
 	log := log.FromContext(ctx)
 	for _, route := range routes {
 		deniedRefs := routesWithDeniedRefs[types.NamespacedName{Namespace: route.Namespace, Name: route.Name}]
-		if err := r.updateRouteStatus(ctx, gw, route, deniedRefs, zoneName, dnsErr); err != nil {
+		if err := r.updateRouteStatus(ctx, gw, route, deniedRefs, zoneName, dnsErr, readyStatus, readyReason, readyMsg); err != nil {
 			log.Error(err, "Failed to update HTTPRoute status", "httproute", route.Namespace+"/"+route.Name)
 		}
 	}
@@ -1385,7 +1387,7 @@ func (r *GatewayReconciler) updateRouteStatuses(ctx context.Context, gw *gateway
 // updateRouteStatus updates the status.parents entry for this Gateway on the
 // given HTTPRoute using merge-patch. If the entry already exists with up-to-date
 // conditions, no patch is issued.
-func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1.Gateway, route *gatewayv1.HTTPRoute, deniedRefs []string, zoneName string, dnsErr *string) error {
+func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1.Gateway, route *gatewayv1.HTTPRoute, deniedRefs []string, zoneName string, dnsErr *string, readyStatus metav1.ConditionStatus, readyReason, readyMsg string) error {
 	acceptedType := string(gatewayv1.RouteConditionAccepted)
 	resolvedRefsType := string(gatewayv1.RouteConditionResolvedRefs)
 
@@ -1420,6 +1422,17 @@ func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1
 		}
 	}
 
+	// Compute route-level Ready condition. Start with the Gateway's Ready state,
+	// then downgrade to Unknown/ProgressingWithRetry if there's a DNS error.
+	routeReadyStatus := readyStatus
+	routeReadyReason := readyReason
+	routeReadyMsg := readyMsg
+	if readyStatus == metav1.ConditionTrue && dnsErr != nil {
+		routeReadyStatus = metav1.ConditionUnknown
+		routeReadyReason = apiv1.ReasonProgressingWithRetry
+		routeReadyMsg = *dnsErr
+	}
+
 	routeKey := client.ObjectKeyFromObject(route)
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		if err := r.Get(ctx, routeKey, route); err != nil {
@@ -1441,6 +1454,8 @@ func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1
 				// DNS was disabled — check if we need to remove a stale condition.
 				changed = changed || conditions.Find(existing.Conditions, apiv1.ConditionDNSRecordsApplied) != nil
 			}
+			changed = changed || conditions.Changed(existing.Conditions, apiv1.ConditionReady,
+				routeReadyStatus, routeReadyReason, routeReadyMsg, route.Generation)
 			if !changed {
 				return nil
 			}
@@ -1473,6 +1488,9 @@ func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1
 		} else {
 			removeRouteCondition(existing, apiv1.ConditionDNSRecordsApplied)
 		}
+
+		setRouteCondition(existing, apiv1.ConditionReady, routeReadyStatus,
+			routeReadyReason, routeReadyMsg, route.Generation, now)
 
 		return r.Status().Patch(ctx, route, patch)
 	})

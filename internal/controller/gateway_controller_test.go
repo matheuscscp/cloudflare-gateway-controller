@@ -614,7 +614,7 @@ func TestGatewayReconciler_DNSReconciliation(t *testing.T) {
 	g.Expect(testMock.ensureDNSCalls[0].Hostname).To(Equal("app.example.com"))
 	g.Expect(testMock.ensureDNSCalls[0].Target).To(Equal(cloudflare.TunnelTarget("test-tunnel-id")))
 
-	// Verify DNSManagement condition on HTTPRoute status.parents
+	// Verify DNSRecordsApplied and Ready conditions on HTTPRoute status.parents
 	routeKey := client.ObjectKeyFromObject(route)
 	g.Eventually(func(g Gomega) {
 		var result gatewayv1.HTTPRoute
@@ -624,6 +624,11 @@ func TestGatewayReconciler_DNSReconciliation(t *testing.T) {
 		g.Expect(dns).NotTo(BeNil())
 		g.Expect(dns.Status).To(Equal(metav1.ConditionTrue))
 		g.Expect(dns.Reason).To(Equal(apiv1.ReasonReconciliationSucceeded))
+
+		ready := conditions.Find(result.Status.Parents[0].Conditions, apiv1.ConditionReady)
+		g.Expect(ready).NotTo(BeNil())
+		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+		g.Expect(ready.Reason).To(Equal(apiv1.ReasonReconciliationSucceeded))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
@@ -862,7 +867,7 @@ func TestGatewayReconciler_HTTPRouteAccepted(t *testing.T) {
 		}
 	})
 
-	// Verify HTTPRoute becomes Accepted
+	// Verify HTTPRoute becomes Accepted and Ready
 	routeKey := client.ObjectKeyFromObject(route)
 	g.Eventually(func(g Gomega) {
 		var result gatewayv1.HTTPRoute
@@ -875,6 +880,11 @@ func TestGatewayReconciler_HTTPRouteAccepted(t *testing.T) {
 		resolvedRefs := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionResolvedRefs))
 		g.Expect(resolvedRefs).NotTo(BeNil())
 		g.Expect(resolvedRefs.Status).To(Equal(metav1.ConditionTrue))
+
+		ready := conditions.Find(result.Status.Parents[0].Conditions, apiv1.ConditionReady)
+		g.Expect(ready).NotTo(BeNil())
+		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+		g.Expect(ready.Reason).To(Equal(apiv1.ReasonReconciliationSucceeded))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
 	// Verify tunnel configuration was updated by the Gateway controller
