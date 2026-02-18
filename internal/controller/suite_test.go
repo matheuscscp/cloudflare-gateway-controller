@@ -288,7 +288,6 @@ func createTestSecret(g Gomega, namespace string) *corev1.Secret {
 }
 
 func createTestGatewayClass(g Gomega, name string, secretNamespace string) *gatewayv1.GatewayClass {
-	ns := gatewayv1.Namespace(secretNamespace)
 	gc := &gatewayv1.GatewayClass{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
@@ -299,7 +298,7 @@ func createTestGatewayClass(g Gomega, name string, secretNamespace string) *gate
 				Group:     "",
 				Kind:      "Secret",
 				Name:      "cloudflare-creds",
-				Namespace: &ns,
+				Namespace: new(gatewayv1.Namespace(secretNamespace)),
 			},
 		},
 	}

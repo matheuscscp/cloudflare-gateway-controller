@@ -574,7 +574,6 @@ func TestGatewayReconciler_DNSReconciliation(t *testing.T) {
 	testMock.deleteDNSCalls = nil
 	testMock.listDNSCNAMEsByTarget = nil
 
-	port := gatewayv1.PortNumber(8080)
 	route := &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-route-dns",
@@ -592,7 +591,7 @@ func TestGatewayReconciler_DNSReconciliation(t *testing.T) {
 					BackendRefs: []gatewayv1.HTTPBackendRef{
 						{BackendRef: gatewayv1.BackendRef{
 							BackendObjectReference: gatewayv1.BackendObjectReference{
-								Name: "my-service", Port: &port,
+								Name: "my-service", Port: new(gatewayv1.PortNumber(8080)),
 							},
 						}},
 					},
@@ -737,7 +736,6 @@ func TestGatewayReconciler_DNSSkippedHostnames(t *testing.T) {
 	// Reset mock tracking after Gateway is programmed
 	testMock.ensureDNSCalls = nil
 
-	port := gatewayv1.PortNumber(8080)
 	route := &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-route-dns-skip",
@@ -755,7 +753,7 @@ func TestGatewayReconciler_DNSSkippedHostnames(t *testing.T) {
 					BackendRefs: []gatewayv1.HTTPBackendRef{
 						{BackendRef: gatewayv1.BackendRef{
 							BackendObjectReference: gatewayv1.BackendObjectReference{
-								Name: "my-service", Port: &port,
+								Name: "my-service", Port: new(gatewayv1.PortNumber(8080)),
 							},
 						}},
 					},
@@ -826,7 +824,6 @@ func TestGatewayReconciler_HTTPRouteAccepted(t *testing.T) {
 	testMock.lastTunnelConfigID = ""
 	testMock.lastTunnelConfigIngress = nil
 
-	port := gatewayv1.PortNumber(8080)
 	route := &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-httproute",
@@ -848,7 +845,7 @@ func TestGatewayReconciler_HTTPRouteAccepted(t *testing.T) {
 							BackendRef: gatewayv1.BackendRef{
 								BackendObjectReference: gatewayv1.BackendObjectReference{
 									Name: "my-service",
-									Port: &port,
+									Port: new(gatewayv1.PortNumber(8080)),
 								},
 							},
 						},
@@ -927,7 +924,6 @@ func TestGatewayReconciler_HTTPRouteDeletion(t *testing.T) {
 	})
 	waitForGatewayProgrammed(g, gw)
 
-	port := gatewayv1.PortNumber(8080)
 	route := &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-httproute-delete",
@@ -949,7 +945,7 @@ func TestGatewayReconciler_HTTPRouteDeletion(t *testing.T) {
 							BackendRef: gatewayv1.BackendRef{
 								BackendObjectReference: gatewayv1.BackendObjectReference{
 									Name: "my-service",
-									Port: &port,
+									Port: new(gatewayv1.PortNumber(8080)),
 								},
 							},
 						},
@@ -1039,7 +1035,6 @@ func TestGatewayReconciler_HTTPRouteGatewayNotReady(t *testing.T) {
 		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
-	port := gatewayv1.PortNumber(8080)
 	route := &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-httproute-notready",
@@ -1061,7 +1056,7 @@ func TestGatewayReconciler_HTTPRouteGatewayNotReady(t *testing.T) {
 							BackendRef: gatewayv1.BackendRef{
 								BackendObjectReference: gatewayv1.BackendObjectReference{
 									Name: "my-service",
-									Port: &port,
+									Port: new(gatewayv1.PortNumber(8080)),
 								},
 							},
 						},

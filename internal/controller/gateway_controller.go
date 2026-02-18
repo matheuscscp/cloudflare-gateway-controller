@@ -1300,14 +1300,11 @@ func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1
 		now := metav1.Now()
 
 		if existing == nil {
-			ns := gatewayv1.Namespace(gw.Namespace)
-			group := gatewayv1.Group(gatewayv1.GroupName)
-			kind := gatewayv1.Kind(apiv1.KindGateway)
 			route.Status.Parents = append(route.Status.Parents, gatewayv1.RouteParentStatus{
 				ParentRef: gatewayv1.ParentReference{
-					Group:     &group,
-					Kind:      &kind,
-					Namespace: &ns,
+					Group:     new(gatewayv1.Group(gatewayv1.GroupName)),
+					Kind:      new(gatewayv1.Kind(apiv1.KindGateway)),
+					Namespace: new(gatewayv1.Namespace(gw.Namespace)),
 					Name:      gatewayv1.ObjectName(gw.Name),
 				},
 				ControllerName: apiv1.ControllerName,

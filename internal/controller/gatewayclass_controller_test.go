@@ -70,7 +70,6 @@ func TestGatewayClassReconciler_AcceptedWithParametersRef(t *testing.T) {
 
 	createTestSecret(g, ns.Name)
 
-	gcNS := gatewayv1.Namespace(ns.Name)
 	gc := &gatewayv1.GatewayClass{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-gc-with-params",
@@ -81,7 +80,7 @@ func TestGatewayClassReconciler_AcceptedWithParametersRef(t *testing.T) {
 				Group:     "",
 				Kind:      "Secret",
 				Name:      "cloudflare-creds",
-				Namespace: &gcNS,
+				Namespace: new(gatewayv1.Namespace(ns.Name)),
 			},
 		},
 	}
@@ -137,7 +136,6 @@ func TestGatewayClassReconciler_WrongControllerIgnored(t *testing.T) {
 func TestGatewayClassReconciler_InvalidParametersRefKind(t *testing.T) {
 	g := NewWithT(t)
 
-	ns := gatewayv1.Namespace("default")
 	gc := &gatewayv1.GatewayClass{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-gc-bad-kind",
@@ -148,7 +146,7 @@ func TestGatewayClassReconciler_InvalidParametersRefKind(t *testing.T) {
 				Group:     "",
 				Kind:      "ConfigMap",
 				Name:      "some-config",
-				Namespace: &ns,
+				Namespace: new(gatewayv1.Namespace("default")),
 			},
 		},
 	}
@@ -220,7 +218,6 @@ func TestGatewayClassReconciler_ParametersRefSecretNotFound(t *testing.T) {
 	ns := createTestNamespace(g)
 	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
 
-	gcNS := gatewayv1.Namespace(ns.Name)
 	gc := &gatewayv1.GatewayClass{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-gc-secret-not-found",
@@ -231,7 +228,7 @@ func TestGatewayClassReconciler_ParametersRefSecretNotFound(t *testing.T) {
 				Group:     "",
 				Kind:      "Secret",
 				Name:      "nonexistent-secret",
-				Namespace: &gcNS,
+				Namespace: new(gatewayv1.Namespace(ns.Name)),
 			},
 		},
 	}
@@ -278,7 +275,6 @@ func TestGatewayClassReconciler_ParametersRefSecretMissingKeys(t *testing.T) {
 	}
 	g.Expect(testClient.Create(testCtx, secret)).To(Succeed())
 
-	gcNS := gatewayv1.Namespace(ns.Name)
 	gc := &gatewayv1.GatewayClass{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-gc-missing-keys",
@@ -289,7 +285,7 @@ func TestGatewayClassReconciler_ParametersRefSecretMissingKeys(t *testing.T) {
 				Group:     "",
 				Kind:      "Secret",
 				Name:      "incomplete-secret",
-				Namespace: &gcNS,
+				Namespace: new(gatewayv1.Namespace(ns.Name)),
 			},
 		},
 	}
@@ -380,7 +376,6 @@ func TestGatewayClassReconciler_SecretUpdateTriggersReconcile(t *testing.T) {
 	}
 	g.Expect(testClient.Create(testCtx, secret)).To(Succeed())
 
-	gcNS := gatewayv1.Namespace(ns.Name)
 	gc := &gatewayv1.GatewayClass{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-gc-secret-update",
@@ -391,7 +386,7 @@ func TestGatewayClassReconciler_SecretUpdateTriggersReconcile(t *testing.T) {
 				Group:     "",
 				Kind:      "Secret",
 				Name:      "cloudflare-creds-update",
-				Namespace: &gcNS,
+				Namespace: new(gatewayv1.Namespace(ns.Name)),
 			},
 		},
 	}
@@ -498,7 +493,6 @@ func TestGatewayClassReconciler_UnsupportedVersion(t *testing.T) {
 func TestGatewayClassReconciler_InvalidParametersRefGroup(t *testing.T) {
 	g := NewWithT(t)
 
-	ns := gatewayv1.Namespace("default")
 	gc := &gatewayv1.GatewayClass{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-gc-bad-group",
@@ -509,7 +503,7 @@ func TestGatewayClassReconciler_InvalidParametersRefGroup(t *testing.T) {
 				Group:     "apps",
 				Kind:      "Secret",
 				Name:      "some-secret",
-				Namespace: &ns,
+				Namespace: new(gatewayv1.Namespace("default")),
 			},
 		},
 	}
