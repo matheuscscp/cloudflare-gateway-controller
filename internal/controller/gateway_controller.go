@@ -558,7 +558,7 @@ func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cloudflare.Clie
 	for _, route := range routes {
 		for _, h := range route.Spec.Hostnames {
 			hostname := string(h)
-			if hostname == zoneName || strings.HasSuffix(hostname, "."+zoneName) {
+			if hostnameInZone(hostname, zoneName) {
 				desired[hostname] = struct{}{}
 			}
 		}
@@ -1400,7 +1400,7 @@ func routeDNSMessage(route *gatewayv1.HTTPRoute, zoneName string) string {
 	var applied, skipped []string
 	for _, h := range route.Spec.Hostnames {
 		hostname := string(h)
-		if hostname == zoneName || strings.HasSuffix(hostname, "."+zoneName) {
+		if hostnameInZone(hostname, zoneName) {
 			applied = append(applied, hostname)
 		} else {
 			skipped = append(skipped, hostname)
@@ -1424,6 +1424,14 @@ func routeDNSMessage(route *gatewayv1.HTTPRoute, zoneName string) string {
 		}
 	}
 	return msg.String()
+}
+
+// hostnameInZone reports whether a hostname is a direct (single-level)
+// subdomain of zoneName. For example, "app.example.com" matches zone
+// "example.com", but "deep.sub.example.com" and "example.com" do not.
+func hostnameInZone(hostname, zoneName string) bool {
+	prefix, ok := strings.CutSuffix(hostname, "."+zoneName)
+	return ok && !strings.Contains(prefix, ".")
 }
 
 // removeRouteCondition removes a condition by type from the RouteParentStatus.
