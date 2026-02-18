@@ -446,6 +446,34 @@ func (r *GatewayReconciler) reconcileError(ctx context.Context, gw *gatewayv1.Ga
 	return ctrl.Result{}, reconcileErr
 }
 
+// finalizeError handles finalization errors by best-effort patching Ready=Unknown
+// on the Gateway status and emitting a Warning event, mirroring reconcileError
+// but for the finalization path.
+func (r *GatewayReconciler) finalizeError(ctx context.Context, gw *gatewayv1.Gateway, finalizeErr error) (ctrl.Result, error) {
+	msg := finalizeErr.Error()
+	now := metav1.Now()
+
+	patch := client.MergeFrom(gw.DeepCopy())
+	gw.Status.Conditions = setCondition(gw.Status.Conditions, metav1.Condition{
+		Type:               apiv1.ConditionReady,
+		Status:             metav1.ConditionUnknown,
+		ObservedGeneration: gw.Generation,
+		LastTransitionTime: now,
+		Reason:             apiv1.ReasonProgressingWithRetry,
+		Message:            msg,
+	})
+	if err := r.Status().Patch(ctx, gw, patch); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to patch Gateway status with error conditions",
+			"originalError", msg)
+	} else {
+		log.FromContext(ctx).V(1).Info("Patched Gateway status with error conditions")
+	}
+
+	r.Eventf(gw, nil, corev1.EventTypeWarning, apiv1.ReasonProgressingWithRetry,
+		apiv1.EventActionFinalize, "Finalization failed: %v", finalizeErr)
+	return ctrl.Result{}, finalizeErr
+}
+
 // finalize cleans up managed resources (cloudflared Deployment and Cloudflare tunnel)
 // before allowing the Gateway to be deleted, then removes the finalizer.
 func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway, gc *gatewayv1.GatewayClass) (ctrl.Result, error) {
@@ -475,7 +503,7 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 			}
 		}()
 		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("removing owner references: %w", err)
+			return r.finalizeError(ctx, gw, fmt.Errorf("removing owner references: %w", err))
 		}
 	} else {
 		// Delete the cloudflared Deployment and wait for it to be gone
@@ -487,7 +515,7 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 			},
 		}
 		if err := r.Delete(ctx, deploy); client.IgnoreNotFound(err) != nil {
-			return ctrl.Result{}, fmt.Errorf("deleting cloudflared deployment: %w", err)
+			return r.finalizeError(ctx, gw, fmt.Errorf("deleting cloudflared deployment: %w", err))
 		}
 		log.V(1).Info("Deleted cloudflared Deployment")
 		deployKey := client.ObjectKeyFromObject(deploy)
@@ -495,11 +523,11 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 			if err := r.Get(ctx, deployKey, deploy); apierrors.IsNotFound(err) {
 				break
 			} else if err != nil {
-				return ctrl.Result{}, fmt.Errorf("waiting for cloudflared deployment deletion: %w", err)
+				return r.finalizeError(ctx, gw, fmt.Errorf("waiting for cloudflared deployment deletion: %w", err))
 			}
 			select {
 			case <-ctx.Done():
-				return ctrl.Result{}, ctx.Err()
+				return r.finalizeError(ctx, gw, fmt.Errorf("waiting for cloudflared deployment deletion: %w", ctx.Err()))
 			case <-time.After(time.Second):
 			}
 		}
@@ -507,24 +535,24 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 
 		cfg, err := readCredentials(ctx, r.Client, gc, gw)
 		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("reading credentials for tunnel deletion: %w", err)
+			return r.finalizeError(ctx, gw, fmt.Errorf("reading credentials for tunnel deletion: %w", err))
 		}
 		tc, err := r.NewCloudflareClient(cfg)
 		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("creating cloudflare client for deletion: %w", err)
+			return r.finalizeError(ctx, gw, fmt.Errorf("creating cloudflare client for deletion: %w", err))
 		}
 		tunnelID, err := tc.GetTunnelIDByName(ctx, apiv1.TunnelName(gw))
 		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("looking up tunnel for deletion: %w", err)
+			return r.finalizeError(ctx, gw, fmt.Errorf("looking up tunnel for deletion: %w", err))
 		}
 		if tunnelID != "" {
 			// Delete DNS CNAME records across all zones.
 			if err := r.cleanupAllDNS(ctx, tc, tunnelID); err != nil {
-				return ctrl.Result{}, fmt.Errorf("cleaning up DNS during finalization: %w", err)
+				return r.finalizeError(ctx, gw, fmt.Errorf("cleaning up DNS during finalization: %w", err))
 			}
 			log.V(1).Info("Cleaned up DNS CNAME records")
 			if err := tc.DeleteTunnel(ctx, tunnelID); err != nil {
-				return ctrl.Result{}, fmt.Errorf("deleting tunnel: %w", err)
+				return r.finalizeError(ctx, gw, fmt.Errorf("deleting tunnel: %w", err))
 			}
 			log.V(1).Info("Deleted tunnel", "tunnelID", tunnelID)
 		}
@@ -532,22 +560,26 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 
 	// Remove this Gateway's entry from status.parents on all referencing HTTPRoutes.
 	if err := r.removeRouteStatuses(ctx, gw); err != nil {
-		return ctrl.Result{}, fmt.Errorf("removing HTTPRoute status entries: %w", err)
+		return r.finalizeError(ctx, gw, fmt.Errorf("removing HTTPRoute status entries: %w", err))
 	}
 	log.V(1).Info("Removed HTTPRoute status entries")
 
 	// Remove this Gateway's finalizer from all GatewayClasses.
 	if err := r.removeGatewayClassFinalizer(ctx, gw); err != nil {
-		return ctrl.Result{}, fmt.Errorf("removing GatewayClass finalizer: %w", err)
+		return r.finalizeError(ctx, gw, fmt.Errorf("removing GatewayClass finalizer: %w", err))
 	}
 	log.V(1).Info("Removed GatewayClass finalizer")
+
+	log.Info("Gateway finalized")
+	r.Eventf(gw, nil, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded,
+		apiv1.EventActionFinalize, "Gateway finalized")
 
 	// Remove finalizer from Gateway if needed
 	if controllerutil.ContainsFinalizer(gw, apiv1.Finalizer) {
 		gwPatch := client.MergeFrom(gw.DeepCopy())
 		controllerutil.RemoveFinalizer(gw, apiv1.Finalizer)
 		if err := r.Patch(ctx, gw, gwPatch); err != nil {
-			return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
+			return r.finalizeError(ctx, gw, fmt.Errorf("removing finalizer: %w", err))
 		}
 		log.V(1).Info("Removed finalizer from Gateway")
 	}
