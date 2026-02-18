@@ -140,7 +140,7 @@ func (r *GatewayClassReconciler) reconcile(ctx context.Context, gc *gatewayv1.Ga
 			Reason:             readyReason,
 			Message:            readyMessage,
 		},
-	}, now)
+	})
 	gc.Status.SupportedFeatures = desiredFeatures
 	if err := r.Status().Patch(ctx, gc, patch); err != nil {
 		return ctrl.Result{}, err

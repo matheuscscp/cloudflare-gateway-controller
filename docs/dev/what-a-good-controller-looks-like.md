@@ -92,6 +92,10 @@ Info and error level logs match events with `Normal` and `Warning` severities re
 both in the amount (to avoid spam) and in the exact place where events are emitted. Events
 and info/error logs should be emitted at the same time.
 
+Terminal condition transitions (e.g. `Ready=False` when a managed Deployment exceeds its
+progress deadline) trigger a `Warning` event and error log on the first transition, but not
+on subsequent reconciliations where the condition is already set and unchanged.
+
 ## Errors Returned to controller-runtime
 
 When returning an error from `Reconcile()`, controller-runtime will retry the reconciliation

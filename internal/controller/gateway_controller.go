@@ -187,6 +187,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	// Look up or create tunnel. The name is deterministic (gateway-{UID}),
 	// so Cloudflare is the source of truth — no local state tracking needed.
 	var changes []string
+	var errs []string
 	name := apiv1.TunnelName(gw)
 	tunnelID, err := tc.GetTunnelIDByName(ctx, name)
 	if err != nil {
@@ -258,14 +259,14 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	// Remove stale status.parents entries for routes whose parentRef was removed.
 	for _, route := range staleRoutes {
 		if err := r.removeRouteStatus(ctx, gw, route); err != nil {
-			log.Error(err, "Failed to remove stale status for HTTPRoute", "httproute", route.Namespace+"/"+route.Name)
+			errs = append(errs, fmt.Sprintf("failed to remove stale HTTPRoute %s/%s status: %v", route.Namespace, route.Name, err))
 		}
 	}
 	// Set ResolvedRefs=False/RefNotPermitted on denied routes (cross-namespace
 	// parentRef not permitted by any ReferenceGrant).
 	for _, route := range deniedRoutes {
 		if err := r.updateDeniedRouteStatus(ctx, gw, route); err != nil {
-			log.Error(err, "Failed to update denied status for HTTPRoute", "httproute", route.Namespace+"/"+route.Name)
+			errs = append(errs, fmt.Sprintf("failed to update denied HTTPRoute %s/%s status: %v", route.Namespace, route.Name, err))
 		}
 	}
 
@@ -293,7 +294,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	dnsChanges, dnsErr := r.reconcileDNS(ctx, tc, tunnelID, zoneName, gw, gatewayRoutes)
 	changes = append(changes, dnsChanges...)
 	if dnsErr != nil {
-		log.Error(fmt.Errorf("%s", *dnsErr), "DNS reconciliation failed")
+		errs = append(errs, *dnsErr)
 	}
 
 	// Check Deployment readiness and progress.
@@ -338,8 +339,8 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 
 	// Update HTTPRoute status.parents for allowed routes (after DNS and
 	// Deployment checks so we can report DNS status and Gateway readiness).
-	r.updateRouteStatuses(ctx, gw, gatewayRoutes, routesWithDeniedRefs, zoneName, dnsErr,
-		readyStatus, readyReason, readyMsg)
+	errs = append(errs, r.updateRouteStatuses(ctx, gw, gatewayRoutes, routesWithDeniedRefs, zoneName, dnsErr,
+		readyStatus, readyReason, readyMsg)...)
 
 	desiredConds := []metav1.Condition{
 		{
@@ -368,12 +369,10 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		},
 	}
 
-	// Emit log and event for resource changes.
-	if len(changes) > 0 {
-		log.Info("Gateway reconciled", "changes", changes)
-		r.Eventf(gw, nil, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded,
-			apiv1.EventActionReconcile, strings.Join(changes, "\n"))
-	}
+	// Check if Ready is transitioning to a terminal failure state (must be
+	// computed before setConditions mutates gw.Status.Conditions).
+	readyTerminal := readyStatus == metav1.ConditionFalse &&
+		conditions.Changed(gw.Status.Conditions, apiv1.ConditionReady, readyStatus, readyReason, readyMsg, gw.Generation)
 
 	// Skip the status patch if no conditions or listener statuses changed.
 	// Always patch when Progressing so the resource version bumps, signalling
@@ -391,17 +390,43 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	if !changed && listenersChanged(gw.Status.Listeners, desiredListeners) {
 		changed = true
 	}
-	if !changed {
+	if !changed && len(changes) == 0 && len(errs) == 0 {
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 
-	patch := client.MergeFrom(gw.DeepCopy())
-	gw.Status.Conditions = setConditions(gw.Status.Conditions, desiredConds, now)
-	gw.Status.Listeners = desiredListeners
-	if err := r.Status().Patch(ctx, gw, patch); err != nil {
-		return ctrl.Result{}, err
+	if changed {
+		patch := client.MergeFrom(gw.DeepCopy())
+		gw.Status.Conditions = setConditions(gw.Status.Conditions, desiredConds)
+		gw.Status.Listeners = desiredListeners
+		if err := r.Status().Patch(ctx, gw, patch); err != nil {
+			return ctrl.Result{}, err
+		}
+		log.V(1).Info("Patched Gateway status")
 	}
-	log.V(1).Info("Patched Gateway status")
+
+	// Emit log and event summarizing errors and/or resource changes.
+	// Terminal transitions (Ready=False) are included as warnings.
+	var warnings []string
+	if readyTerminal {
+		warnings = append(warnings, readyMsg)
+	}
+	warnings = append(warnings, errs...)
+	if len(warnings) > 0 {
+		var summary []string
+		summary = append(summary, warnings...)
+		summary = append(summary, changes...)
+		eventReason := apiv1.ReasonProgressingWithRetry
+		if readyTerminal {
+			eventReason = readyReason
+		}
+		log.Error(fmt.Errorf("%s", strings.Join(warnings, "; ")), "Gateway reconciled with errors", "changes", changes)
+		r.Eventf(gw, nil, corev1.EventTypeWarning, eventReason,
+			apiv1.EventActionReconcile, strings.Join(summary, "\n"))
+	} else if len(changes) > 0 {
+		log.Info("Gateway reconciled", "changes", changes)
+		r.Eventf(gw, nil, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded,
+			apiv1.EventActionReconcile, strings.Join(changes, "\n"))
+	}
 
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
@@ -1010,7 +1035,7 @@ func listenersChanged(existing, desired []gatewayv1.ListenerStatus) bool {
 
 // setConditions replaces the existing condition list with the desired ones, preserving
 // LastTransitionTime when the status hasn't changed.
-func setConditions(existing, desired []metav1.Condition, now metav1.Time) []metav1.Condition {
+func setConditions(existing, desired []metav1.Condition) []metav1.Condition {
 	result := make([]metav1.Condition, 0, len(desired))
 	for _, d := range desired {
 		c := d
@@ -1459,7 +1484,7 @@ func (r *GatewayReconciler) updateDeniedRouteStatus(ctx context.Context, gw *gat
 				Reason:             resolvedRefsReason,
 				Message:            resolvedRefsMsg,
 			},
-		}, now)
+		})
 
 		patched = true
 		return r.Status().Patch(ctx, route, patch)
@@ -1474,14 +1499,15 @@ func (r *GatewayReconciler) updateDeniedRouteStatus(ctx context.Context, gw *gat
 
 // updateRouteStatuses updates the status.parents entry for this Gateway
 // on each allowed HTTPRoute using merge-patch.
-func (r *GatewayReconciler) updateRouteStatuses(ctx context.Context, gw *gatewayv1.Gateway, routes []*gatewayv1.HTTPRoute, routesWithDeniedRefs map[types.NamespacedName][]string, zoneName string, dnsErr *string, readyStatus metav1.ConditionStatus, readyReason, readyMsg string) {
-	log := log.FromContext(ctx)
+func (r *GatewayReconciler) updateRouteStatuses(ctx context.Context, gw *gatewayv1.Gateway, routes []*gatewayv1.HTTPRoute, routesWithDeniedRefs map[types.NamespacedName][]string, zoneName string, dnsErr *string, readyStatus metav1.ConditionStatus, readyReason, readyMsg string) []string {
+	var errs []string
 	for _, route := range routes {
 		deniedRefs := routesWithDeniedRefs[types.NamespacedName{Namespace: route.Namespace, Name: route.Name}]
 		if err := r.updateRouteStatus(ctx, gw, route, deniedRefs, zoneName, dnsErr, readyStatus, readyReason, readyMsg); err != nil {
-			log.Error(err, "Failed to update HTTPRoute status", "httproute", route.Namespace+"/"+route.Name)
+			errs = append(errs, fmt.Sprintf("failed to update HTTPRoute %s/%s status: %v", route.Namespace, route.Name, err))
 		}
 	}
+	return errs
 }
 
 // updateRouteStatus updates the status.parents entry for this Gateway on the
