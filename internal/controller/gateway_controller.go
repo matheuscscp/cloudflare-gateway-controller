@@ -1303,7 +1303,8 @@ func (r *GatewayReconciler) removeRouteStatuses(ctx context.Context, gw *gateway
 // during Gateway finalization.
 func (r *GatewayReconciler) removeRouteStatus(ctx context.Context, gw *gatewayv1.Gateway, route *gatewayv1.HTTPRoute) error {
 	routeKey := client.ObjectKeyFromObject(route)
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	patched := false
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		if err := r.Get(ctx, routeKey, route); err != nil {
 			return client.IgnoreNotFound(err)
 		}
@@ -1321,11 +1322,17 @@ func (r *GatewayReconciler) removeRouteStatus(ctx context.Context, gw *gatewayv1
 			filtered = append(filtered, s)
 		}
 		route.Status.Parents = filtered
+		patched = true
 		if err := r.Status().Patch(ctx, route, patch); err != nil {
 			return fmt.Errorf("removing status entry from HTTPRoute %s/%s: %w", route.Namespace, route.Name, err)
 		}
 		return nil
 	})
+	if patched {
+		r.Eventf(route, gw, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded,
+			"Reconcile", "Removed status entry for Gateway %s/%s", gw.Namespace, gw.Name)
+	}
+	return err
 }
 
 // updateDeniedRouteStatus sets ResolvedRefs=False/RefNotPermitted on the
@@ -1339,7 +1346,8 @@ func (r *GatewayReconciler) updateDeniedRouteStatus(ctx context.Context, gw *gat
 	resolvedRefsMsg := fmt.Sprintf("Cross-namespace parentRef to Gateway %s/%s not permitted by any ReferenceGrant", gw.Namespace, gw.Name)
 
 	routeKey := client.ObjectKeyFromObject(route)
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	patched := false
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		if err := r.Get(ctx, routeKey, route); err != nil {
 			return client.IgnoreNotFound(err)
 		}
@@ -1384,8 +1392,14 @@ func (r *GatewayReconciler) updateDeniedRouteStatus(ctx context.Context, gw *gat
 			},
 		}, now)
 
+		patched = true
 		return r.Status().Patch(ctx, route, patch)
 	})
+	if patched {
+		r.Eventf(route, gw, corev1.EventTypeWarning, resolvedRefsReason,
+			"Reconcile", resolvedRefsMsg)
+	}
+	return err
 }
 
 // updateRouteStatuses updates the status.parents entry for this Gateway
@@ -1450,7 +1464,8 @@ func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1
 	}
 
 	routeKey := client.ObjectKeyFromObject(route)
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	patched := false
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		if err := r.Get(ctx, routeKey, route); err != nil {
 			return err
 		}
@@ -1508,8 +1523,18 @@ func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1
 		setRouteCondition(existing, apiv1.ConditionReady, routeReadyStatus,
 			routeReadyReason, routeReadyMsg, route.Generation, now)
 
+		patched = true
 		return r.Status().Patch(ctx, route, patch)
 	})
+	if patched {
+		eventType := corev1.EventTypeNormal
+		if routeReadyStatus != metav1.ConditionTrue {
+			eventType = corev1.EventTypeWarning
+		}
+		r.Eventf(route, gw, eventType, routeReadyReason,
+			"Reconcile", "Ready=%s: %s", routeReadyStatus, routeReadyMsg)
+	}
+	return err
 }
 
 // routeDNSMessage builds a per-route DNS condition message listing the
