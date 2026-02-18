@@ -16,14 +16,57 @@ import (
 
 // Index field constants. Named as index<Kind><Field>.
 const (
-	indexHTTPRouteParentGateway       = ".spec.parentRefs[gateway]"
-	indexGatewayClassControllerName   = ".spec.controllerName"
-	indexGatewayClassParametersRef    = ".spec.parametersRef"
-	indexGatewayClassGatewayFinalizer = ".metadata.finalizers[gateway]"
+	indexGatewayTunnelTokenSecret     = ".gateway.tunnelTokenSecret"
+	indexGatewayClassControllerName   = ".gatewayClass.controllerName"
+	indexGatewayClassParametersRef    = ".gatewayClass.parametersRef"
+	indexGatewayClassGatewayFinalizer = ".gatewayClass.gatewayFinalizer"
+	indexHTTPRouteParentGateway       = ".httpRoute.parentGateway"
 )
 
 // SetupIndexes registers all shared cache indexes.
 func SetupIndexes(ctx context.Context, mgr ctrl.Manager) {
+	// Index Gateways by their managed tunnel token Secret (ns/name) so we
+	// can map Secret events to the owning Gateway for reconciliation.
+	mgr.GetCache().IndexField(ctx, &gatewayv1.Gateway{}, indexGatewayTunnelTokenSecret,
+		func(obj client.Object) []string {
+			gw := obj.(*gatewayv1.Gateway)
+			return []string{gw.Namespace + "/" + apiv1.TunnelTokenSecretName(gw)}
+		})
+
+	// Index GatewayClasses by spec.controllerName.
+	mgr.GetCache().IndexField(ctx, &gatewayv1.GatewayClass{}, indexGatewayClassControllerName,
+		func(obj client.Object) []string {
+			gc := obj.(*gatewayv1.GatewayClass)
+			return []string{string(gc.Spec.ControllerName)}
+		})
+
+	// Index GatewayClasses by spec.parametersRef (Secret namespace/name).
+	mgr.GetCache().IndexField(ctx, &gatewayv1.GatewayClass{}, indexGatewayClassParametersRef,
+		func(obj client.Object) []string {
+			gc := obj.(*gatewayv1.GatewayClass)
+			if gc.Spec.ParametersRef == nil ||
+				gc.Spec.ParametersRef.Group != "" ||
+				string(gc.Spec.ParametersRef.Kind) != apiv1.KindSecret ||
+				gc.Spec.ParametersRef.Namespace == nil {
+				return nil
+			}
+			return []string{string(*gc.Spec.ParametersRef.Namespace) + "/" + string(gc.Spec.ParametersRef.Name)}
+		})
+
+	// Index GatewayClasses by per-gateway finalizers so we can efficiently
+	// find and clean up stale finalizers when gatewayClassName changes.
+	gatewayFinalizerPrefix := string(gatewayv1.GatewayClassFinalizerGatewaysExist) + "/"
+	mgr.GetCache().IndexField(ctx, &gatewayv1.GatewayClass{}, indexGatewayClassGatewayFinalizer,
+		func(obj client.Object) []string {
+			var keys []string
+			for _, f := range obj.GetFinalizers() {
+				if strings.HasPrefix(f, gatewayFinalizerPrefix) {
+					keys = append(keys, f)
+				}
+			}
+			return keys
+		})
+
 	// Index HTTPRoutes by their parent Gateway references (ns/name) and by
 	// existing status.parents entries managed by our controller. Including
 	// status.parents ensures that when a parentRef is removed, the old Gateway
@@ -61,40 +104,6 @@ func SetupIndexes(ctx context.Context, mgr ctrl.Manager) {
 				if _, ok := seen[key]; !ok {
 					seen[key] = struct{}{}
 					keys = append(keys, key)
-				}
-			}
-			return keys
-		})
-
-	// Index GatewayClasses by spec.controllerName.
-	mgr.GetCache().IndexField(ctx, &gatewayv1.GatewayClass{}, indexGatewayClassControllerName,
-		func(obj client.Object) []string {
-			gc := obj.(*gatewayv1.GatewayClass)
-			return []string{string(gc.Spec.ControllerName)}
-		})
-
-	// Index GatewayClasses by spec.parametersRef (Secret namespace/name).
-	mgr.GetCache().IndexField(ctx, &gatewayv1.GatewayClass{}, indexGatewayClassParametersRef,
-		func(obj client.Object) []string {
-			gc := obj.(*gatewayv1.GatewayClass)
-			if gc.Spec.ParametersRef == nil ||
-				gc.Spec.ParametersRef.Group != "" ||
-				string(gc.Spec.ParametersRef.Kind) != apiv1.KindSecret ||
-				gc.Spec.ParametersRef.Namespace == nil {
-				return nil
-			}
-			return []string{string(*gc.Spec.ParametersRef.Namespace) + "/" + string(gc.Spec.ParametersRef.Name)}
-		})
-
-	// Index GatewayClasses by per-gateway finalizers so we can efficiently
-	// find and clean up stale finalizers when gatewayClassName changes.
-	gatewayFinalizerPrefix := string(gatewayv1.GatewayClassFinalizerGatewaysExist) + "/"
-	mgr.GetCache().IndexField(ctx, &gatewayv1.GatewayClass{}, indexGatewayClassGatewayFinalizer,
-		func(obj client.Object) []string {
-			var keys []string
-			for _, f := range obj.GetFinalizers() {
-				if strings.HasPrefix(f, gatewayFinalizerPrefix) {
-					keys = append(keys, f)
 				}
 			}
 			return keys

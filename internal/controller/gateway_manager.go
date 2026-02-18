@@ -7,11 +7,13 @@ import (
 	"context"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -31,6 +33,10 @@ func (r *GatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&gatewayv1.HTTPRoute{},
 			handler.EnqueueRequestsFromMapFunc(mapHTTPRouteToGateway),
 			builder.WithPredicates(debugPredicate(apiv1.KindHTTPRoute,
+				predicate.ResourceVersionChangedPredicate{}))).
+		WatchesMetadata(&corev1.Secret{},
+			handler.EnqueueRequestsFromMapFunc(r.mapSecretToGateway),
+			builder.WithPredicates(debugPredicate(apiv1.KindSecret,
 				predicate.ResourceVersionChangedPredicate{}))).
 		Complete(r)
 }
@@ -79,6 +85,25 @@ func mapHTTPRouteToGateway(_ context.Context, obj client.Object) []reconcile.Req
 			seen[key] = struct{}{}
 			requests = append(requests, reconcile.Request{NamespacedName: key})
 		}
+	}
+	return requests
+}
+
+// mapSecretToGateway maps a Secret event to reconcile requests for Gateways
+// whose managed tunnel token Secret matches the event object.
+func (r *GatewayReconciler) mapSecretToGateway(ctx context.Context, obj client.Object) []reconcile.Request {
+	var gateways gatewayv1.GatewayList
+	if err := r.List(ctx, &gateways, client.MatchingFields{
+		indexGatewayTunnelTokenSecret: obj.GetNamespace() + "/" + obj.GetName(),
+	}); err != nil {
+		log.FromContext(ctx).Error(err, "failed to list Gateways for Secret")
+		return nil
+	}
+	var requests []reconcile.Request
+	for _, gw := range gateways.Items {
+		requests = append(requests, reconcile.Request{
+			NamespacedName: client.ObjectKeyFromObject(&gw),
+		})
 	}
 	return requests
 }
