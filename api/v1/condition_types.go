@@ -19,17 +19,6 @@ const (
 	ReasonReconciliationSucceeded = "ReconciliationSucceeded"
 	ReasonReconciliationDisabled  = "ReconciliationDisabled"
 	ReasonReconciliationFailed    = "ReconciliationFailed"
+	ReasonProgressing             = "Progressing"
 	ReasonProgressingWithRetry    = "ProgressingWithRetry"
-	ReasonInvalidParameters       = "InvalidParameters"
-)
-
-// Reasons for the RouteReferenceGrants condition.
-const (
-	ReasonReferencesAllowed = "ReferencesAllowed"
-	ReasonReferencesDenied  = "ReferencesDenied"
-)
-
-// Reasons for the DNSRecordsApplied condition.
-const (
-	ReasonDNSReconciled = "Reconciled"
 )

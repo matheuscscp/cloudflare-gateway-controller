@@ -623,7 +623,7 @@ func TestGatewayReconciler_DNSReconciliation(t *testing.T) {
 		dns := conditions.Find(result.Status.Parents[0].Conditions, apiv1.ConditionDNSRecordsApplied)
 		g.Expect(dns).NotTo(BeNil())
 		g.Expect(dns.Status).To(Equal(metav1.ConditionTrue))
-		g.Expect(dns.Reason).To(Equal(apiv1.ReasonDNSReconciled))
+		g.Expect(dns.Reason).To(Equal(apiv1.ReasonReconciliationSucceeded))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
@@ -778,7 +778,7 @@ func TestGatewayReconciler_DNSSkippedHostnames(t *testing.T) {
 		dns := conditions.Find(result.Status.Parents[0].Conditions, apiv1.ConditionDNSRecordsApplied)
 		g.Expect(dns).NotTo(BeNil())
 		g.Expect(dns.Status).To(Equal(metav1.ConditionTrue))
-		g.Expect(dns.Reason).To(Equal(apiv1.ReasonDNSReconciled))
+		g.Expect(dns.Reason).To(Equal(apiv1.ReasonReconciliationSucceeded))
 		g.Expect(dns.Message).To(ContainSubstring("Applied hostnames:\n(none)"))
 		g.Expect(dns.Message).To(ContainSubstring("Skipped hostnames (not in zone):\n- app.other.com"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())

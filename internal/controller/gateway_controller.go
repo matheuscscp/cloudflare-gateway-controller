@@ -164,8 +164,8 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 
 	desiredListeners := buildListenerStatuses(gw, countAttachedRoutes(&allRoutes, gw))
 	now := metav1.Now()
-	readyStatus := metav1.ConditionFalse
-	readyReason := apiv1.ReasonReconciliationFailed
+	readyStatus := metav1.ConditionUnknown
+	readyReason := apiv1.ReasonProgressingWithRetry
 	readyMsg := ""
 	var desiredConds []metav1.Condition
 
@@ -173,7 +173,6 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	cfg, err := readCredentials(ctx, r.Client, gc, gw)
 	if err != nil {
 		credMsg := fmt.Sprintf("Failed to read credentials: %v", err)
-		readyReason = apiv1.ReasonInvalidParameters
 		readyMsg = credMsg
 		desiredConds = []metav1.Condition{
 			{
@@ -186,10 +185,10 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 			},
 			{
 				Type:               apiv1.ConditionReady,
-				Status:             metav1.ConditionFalse,
+				Status:             metav1.ConditionUnknown,
 				ObservedGeneration: gw.Generation,
 				LastTransitionTime: now,
-				Reason:             apiv1.ReasonInvalidParameters,
+				Reason:             apiv1.ReasonProgressingWithRetry,
 				Message:            credMsg,
 			},
 		}
@@ -301,16 +300,20 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		r.updateRouteStatuses(ctx, gw, gatewayRoutes, routesWithDeniedRefs, zoneName, dnsErr)
 
 		// Check Deployment readiness.
+		// Check Deployment readiness and progress.
 		var deploy appsv1.Deployment
-		deployReady := false
+		deployAvailable := false
+		deployDeadlineExceeded := false
 		if err := r.Get(ctx, client.ObjectKey{
 			Namespace: gw.Namespace,
 			Name:      apiv1.CloudflaredDeploymentName(gw),
 		}, &deploy); err == nil {
 			for _, c := range deploy.Status.Conditions {
-				if c.Type == appsv1.DeploymentAvailable && c.Status == "True" {
-					deployReady = true
-					break
+				switch {
+				case c.Type == appsv1.DeploymentAvailable && c.Status == "True":
+					deployAvailable = true
+				case c.Type == appsv1.DeploymentProgressing && c.Status == "False":
+					deployDeadlineExceeded = true
 				}
 			}
 		}
@@ -318,7 +321,11 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		programmedStatus := metav1.ConditionFalse
 		programmedReason := string(gatewayv1.GatewayReasonPending)
 		programmedMsg := "Waiting for cloudflared deployment to become ready"
-		if deployReady {
+		if deployDeadlineExceeded {
+			readyStatus = metav1.ConditionFalse
+			readyReason = apiv1.ReasonReconciliationFailed
+			readyMsg = "cloudflared deployment exceeded progress deadline"
+		} else if deployAvailable {
 			programmedStatus = metav1.ConditionTrue
 			programmedReason = string(gatewayv1.GatewayReasonProgrammed)
 			programmedMsg = "Gateway is programmed"
@@ -326,6 +333,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 			readyReason = apiv1.ReasonReconciliationSucceeded
 			readyMsg = "Gateway is ready"
 		} else {
+			readyReason = apiv1.ReasonProgressing
 			readyMsg = "Waiting for cloudflared deployment to become ready"
 		}
 		desiredConds = []metav1.Condition{
@@ -379,10 +387,10 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		return ctrl.Result{}, err
 	}
 
-	if readyStatus == metav1.ConditionFalse {
-		r.Eventf(gw, nil, corev1.EventTypeWarning, readyReason, "Reconcile", readyMsg)
-	} else {
+	if readyStatus == metav1.ConditionTrue {
 		r.Eventf(gw, nil, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded, "Reconcile", "Gateway reconciled")
+	} else {
+		r.Eventf(gw, nil, corev1.EventTypeWarning, readyReason, "Reconcile", readyMsg)
 	}
 
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
@@ -1408,7 +1416,7 @@ func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1
 			dnsMessage = *dnsErr
 		} else {
 			dnsStatus = metav1.ConditionTrue
-			dnsReason = apiv1.ReasonDNSReconciled
+			dnsReason = apiv1.ReasonReconciliationSucceeded
 			dnsMessage = routeDNSMessage(route, zoneName)
 		}
 	}
