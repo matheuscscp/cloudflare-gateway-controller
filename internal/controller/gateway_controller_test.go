@@ -1082,3 +1082,311 @@ func TestGatewayReconciler_HTTPRouteGatewayNotReady(t *testing.T) {
 		g.Expect(result.Status.Parents).To(BeEmpty())
 	}).WithTimeout(3 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
+
+func TestGatewayReconciler_DeploymentPatches(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-deploy-patches", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-deploy-patches",
+			Namespace: ns.Name,
+			Annotations: map[string]string{
+				apiv1.AnnotationDeploymentPatches: `
+- op: add
+  path: /spec/template/spec/tolerations
+  value:
+    - key: "example.com/special-node"
+      operator: "Exists"
+`,
+			},
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "http",
+					Protocol: gatewayv1.HTTPProtocolType,
+					Port:     80,
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayProgrammed(g, gw)
+
+	// Verify Deployment has tolerations from the patch
+	var deploy appsv1.Deployment
+	deployKey := client.ObjectKey{Name: "cloudflared-" + gw.Name, Namespace: gw.Namespace}
+	g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
+	g.Expect(deploy.Spec.Template.Spec.Tolerations).To(HaveLen(1))
+	g.Expect(deploy.Spec.Template.Spec.Tolerations[0].Key).To(Equal("example.com/special-node"))
+	g.Expect(deploy.Spec.Template.Spec.Tolerations[0].Operator).To(Equal(corev1.TolerationOperator("Exists")))
+}
+
+func TestGatewayReconciler_DeploymentPatchesMultiple(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-patches-multi", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-patches-multi",
+			Namespace: ns.Name,
+			Annotations: map[string]string{
+				apiv1.AnnotationDeploymentPatches: `
+- op: add
+  path: /spec/replicas
+  value: 3
+- op: add
+  path: /spec/template/spec/tolerations
+  value:
+    - key: "node-role"
+      operator: "Exists"
+`,
+			},
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "http",
+					Protocol: gatewayv1.HTTPProtocolType,
+					Port:     80,
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayProgrammed(g, gw)
+
+	// Verify both replicas and tolerations are applied
+	var deploy appsv1.Deployment
+	deployKey := client.ObjectKey{Name: "cloudflared-" + gw.Name, Namespace: gw.Namespace}
+	g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
+	g.Expect(deploy.Spec.Replicas).NotTo(BeNil())
+	g.Expect(*deploy.Spec.Replicas).To(Equal(int32(3)))
+	g.Expect(deploy.Spec.Template.Spec.Tolerations).To(HaveLen(1))
+	g.Expect(deploy.Spec.Template.Spec.Tolerations[0].Key).To(Equal("node-role"))
+}
+
+func TestGatewayReconciler_DeploymentPatchesResourceRequests(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-patches-resources", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-patches-resources",
+			Namespace: ns.Name,
+			Annotations: map[string]string{
+				apiv1.AnnotationDeploymentPatches: `
+- op: add
+  path: /spec/template/spec/containers/0/resources
+  value:
+    requests:
+      memory: "128Mi"
+      cpu: "250m"
+    limits:
+      memory: "256Mi"
+`,
+			},
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "http",
+					Protocol: gatewayv1.HTTPProtocolType,
+					Port:     80,
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayProgrammed(g, gw)
+
+	// Verify Deployment container has resource requests/limits
+	var deploy appsv1.Deployment
+	deployKey := client.ObjectKey{Name: "cloudflared-" + gw.Name, Namespace: gw.Namespace}
+	g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
+	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
+	resources := deploy.Spec.Template.Spec.Containers[0].Resources
+	g.Expect(resources.Requests.Memory().String()).To(Equal("128Mi"))
+	g.Expect(resources.Requests.Cpu().String()).To(Equal("250m"))
+	g.Expect(resources.Limits.Memory().String()).To(Equal("256Mi"))
+}
+
+func TestGatewayReconciler_DeploymentPatchesInvalidYAML(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-patches-invalid-yaml", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-patches-invalid-yaml",
+			Namespace: ns.Name,
+			Annotations: map[string]string{
+				apiv1.AnnotationDeploymentPatches: `not: valid: yaml: [`,
+			},
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "http",
+					Protocol: gatewayv1.HTTPProtocolType,
+					Port:     80,
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// The Gateway should report an error via Ready condition
+	gwKey := client.ObjectKeyFromObject(gw)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
+		ready := conditions.Find(result.Status.Conditions, apiv1.ConditionReady)
+		g.Expect(ready).NotTo(BeNil())
+		g.Expect(ready.Status).To(Equal(metav1.ConditionUnknown))
+		g.Expect(ready.Message).To(ContainSubstring("deploymentPatches"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func TestGatewayReconciler_DeploymentPatchesInvalidOps(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-patches-invalid-ops", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-patches-invalid-ops",
+			Namespace: ns.Name,
+			Annotations: map[string]string{
+				apiv1.AnnotationDeploymentPatches: `
+- op: replace
+  path: /spec/nonexistent/field
+  value: "something"
+`,
+			},
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "http",
+					Protocol: gatewayv1.HTTPProtocolType,
+					Port:     80,
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// The Gateway should report an error via Ready condition
+	gwKey := client.ObjectKeyFromObject(gw)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
+		ready := conditions.Find(result.Status.Conditions, apiv1.ConditionReady)
+		g.Expect(ready).NotTo(BeNil())
+		g.Expect(ready.Status).To(Equal(metav1.ConditionUnknown))
+		g.Expect(ready.Message).To(ContainSubstring("deploymentPatches"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}

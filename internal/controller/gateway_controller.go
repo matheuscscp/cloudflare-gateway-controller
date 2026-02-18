@@ -9,10 +9,10 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
+	jsonpatch "github.com/evanphx/json-patch/v5"
 	"github.com/fluxcd/pkg/ssa"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
@@ -242,20 +243,11 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		}
 		log.V(1).Info("Reconciled tunnel token Secret", "result", secretResult)
 
-		// Parse replicas annotation
-		var replicas *int32
-		if v, ok := gw.Annotations[apiv1.AnnotationReplicas]; ok {
-			n, err := strconv.ParseInt(v, 10, 32)
-			if err == nil {
-				replicas = new(int32(n))
-			}
-		}
-
 		// Apply cloudflared Deployment via Server-Side Apply with dry-run diff.
 		// Only the fields we declare are managed; the SSA manager detects drift
 		// by comparing a server-side dry-run result with the existing object,
 		// skipping the actual apply when no drift is detected.
-		deployObj, err := r.buildCloudflaredDeployment(gw, replicas)
+		deployObj, err := r.buildCloudflaredDeployment(gw)
 		if err != nil {
 			return r.reconcileError(ctx, gw, fmt.Errorf("building cloudflared deployment: %w", err))
 		}
@@ -1111,12 +1103,31 @@ func buildTunnelTokenSecret(gw *gatewayv1.Gateway, tunnelToken string) *corev1.S
 
 // buildCloudflaredDeployment builds the desired cloudflared Deployment as an
 // unstructured object suitable for server-side apply via the SSA manager.
-func (r *GatewayReconciler) buildCloudflaredDeployment(gw *gatewayv1.Gateway, replicas *int32) (*unstructured.Unstructured, error) {
-	apply := r.buildCloudflaredDeploymentApply(gw, replicas)
+// If the Gateway has an AnnotationDeploymentPatches annotation, the RFC 6902
+// JSON Patch operations (written in YAML) are applied to the base Deployment.
+func (r *GatewayReconciler) buildCloudflaredDeployment(gw *gatewayv1.Gateway) (*unstructured.Unstructured, error) {
+	apply := r.buildCloudflaredDeploymentApply(gw)
 	data, err := json.Marshal(apply)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling deployment: %w", err)
 	}
+
+	// Apply RFC 6902 JSON Patch operations from the annotation if present.
+	if patchYAML, ok := gw.Annotations[apiv1.AnnotationDeploymentPatches]; ok {
+		patchJSON, err := yaml.YAMLToJSON([]byte(patchYAML))
+		if err != nil {
+			return nil, fmt.Errorf("parsing deploymentPatches annotation YAML: %w", err)
+		}
+		patch, err := jsonpatch.DecodePatch(patchJSON)
+		if err != nil {
+			return nil, fmt.Errorf("decoding deploymentPatches annotation: %w", err)
+		}
+		data, err = patch.Apply(data)
+		if err != nil {
+			return nil, fmt.Errorf("applying deploymentPatches annotation: %w", err)
+		}
+	}
+
 	obj := &unstructured.Unstructured{}
 	if err := obj.UnmarshalJSON(data); err != nil {
 		return nil, fmt.Errorf("unmarshaling deployment: %w", err)
@@ -1125,7 +1136,7 @@ func (r *GatewayReconciler) buildCloudflaredDeployment(gw *gatewayv1.Gateway, re
 	return obj, nil
 }
 
-func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gateway, replicas *int32) *acappsv1.DeploymentApplyConfiguration {
+func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gateway) *acappsv1.DeploymentApplyConfiguration {
 	selectorLabels := map[string]string{
 		"app.kubernetes.io/name":       "cloudflared",
 		"app.kubernetes.io/managed-by": apiv1.ShortControllerName,
@@ -1180,10 +1191,6 @@ func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gatewa
 				),
 			),
 		)
-
-	if replicas != nil {
-		deploy.Spec.WithReplicas(*replicas)
-	}
 
 	return deploy
 }

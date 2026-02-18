@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/Masterminds/semver/v3 v3.4.0
 	github.com/cloudflare/cloudflare-go/v6 v6.7.0
+	github.com/evanphx/json-patch/v5 v5.9.11
 	github.com/fluxcd/pkg/ssa v0.69.0
 	github.com/onsi/gomega v1.39.1
 	github.com/spf13/pflag v1.0.9
@@ -14,6 +15,7 @@ require (
 	k8s.io/client-go v0.35.1
 	sigs.k8s.io/controller-runtime v0.23.1
 	sigs.k8s.io/gateway-api v1.4.1
+	sigs.k8s.io/yaml v1.6.0
 )
 
 require (
@@ -25,7 +27,6 @@ require (
 	github.com/chai2010/gettext-go v1.0.2 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/emicklei/go-restful/v3 v3.13.0 // indirect
-	github.com/evanphx/json-patch/v5 v5.9.11 // indirect
 	github.com/exponent-io/jsonpath v0.0.0-20210407135951-1de76d718b3f // indirect
 	github.com/fluxcd/cli-utils v0.37.1-flux.1 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
@@ -93,5 +94,4 @@ require (
 	sigs.k8s.io/kustomize/kyaml v0.21.1 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.2-0.20260122202528-d9cc6641c482 // indirect
-	sigs.k8s.io/yaml v1.6.0 // indirect
 )

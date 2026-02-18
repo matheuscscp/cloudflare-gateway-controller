@@ -60,15 +60,21 @@ const (
 	// The value must be a valid Go duration string (e.g. "5m", "1h").
 	AnnotationReconcileEvery = prefix + "reconcileEvery"
 
-	// AnnotationReplicas sets the number of cloudflared replicas.
-	// When absent on create, defaults to 1.
-	// When absent on update, the current value is preserved.
-	AnnotationReplicas = prefixGateway + "replicas"
-
 	// AnnotationZoneName opts a Gateway into DNS CNAME management for the given zone.
 	// When set, the Gateway controller manages all DNS CNAME records for hostnames
 	// from attached HTTPRoutes, pointing to the tunnel's cfargotunnel.com target.
 	AnnotationZoneName = prefixGateway + "zoneName"
+
+	// AnnotationDeploymentPatches customizes the cloudflared Deployment via
+	// RFC 6902 JSON Patch operations written in YAML. The value is a YAML-encoded
+	// array of patch operations applied after the base Deployment is built.
+	// Example:
+	//   - op: add
+	//     path: /spec/template/spec/tolerations
+	//     value:
+	//       - key: "example.com/special-node"
+	//         operator: "Exists"
+	AnnotationDeploymentPatches = prefixGateway + "deploymentPatches"
 )
 
 // Reconciliation defaults.
