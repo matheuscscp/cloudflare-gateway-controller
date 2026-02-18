@@ -364,7 +364,8 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 
 	// Emit event for resource changes.
 	if len(changes) > 0 {
-		r.Eventf(gw, nil, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded, apiv1.EventActionReconcile, strings.Join(changes, ", "))
+		r.Eventf(gw, nil, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded,
+			apiv1.EventActionReconcile, strings.Join(changes, "\n"))
 	}
 
 	// Skip the status patch if no conditions or listener statuses changed.
@@ -426,7 +427,8 @@ func (r *GatewayReconciler) reconcileError(ctx context.Context, gw *gatewayv1.Ga
 			"originalError", msg)
 	}
 
-	r.Eventf(gw, nil, corev1.EventTypeWarning, apiv1.ReasonProgressingWithRetry, apiv1.EventActionReconcile, "Reconciliation failed: %v", reconcileErr)
+	r.Eventf(gw, nil, corev1.EventTypeWarning, apiv1.ReasonProgressingWithRetry,
+		apiv1.EventActionReconcile, "Reconciliation failed: %v", reconcileErr)
 	return ctrl.Result{}, reconcileErr
 }
 

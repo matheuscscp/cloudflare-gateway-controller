@@ -145,9 +145,11 @@ func (r *GatewayClassReconciler) reconcile(ctx context.Context, gc *gatewayv1.Ga
 	}
 
 	if readyStatus == metav1.ConditionFalse {
-		r.Eventf(gc, nil, corev1.EventTypeWarning, readyReason, apiv1.EventActionReconcile, readyMessage)
+		r.Eventf(gc, nil, corev1.EventTypeWarning, readyReason,
+			apiv1.EventActionReconcile, readyMessage)
 	} else {
-		r.Eventf(gc, nil, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded, apiv1.EventActionReconcile, "GatewayClass is ready")
+		r.Eventf(gc, nil, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded,
+			apiv1.EventActionReconcile, "GatewayClass is ready")
 	}
 
 	return ctrl.Result{}, nil
