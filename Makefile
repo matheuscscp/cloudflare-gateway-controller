@@ -19,7 +19,7 @@ GO_TEST_ARGS ?=
 IMG ?= cloudflare-gateway-controller:dev
 
 .PHONY: all
-all: test build build-cfgwctl ## Run all build and test targets.
+all: test lint build build-cfgwctl ## Run all build and test targets.
 
 ##@ Development
 
@@ -44,6 +44,14 @@ tidy: ## Run go mod tidy.
 test: tidy fmt vet envtest ## Run all unit tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
 	go test $(shell go list ./... | grep -v -e '^github.com/matheuscscp/cloudflare-gateway-controller$$' -e '/cmd/') $(GO_TEST_ARGS) -coverprofile cover.out
+
+.PHONY: lint
+lint: golangci-lint ## Run golangci linters.
+	$(GOLANGCI_LINT) run
+
+.PHONY: lint-fix
+lint-fix: golangci-lint ## Run golangci linters and perform fixes.
+	$(GOLANGCI_LINT) run --fix
 
 ##@ Build
 
@@ -81,10 +89,12 @@ $(LOCALBIN):
 ## Tool Binaries
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen-$(CONTROLLER_GEN_VERSION)
 ENVTEST ?= $(LOCALBIN)/setup-envtest-$(ENVTEST_VERSION)
+GOLANGCI_LINT ?= $(LOCALBIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
 
 ## Tool Versions
 CONTROLLER_GEN_VERSION ?= v0.19.0
 ENVTEST_VERSION ?= $(shell go list -m -f "{{ .Version }}" sigs.k8s.io/controller-runtime | awk -F'[v.]' '{printf "release-%d.%d", $$2, $$3}')
+GOLANGCI_LINT_VERSION ?= v2.9.0
 
 .PHONY: controller-gen
 controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary.
@@ -95,6 +105,11 @@ $(CONTROLLER_GEN): $(LOCALBIN)
 envtest: $(ENVTEST) ## Download setup-envtest locally if necessary.
 $(ENVTEST): $(LOCALBIN)
 	$(call go-install-tool,$(ENVTEST),sigs.k8s.io/controller-runtime/tools/setup-envtest,$(ENVTEST_VERSION))
+
+.PHONY: golangci-lint
+golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
+$(GOLANGCI_LINT): $(LOCALBIN)
+	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary (ideally with version)

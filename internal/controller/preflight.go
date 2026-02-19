@@ -69,9 +69,8 @@ func PreflightChecks(options ...PreflightOption) error {
 // ParseOSRelease returns a map of key-value pairs representing the OS information.
 func ParseOSRelease(content string) (map[string]string, error) {
 	result := make(map[string]string)
-	lines := strings.Split(content, "\n")
 
-	for _, line := range lines {
+	for line := range strings.SplitSeq(content, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue

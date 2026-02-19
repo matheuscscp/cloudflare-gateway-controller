@@ -149,7 +149,7 @@ func (r *GatewayReconciler) mapReferenceGrantToGateway(ctx context.Context, obj 
 	// Check if the grant's "to" entries include Services.
 	serviceGranted := false
 	for _, to := range grant.Spec.To {
-		if (to.Group == "" || to.Group == "core") && to.Kind == gatewayv1beta1.Kind(apiv1.KindService) {
+		if (to.Group == "" || to.Group == apiv1.GroupCore) && to.Kind == gatewayv1beta1.Kind(apiv1.KindService) {
 			serviceGranted = true
 			break
 		}

@@ -133,7 +133,7 @@ type routeConditions struct {
 // GatewayClass, handles deletion via finalize(), adds the finalizer, and
 // delegates to reconcile() for the main reconciliation logic.
 func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := log.FromContext(ctx)
+	l := log.FromContext(ctx)
 
 	var gw gatewayv1.Gateway
 	if err := r.Get(ctx, req.NamespacedName, &gw); err != nil {
@@ -161,24 +161,24 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if err := r.Patch(ctx, &gw, gwPatch); err != nil {
 			return ctrl.Result{}, fmt.Errorf("adding finalizer: %w", err)
 		}
-		log.V(1).Info("Added finalizer to Gateway")
+		l.V(1).Info("Added finalizer to Gateway")
 		return ctrl.Result{RequeueAfter: 1}, nil
 	}
 
 	// Skip reconciliation if the GatewayClass is not ready (e.g. incompatible
 	// CRD version). The GatewayClass watch will re-trigger when it becomes ready.
 	if ready := conditions.Find(gc.Status.Conditions, apiv1.ConditionReady); ready == nil || ready.Status != metav1.ConditionTrue {
-		log.V(1).Info("GatewayClass is not ready, skipping reconciliation")
+		l.V(1).Info("GatewayClass is not ready, skipping reconciliation")
 		return ctrl.Result{}, nil
 	}
 
 	// Skip reconciliation if the object is suspended.
 	if gw.Annotations[apiv1.AnnotationReconcile] == apiv1.ValueDisabled {
-		log.V(1).Info("Reconciliation is disabled")
+		l.V(1).Info("Reconciliation is disabled")
 		return ctrl.Result{}, nil
 	}
 
-	log.V(1).Info("Reconciling Gateway")
+	l.V(1).Info("Reconciling Gateway")
 
 	return r.reconcile(ctx, &gw, &gc)
 }
@@ -452,7 +452,7 @@ func (r *GatewayReconciler) checkDeploymentReadiness(ctx context.Context, gw *ga
 // state, checks whether a status patch is needed (conditions, listeners, or
 // resource changes), patches the status, and emits summary events/logs.
 func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv1.Gateway, desiredListeners []gatewayv1.ListenerStatus, changes, errs []string, readiness gatewayReadiness) (ctrl.Result, error) {
-	log := log.FromContext(ctx)
+	l := log.FromContext(ctx)
 	now := metav1.Now()
 
 	desiredConds := []metav1.Condition{
@@ -514,7 +514,7 @@ func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv
 		if err := r.Status().Patch(ctx, gw, patch); err != nil {
 			return ctrl.Result{}, err
 		}
-		log.V(1).Info("Patched Gateway status")
+		l.V(1).Info("Patched Gateway status")
 	}
 
 	// Emit log and event summarizing errors and/or resource changes.
@@ -525,18 +525,18 @@ func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv
 	}
 	warnings = append(warnings, errs...)
 	if len(warnings) > 0 {
-		var summary []string
+		summary := make([]string, 0, len(warnings)+len(changes))
 		summary = append(summary, warnings...)
 		summary = append(summary, changes...)
 		eventReason := apiv1.ReasonProgressingWithRetry
 		if readyTerminal {
 			eventReason = readiness.readyReason
 		}
-		log.Error(fmt.Errorf("%s", strings.Join(warnings, "; ")), "Gateway reconciled with errors", "changes", changes)
+		l.Error(fmt.Errorf("%s", strings.Join(warnings, "; ")), "Gateway reconciled with errors", "changes", changes)
 		r.Eventf(gw, nil, corev1.EventTypeWarning, eventReason,
 			apiv1.EventActionReconcile, strings.Join(summary, "\n"))
 	} else if len(changes) > 0 {
-		log.Info("Gateway reconciled", "changes", changes)
+		l.Info("Gateway reconciled", "changes", changes)
 		r.Eventf(gw, nil, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded,
 			apiv1.EventActionReconcile, strings.Join(changes, "\n"))
 	}
@@ -627,7 +627,7 @@ func (r *GatewayReconciler) finalizeError(ctx context.Context, gw *gatewayv1.Gat
 // GatewayClass finalizer, emits a "Gateway finalized" event, and removes
 // the Gateway finalizer.
 func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway, gc *gatewayv1.GatewayClass) (ctrl.Result, error) {
-	log := log.FromContext(ctx)
+	l := log.FromContext(ctx)
 
 	if gw.Annotations[apiv1.AnnotationReconcile] == apiv1.ValueDisabled {
 		if err := r.finalizeDisabled(ctx, gw); err != nil {
@@ -643,15 +643,15 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 	if err := r.removeRouteStatuses(ctx, gw); err != nil {
 		return r.finalizeError(ctx, gw, fmt.Errorf("removing HTTPRoute status entries: %w", err))
 	}
-	log.V(1).Info("Removed HTTPRoute status entries")
+	l.V(1).Info("Removed HTTPRoute status entries")
 
 	// Remove this Gateway's finalizer from all GatewayClasses.
 	if err := r.removeGatewayClassFinalizer(ctx, gw); err != nil {
 		return r.finalizeError(ctx, gw, fmt.Errorf("removing GatewayClass finalizer: %w", err))
 	}
-	log.V(1).Info("Removed GatewayClass finalizer")
+	l.V(1).Info("Removed GatewayClass finalizer")
 
-	log.Info("Gateway finalized")
+	l.Info("Gateway finalized")
 	r.Eventf(gw, nil, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded,
 		apiv1.EventActionFinalize, "Gateway finalized")
 
@@ -665,7 +665,7 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 		if err := r.Patch(ctx, gw, gwPatch); client.IgnoreNotFound(err) != nil {
 			return r.finalizeError(ctx, gw, fmt.Errorf("removing finalizer: %w", err))
 		}
-		log.V(1).Info("Removed finalizer from Gateway")
+		l.V(1).Info("Removed finalizer from Gateway")
 	}
 
 	return ctrl.Result{}, nil
@@ -675,12 +675,12 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 // Kubernetes GC doesn't delete them when the Gateway is removed with
 // reconciliation disabled. The user is responsible for manual cleanup.
 func (r *GatewayReconciler) finalizeDisabled(ctx context.Context, gw *gatewayv1.Gateway) error {
-	log := log.FromContext(ctx)
+	l := log.FromContext(ctx)
 
 	removed, err := r.removeOwnerReferences(ctx, gw)
 
 	// Log and emit events for removed objects, even on partial failure.
-	var removedInfo []string
+	removedInfo := make([]string, 0, len(removed))
 	for _, obj := range removed {
 		removedInfo = append(removedInfo, fmt.Sprintf("%s/%s/%s",
 			obj.GetObjectKind().GroupVersionKind().Kind,
@@ -688,7 +688,7 @@ func (r *GatewayReconciler) finalizeDisabled(ctx context.Context, gw *gatewayv1.
 			obj.GetName()))
 	}
 	if len(removedInfo) > 0 {
-		log.Info(
+		l.Info(
 			"Finalization: Gateway disabled, removed owner references from managed objects",
 			"objects", removedInfo)
 	}
@@ -707,7 +707,7 @@ func (r *GatewayReconciler) finalizeDisabled(ctx context.Context, gw *gatewayv1.
 // fully removed), then reads credentials, cleans up DNS CNAME records across
 // all zones, and deletes the Cloudflare tunnel.
 func (r *GatewayReconciler) finalizeEnabled(ctx context.Context, gw *gatewayv1.Gateway, gc *gatewayv1.GatewayClass) error {
-	log := log.FromContext(ctx)
+	l := log.FromContext(ctx)
 
 	// Delete the cloudflared Deployment and wait for it to be gone
 	// before deleting the tunnel, so there are no active connections.
@@ -720,7 +720,7 @@ func (r *GatewayReconciler) finalizeEnabled(ctx context.Context, gw *gatewayv1.G
 	if err := r.Delete(ctx, deploy); client.IgnoreNotFound(err) != nil {
 		return fmt.Errorf("deleting cloudflared deployment: %w", err)
 	}
-	log.V(1).Info("Deleted cloudflared Deployment")
+	l.V(1).Info("Deleted cloudflared Deployment")
 	deployKey := client.ObjectKeyFromObject(deploy)
 	for {
 		if err := r.Get(ctx, deployKey, deploy); apierrors.IsNotFound(err) {
@@ -734,7 +734,7 @@ func (r *GatewayReconciler) finalizeEnabled(ctx context.Context, gw *gatewayv1.G
 		case <-time.After(time.Second):
 		}
 	}
-	log.V(1).Info("Cloudflared Deployment is gone")
+	l.V(1).Info("Cloudflared Deployment is gone")
 
 	cfg, err := readCredentials(ctx, r.Client, gc, gw)
 	if err != nil {
@@ -753,15 +753,15 @@ func (r *GatewayReconciler) finalizeEnabled(ctx context.Context, gw *gatewayv1.G
 		if err := r.cleanupAllDNS(ctx, tc, tunnelID); err != nil {
 			return fmt.Errorf("cleaning up DNS during finalization: %w", err)
 		}
-		log.V(1).Info("Cleaned up DNS CNAME records")
+		l.V(1).Info("Cleaned up DNS CNAME records")
 		if err := tc.CleanupTunnelConnections(ctx, tunnelID); err != nil {
 			return fmt.Errorf("cleaning up tunnel connections: %w", err)
 		}
-		log.V(1).Info("Cleaned up tunnel connections")
+		l.V(1).Info("Cleaned up tunnel connections")
 		if err := tc.DeleteTunnel(ctx, tunnelID); err != nil {
 			return fmt.Errorf("deleting tunnel: %w", err)
 		}
-		log.V(1).Info("Deleted tunnel", "tunnelID", tunnelID)
+		l.V(1).Info("Deleted tunnel", "tunnelID", tunnelID)
 	}
 
 	return nil
@@ -772,7 +772,7 @@ func (r *GatewayReconciler) finalizeEnabled(ctx context.Context, gw *gatewayv1.G
 // garbage collection when the Gateway is deleted with reconciliation disabled.
 // Returns the list of resources that were modified.
 func (r *GatewayReconciler) removeOwnerReferences(ctx context.Context, gw *gatewayv1.Gateway) ([]client.Object, error) {
-	log := log.FromContext(ctx)
+	l := log.FromContext(ctx)
 	var removed []client.Object
 
 	// Remove owner reference from cloudflared Deployment.
@@ -795,7 +795,7 @@ func (r *GatewayReconciler) removeOwnerReferences(ctx context.Context, gw *gatew
 	}); err != nil {
 		return removed, err
 	}
-	log.V(1).Info("Removed owner reference from Deployment", "deployment", deployKey)
+	l.V(1).Info("Removed owner reference from Deployment", "deployment", deployKey)
 
 	// Remove owner reference from tunnel token Secret.
 	var secret corev1.Secret
@@ -817,7 +817,7 @@ func (r *GatewayReconciler) removeOwnerReferences(ctx context.Context, gw *gatew
 	}); err != nil {
 		return removed, err
 	}
-	log.V(1).Info("Removed owner reference from Secret", "secret", secretKey)
+	l.V(1).Info("Removed owner reference from Secret", "secret", secretKey)
 
 	return removed, nil
 }
@@ -842,7 +842,7 @@ func removeOwnerRef(obj client.Object, ownerUID types.UID) bool {
 // new(fmt.Sprintf(...)) to allocate the error message inline), which is
 // reported on each HTTPRoute's DNSRecordsApplied condition.
 func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cloudflare.Client, tunnelID, zoneName string, gw *gatewayv1.Gateway, routes []*gatewayv1.HTTPRoute) ([]string, *string) {
-	log := log.FromContext(ctx)
+	l := log.FromContext(ctx)
 
 	if zoneName == "" {
 		// Only clean up if DNS was previously enabled (condition was True
@@ -891,7 +891,7 @@ func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cloudflare.Clie
 				return dnsChanges, new(fmt.Sprintf("Failed to ensure DNS CNAME for %q: %v", h, err))
 			}
 			dnsChanges = append(dnsChanges, fmt.Sprintf("created DNS CNAME for %s", h))
-			log.V(1).Info("Created DNS CNAME", "hostname", h)
+			l.V(1).Info("Created DNS CNAME", "hostname", h)
 		}
 	}
 
@@ -902,7 +902,7 @@ func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cloudflare.Clie
 				return dnsChanges, new(fmt.Sprintf("Failed to delete stale DNS CNAME for %q: %v", h, err))
 			}
 			dnsChanges = append(dnsChanges, fmt.Sprintf("deleted DNS CNAME for %s", h))
-			log.V(1).Info("Deleted stale DNS CNAME", "hostname", h)
+			l.V(1).Info("Deleted stale DNS CNAME", "hostname", h)
 		}
 	}
 
@@ -927,7 +927,7 @@ func dnsWasPreviouslyEnabled(routes []*gatewayv1.HTTPRoute, gw *gatewayv1.Gatewa
 // cleanupAllDNS deletes all CNAME records pointing to the tunnel across all
 // account zones. This is used when the zoneName annotation is removed.
 func (r *GatewayReconciler) cleanupAllDNS(ctx context.Context, tc cloudflare.Client, tunnelID string) error {
-	log := log.FromContext(ctx)
+	l := log.FromContext(ctx)
 	tunnelTarget := cloudflare.TunnelTarget(tunnelID)
 
 	zoneIDs, err := tc.ListZoneIDs(ctx)
@@ -944,7 +944,7 @@ func (r *GatewayReconciler) cleanupAllDNS(ctx context.Context, tc cloudflare.Cli
 			if err := tc.DeleteDNSCNAME(ctx, zoneID, h); err != nil {
 				return fmt.Errorf("deleting DNS CNAME %q in zone %s: %w", h, zoneID, err)
 			}
-			log.V(1).Info("Deleted DNS CNAME (zoneName removed or object deleted)", "hostname", h, "zoneID", zoneID)
+			l.V(1).Info("Deleted DNS CNAME (zoneName removed or object deleted)", "hostname", h, "zoneID", zoneID)
 		}
 	}
 
@@ -1034,17 +1034,17 @@ func readCredentials(ctx context.Context, r client.Reader, gc *gatewayv1.Gateway
 
 	if gw.Spec.Infrastructure != nil && gw.Spec.Infrastructure.ParametersRef != nil {
 		ref := gw.Spec.Infrastructure.ParametersRef
-		if string(ref.Kind) != apiv1.KindSecret || (ref.Group != "" && ref.Group != "core" && ref.Group != gatewayv1.Group("")) {
+		if string(ref.Kind) != apiv1.KindSecret || (ref.Group != "" && ref.Group != apiv1.GroupCore && ref.Group != gatewayv1.Group("")) {
 			return cloudflare.ClientConfig{}, fmt.Errorf("infrastructure parametersRef must reference a core/v1 Secret")
 		}
 		secretNamespace = gw.Namespace
-		secretName = string(ref.Name)
+		secretName = ref.Name
 	} else {
 		if gc.Spec.ParametersRef == nil {
 			return cloudflare.ClientConfig{}, fmt.Errorf("gatewayclass %q has no parametersRef", gc.Name)
 		}
 		ref := gc.Spec.ParametersRef
-		if string(ref.Kind) != apiv1.KindSecret || (ref.Group != "" && ref.Group != "core" && ref.Group != gatewayv1.Group("")) {
+		if string(ref.Kind) != apiv1.KindSecret || (ref.Group != "" && ref.Group != apiv1.GroupCore && ref.Group != gatewayv1.Group("")) {
 			return cloudflare.ClientConfig{}, fmt.Errorf("parametersRef must reference a core/v1 Secret")
 		}
 		if ref.Namespace == nil {
@@ -1304,7 +1304,7 @@ func buildIngressRules(ctx context.Context, r client.Reader, routes []*gatewayv1
 			}
 			port := int32(80)
 			if ref.Port != nil {
-				port = int32(*ref.Port)
+				port = *ref.Port
 			}
 			service := fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", string(ref.Name), ns, port)
 			path := pathFromMatches(rule.Matches)
@@ -1480,11 +1480,11 @@ func infrastructureLabels(infra *gatewayv1.GatewayInfrastructure) map[string]str
 	if infra == nil {
 		return nil
 	}
-	labels := make(map[string]string, len(infra.Labels))
+	lbls := make(map[string]string, len(infra.Labels))
 	for k, v := range infra.Labels {
-		labels[string(k)] = string(v)
+		lbls[string(k)] = string(v)
 	}
-	return labels
+	return lbls
 }
 
 // infrastructureAnnotations returns the annotations from the Gateway's infrastructure spec.

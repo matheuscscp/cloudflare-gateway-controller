@@ -28,6 +28,10 @@ const (
 	KindDeployment               = "Deployment"
 )
 
+// GroupCore is the Kubernetes core API group name used in Gateway API
+// references (e.g. parametersRef.group).
+const GroupCore = "core"
+
 // Annotation values.
 const (
 	ValueEnabled  = "enabled"

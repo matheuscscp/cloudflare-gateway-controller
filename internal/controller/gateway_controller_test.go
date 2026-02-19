@@ -27,14 +27,14 @@ func TestGatewayReconciler_AcceptedAndProgrammed(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-happy", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -60,7 +60,7 @@ func TestGatewayReconciler_AcceptedAndProgrammed(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -133,14 +133,14 @@ func TestGatewayReconciler_UnsupportedProtocol(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-unsupported", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -166,7 +166,7 @@ func TestGatewayReconciler_UnsupportedProtocol(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -193,14 +193,14 @@ func TestGatewayReconciler_Deletion(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-deletion", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -269,18 +269,18 @@ func TestGatewayReconciler_CrossNamespaceSecret(t *testing.T) {
 
 	// Namespace A: where the Secret lives
 	nsA := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, nsA) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, nsA) })
 
 	// Namespace B: where the Gateway lives
 	nsB := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, nsB) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, nsB) })
 
 	createTestSecret(g, nsA.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-cross-ns", nsA.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -306,7 +306,7 @@ func TestGatewayReconciler_CrossNamespaceSecret(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -345,7 +345,7 @@ func TestGatewayReconciler_CrossNamespaceSecret(t *testing.T) {
 		},
 	}
 	g.Expect(testClient.Create(testCtx, refGrant)).To(Succeed())
-	t.Cleanup(func() { testClient.Delete(testCtx, refGrant) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, refGrant) })
 
 	// Trigger reconciliation by touching an annotation (the controller watches
 	// annotation changes via AnnotationChangedPredicate).
@@ -378,14 +378,14 @@ func TestGatewayReconciler_Infrastructure(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-infra", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -419,7 +419,7 @@ func TestGatewayReconciler_Infrastructure(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -462,18 +462,18 @@ func TestGatewayReconciler_InfrastructureParametersRef(t *testing.T) {
 
 	// Namespace A: where the GatewayClass secret lives
 	nsA := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, nsA) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, nsA) })
 
 	// Namespace B: where the Gateway and its local secret live
 	nsB := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, nsB) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, nsB) })
 
 	createTestSecret(g, nsA.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-infra-ref", nsA.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -519,7 +519,7 @@ func TestGatewayReconciler_InfrastructureParametersRef(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -549,14 +549,14 @@ func TestGatewayReconciler_DNSReconciliation(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-dns", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -585,7 +585,7 @@ func TestGatewayReconciler_DNSReconciliation(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 	waitForGatewayProgrammed(g, gw)
@@ -624,7 +624,7 @@ func TestGatewayReconciler_DNSReconciliation(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.HTTPRoute
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -657,14 +657,14 @@ func TestGatewayReconciler_DNSStaleCleanup(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-dns-stale", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -699,7 +699,7 @@ func TestGatewayReconciler_DNSStaleCleanup(t *testing.T) {
 		testMock.listDNSCNAMEsByTarget = nil
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -714,14 +714,14 @@ func TestGatewayReconciler_DNSSkippedHostnames(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-dns-skip", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -754,7 +754,7 @@ func TestGatewayReconciler_DNSSkippedHostnames(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 	waitForGatewayProgrammed(g, gw)
@@ -791,7 +791,7 @@ func TestGatewayReconciler_DNSSkippedHostnames(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.HTTPRoute
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -824,14 +824,14 @@ func TestGatewayReconciler_HTTPRouteAccepted(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-httproute-accepted", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -841,7 +841,7 @@ func TestGatewayReconciler_HTTPRouteAccepted(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 	waitForGatewayProgrammed(g, gw)
@@ -884,7 +884,7 @@ func TestGatewayReconciler_HTTPRouteAccepted(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.HTTPRoute
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -934,18 +934,18 @@ func TestGatewayReconciler_HTTPRouteCrossNamespaceAllowAll(t *testing.T) {
 
 	// Namespace A: where the Gateway lives (credentials are local)
 	nsA := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, nsA) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, nsA) })
 
 	// Namespace B: where the HTTPRoute lives
 	nsB := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, nsB) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, nsB) })
 
 	createTestSecret(g, nsA.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-cross-route-all", nsA.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -978,7 +978,7 @@ func TestGatewayReconciler_HTTPRouteCrossNamespaceAllowAll(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 	waitForGatewayProgrammed(g, gw)
@@ -1020,7 +1020,7 @@ func TestGatewayReconciler_HTTPRouteCrossNamespaceAllowAll(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.HTTPRoute
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -1050,18 +1050,18 @@ func TestGatewayReconciler_HTTPRouteCrossNamespaceDenied(t *testing.T) {
 
 	// Namespace A: where the Gateway lives (default from=Same)
 	nsA := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, nsA) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, nsA) })
 
 	// Namespace B: where the HTTPRoute lives
 	nsB := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, nsB) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, nsB) })
 
 	createTestSecret(g, nsA.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-cross-route-denied", nsA.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -1072,7 +1072,7 @@ func TestGatewayReconciler_HTTPRouteCrossNamespaceDenied(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 	waitForGatewayProgrammed(g, gw)
@@ -1114,7 +1114,7 @@ func TestGatewayReconciler_HTTPRouteCrossNamespaceDenied(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.HTTPRoute
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -1146,7 +1146,7 @@ func TestGatewayReconciler_HTTPRouteCrossNamespaceSelector(t *testing.T) {
 
 	// Namespace A: where the Gateway lives
 	nsA := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, nsA) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, nsA) })
 
 	// Namespace B: where the HTTPRoute lives (will have matching label)
 	nsB := &corev1.Namespace{
@@ -1158,14 +1158,14 @@ func TestGatewayReconciler_HTTPRouteCrossNamespaceSelector(t *testing.T) {
 		},
 	}
 	g.Expect(testClient.Create(testCtx, nsB)).To(Succeed())
-	t.Cleanup(func() { testClient.Delete(testCtx, nsB) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, nsB) })
 
 	createTestSecret(g, nsA.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-cross-route-sel", nsA.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -1203,7 +1203,7 @@ func TestGatewayReconciler_HTTPRouteCrossNamespaceSelector(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 	waitForGatewayProgrammed(g, gw)
@@ -1245,7 +1245,7 @@ func TestGatewayReconciler_HTTPRouteCrossNamespaceSelector(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.HTTPRoute
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -1265,14 +1265,14 @@ func TestGatewayReconciler_HTTPRouteDeletion(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-httproute-delete", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -1282,7 +1282,7 @@ func TestGatewayReconciler_HTTPRouteDeletion(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 	waitForGatewayProgrammed(g, gw)
@@ -1354,7 +1354,7 @@ func TestGatewayReconciler_GatewayClassNotReadyThenRecovers(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	// Create a GatewayClass pointing to a nonexistent secret so it becomes not ready.
 	gc := &gatewayv1.GatewayClass{
@@ -1375,7 +1375,7 @@ func TestGatewayReconciler_GatewayClassNotReadyThenRecovers(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -1394,7 +1394,7 @@ func TestGatewayReconciler_GatewayClassNotReadyThenRecovers(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -1432,7 +1432,7 @@ func TestGatewayReconciler_GatewayClassNotReadyThenRecovers(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.HTTPRoute
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -1475,14 +1475,14 @@ func TestGatewayReconciler_DeploymentPatches(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-deploy-patches", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -1517,7 +1517,7 @@ func TestGatewayReconciler_DeploymentPatches(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -1536,14 +1536,14 @@ func TestGatewayReconciler_DeploymentPatchesMultiple(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-patches-multi", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -1581,7 +1581,7 @@ func TestGatewayReconciler_DeploymentPatchesMultiple(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -1601,14 +1601,14 @@ func TestGatewayReconciler_DeploymentPatchesResourceRequests(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-patches-resources", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -1646,7 +1646,7 @@ func TestGatewayReconciler_DeploymentPatchesResourceRequests(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -1667,14 +1667,14 @@ func TestGatewayReconciler_DeploymentPatchesInvalidYAML(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-patches-invalid-yaml", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -1703,7 +1703,7 @@ func TestGatewayReconciler_DeploymentPatchesInvalidYAML(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -1724,14 +1724,14 @@ func TestGatewayReconciler_DeploymentPatchesInvalidOps(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-patches-invalid-ops", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -1764,7 +1764,7 @@ func TestGatewayReconciler_DeploymentPatchesInvalidOps(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -1785,14 +1785,14 @@ func TestGatewayReconciler_DeletionReconcileDisabled(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-del-disabled", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -1875,22 +1875,22 @@ func TestGatewayReconciler_DeletionReconcileDisabled(t *testing.T) {
 	}).WithTimeout(5 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
 
 	// Clean up orphaned resources.
-	testClient.Delete(testCtx, &deploy)
-	testClient.Delete(testCtx, &tokenSecret)
+	_ = testClient.Delete(testCtx, &deploy)
+	_ = testClient.Delete(testCtx, &tokenSecret)
 }
 
 func TestGatewayReconciler_DeletionWithHTTPRoutes(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-del-routes", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -2027,21 +2027,21 @@ func TestGatewayReconciler_DeletionWithHTTPRoutes(t *testing.T) {
 	// Cleanup.
 	testMock.zoneIDs = nil
 	testMock.listDNSCNAMEsByTarget = nil
-	testClient.Delete(testCtx, route)
+	_ = testClient.Delete(testCtx, route)
 }
 
 func TestGatewayReconciler_StaleRouteParentRefRemoved(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-stale-ref", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -2051,7 +2051,7 @@ func TestGatewayReconciler_StaleRouteParentRefRemoved(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 	waitForGatewayProgrammed(g, gw)
@@ -2085,7 +2085,7 @@ func TestGatewayReconciler_StaleRouteParentRefRemoved(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.HTTPRoute
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -2144,18 +2144,18 @@ func TestGatewayReconciler_HTTPRouteCrossNamespaceBackendDenied(t *testing.T) {
 
 	// ns-A: where the Gateway and HTTPRoute live.
 	nsA := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, nsA) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, nsA) })
 
 	// ns-B: where the Service backend lives (cross-namespace backendRef).
 	nsB := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, nsB) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, nsB) })
 
 	createTestSecret(g, nsA.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-backend-denied", nsA.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -2165,7 +2165,7 @@ func TestGatewayReconciler_HTTPRouteCrossNamespaceBackendDenied(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 	waitForGatewayProgrammed(g, gw)
@@ -2203,7 +2203,7 @@ func TestGatewayReconciler_HTTPRouteCrossNamespaceBackendDenied(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.HTTPRoute
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -2237,18 +2237,18 @@ func TestGatewayReconciler_HTTPRouteCrossNamespaceBackendGranted(t *testing.T) {
 
 	// ns-A: where the Gateway and HTTPRoute live.
 	nsA := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, nsA) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, nsA) })
 
 	// ns-B: where the Service backend lives.
 	nsB := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, nsB) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, nsB) })
 
 	createTestSecret(g, nsA.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-backend-granted", nsA.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -2258,7 +2258,7 @@ func TestGatewayReconciler_HTTPRouteCrossNamespaceBackendGranted(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 	waitForGatewayProgrammed(g, gw)
@@ -2296,7 +2296,7 @@ func TestGatewayReconciler_HTTPRouteCrossNamespaceBackendGranted(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.HTTPRoute
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -2334,7 +2334,7 @@ func TestGatewayReconciler_HTTPRouteCrossNamespaceBackendGranted(t *testing.T) {
 		},
 	}
 	g.Expect(testClient.Create(testCtx, refGrant)).To(Succeed())
-	t.Cleanup(func() { testClient.Delete(testCtx, refGrant) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, refGrant) })
 
 	// Trigger re-reconciliation via annotation.
 	g.Eventually(func(g Gomega) {
@@ -2370,14 +2370,14 @@ func TestGatewayReconciler_DNSZoneRemovalCleanup(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-dns-removal", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -2406,7 +2406,7 @@ func TestGatewayReconciler_DNSZoneRemovalCleanup(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 	waitForGatewayProgrammed(g, gw)
@@ -2442,7 +2442,7 @@ func TestGatewayReconciler_DNSZoneRemovalCleanup(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.HTTPRoute
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -2495,14 +2495,14 @@ func TestGatewayReconciler_DeploymentProgressDeadlineExceeded(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-deadline", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -2512,7 +2512,7 @@ func TestGatewayReconciler_DeploymentProgressDeadlineExceeded(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -2570,14 +2570,14 @@ func TestGatewayReconciler_HTTPRoutePathMatches(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-path", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -2587,7 +2587,7 @@ func TestGatewayReconciler_HTTPRoutePathMatches(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 	waitForGatewayProgrammed(g, gw)
@@ -2635,7 +2635,7 @@ func TestGatewayReconciler_HTTPRoutePathMatches(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.HTTPRoute
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -2652,14 +2652,14 @@ func TestGatewayReconciler_HTTPRouteMultipleRulesAndHostnames(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-multi-rules", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -2669,7 +2669,7 @@ func TestGatewayReconciler_HTTPRouteMultipleRulesAndHostnames(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 	waitForGatewayProgrammed(g, gw)
@@ -2714,7 +2714,7 @@ func TestGatewayReconciler_HTTPRouteMultipleRulesAndHostnames(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.HTTPRoute
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -2731,14 +2731,14 @@ func TestGatewayReconciler_HTTPRouteNoBackends(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-no-backends", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -2748,7 +2748,7 @@ func TestGatewayReconciler_HTTPRouteNoBackends(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 	waitForGatewayProgrammed(g, gw)
@@ -2779,7 +2779,7 @@ func TestGatewayReconciler_HTTPRouteNoBackends(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.HTTPRoute
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -2805,14 +2805,14 @@ func TestGatewayReconciler_MultipleListeners(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-multi-listeners", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -2849,7 +2849,7 @@ func TestGatewayReconciler_MultipleListeners(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 	waitForGatewayProgrammed(g, gw)
@@ -2888,7 +2888,7 @@ func TestGatewayReconciler_MultipleListeners(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.HTTPRoute
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -2939,7 +2939,7 @@ func TestGatewayReconciler_GatewayClassNoParametersRef(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	// Create a GatewayClass without parametersRef.
 	gc := &gatewayv1.GatewayClass{
@@ -2955,7 +2955,7 @@ func TestGatewayReconciler_GatewayClassNoParametersRef(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -2990,7 +2990,7 @@ func TestGatewayReconciler_GatewayClassNoParametersRef(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -3011,14 +3011,14 @@ func TestGatewayReconciler_InfrastructureParametersRefInvalidKind(t *testing.T) 
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-infra-invalid", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -3052,7 +3052,7 @@ func TestGatewayReconciler_InfrastructureParametersRefInvalidKind(t *testing.T) 
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -3073,7 +3073,7 @@ func TestGatewayReconciler_GatewayClassSwitching(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 
@@ -3082,14 +3082,14 @@ func TestGatewayReconciler_GatewayClassSwitching(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gcA), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 	gcB := createTestGatewayClass(g, "test-gw-class-switch-b", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gcB), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -3101,7 +3101,7 @@ func TestGatewayReconciler_GatewayClassSwitching(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 	waitForGatewayProgrammed(g, gw)
@@ -3141,14 +3141,14 @@ func TestGatewayReconciler_DNSMultipleHostnamesMixed(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-dns-mixed", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -3181,7 +3181,7 @@ func TestGatewayReconciler_DNSMultipleHostnamesMixed(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 	waitForGatewayProgrammed(g, gw)
@@ -3217,7 +3217,7 @@ func TestGatewayReconciler_DNSMultipleHostnamesMixed(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.HTTPRoute
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -3240,7 +3240,7 @@ func TestGatewayReconciler_DNSMultipleHostnamesMixed(t *testing.T) {
 	g.Eventually(func() int {
 		return len(testMock.ensureDNSCalls)
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(BeNumerically(">=", 2))
-	var dnsHostnames []string
+	dnsHostnames := make([]string, 0, len(testMock.ensureDNSCalls))
 	for _, call := range testMock.ensureDNSCalls {
 		dnsHostnames = append(dnsHostnames, call.Hostname)
 	}
@@ -3253,14 +3253,14 @@ func TestGatewayReconciler_ReconcileDisabled(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-disabled", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -3272,8 +3272,8 @@ func TestGatewayReconciler_ReconcileDisabled(t *testing.T) {
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
 			// Remove disabled annotation so cleanup can proceed.
 			delete(latest.Annotations, apiv1.AnnotationReconcile)
-			testClient.Update(testCtx, &latest)
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Update(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 	waitForGatewayProgrammed(g, gw)
@@ -3322,14 +3322,14 @@ func TestGatewayReconciler_CloudflareTunnelLookupError(t *testing.T) {
 	resetMockErrors(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-tunnel-err", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -3343,7 +3343,7 @@ func TestGatewayReconciler_CloudflareTunnelLookupError(t *testing.T) {
 		testMock.getTunnelIDByNameErr = nil
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -3373,14 +3373,14 @@ func TestGatewayReconciler_CloudflareTunnelTokenError(t *testing.T) {
 	resetMockErrors(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-token-err", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -3393,7 +3393,7 @@ func TestGatewayReconciler_CloudflareTunnelTokenError(t *testing.T) {
 		testMock.getTunnelTokenErr = nil
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -3414,14 +3414,14 @@ func TestGatewayReconciler_CloudflareUpdateConfigError(t *testing.T) {
 	resetMockErrors(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-config-err", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -3433,7 +3433,7 @@ func TestGatewayReconciler_CloudflareUpdateConfigError(t *testing.T) {
 		testMock.updateTunnelConfigErr = nil
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 	waitForGatewayProgrammed(g, gw)
@@ -3470,7 +3470,7 @@ func TestGatewayReconciler_CloudflareUpdateConfigError(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.HTTPRoute
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -3491,14 +3491,14 @@ func TestGatewayReconciler_CloudflareDNSFindZoneError(t *testing.T) {
 	resetMockErrors(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-dns-zone-err", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -3528,7 +3528,7 @@ func TestGatewayReconciler_CloudflareDNSFindZoneError(t *testing.T) {
 		testMock.findZoneIDErr = nil
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 	waitForGatewayProgrammed(g, gw)
@@ -3565,7 +3565,7 @@ func TestGatewayReconciler_CloudflareDNSFindZoneError(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.HTTPRoute
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -3588,14 +3588,14 @@ func TestGatewayReconciler_CloudflareDNSEnsureError(t *testing.T) {
 	resetMockErrors(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-dns-ensure-err", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -3625,7 +3625,7 @@ func TestGatewayReconciler_CloudflareDNSEnsureError(t *testing.T) {
 		testMock.ensureDNSErr = nil
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 	waitForGatewayProgrammed(g, gw)
@@ -3662,7 +3662,7 @@ func TestGatewayReconciler_CloudflareDNSEnsureError(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.HTTPRoute
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -3684,14 +3684,14 @@ func TestGatewayReconciler_CloudflareDeleteTunnelErrorDuringFinalization(t *test
 	resetMockErrors(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-del-tunnel-err", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -3741,14 +3741,14 @@ func TestGatewayReconciler_CloudflareListZoneIDsErrorDuringFinalization(t *testi
 	resetMockErrors(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-list-zones-err", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -3808,7 +3808,7 @@ func TestGatewayReconciler_CloudflareListZoneIDsErrorDuringFinalization(t *testi
 	t.Cleanup(func() {
 		var latest gatewayv1.HTTPRoute
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -3853,14 +3853,14 @@ func TestGatewayReconciler_CloudflareCreateTunnelError(t *testing.T) {
 	resetMockErrors(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-create-tunnel-err", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -3878,7 +3878,7 @@ func TestGatewayReconciler_CloudflareCreateTunnelError(t *testing.T) {
 		testMock.createTunnelErr = nil
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -3899,14 +3899,14 @@ func TestGatewayReconciler_CloudflareGetTunnelConfigError(t *testing.T) {
 	resetMockErrors(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-get-config-err", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -3917,7 +3917,7 @@ func TestGatewayReconciler_CloudflareGetTunnelConfigError(t *testing.T) {
 		testMock.getTunnelConfigurationErr = nil
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 	waitForGatewayProgrammed(g, gw)
@@ -3954,7 +3954,7 @@ func TestGatewayReconciler_CloudflareGetTunnelConfigError(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.HTTPRoute
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -3975,14 +3975,14 @@ func TestGatewayReconciler_CloudflareListDNSCNAMEsError(t *testing.T) {
 	resetMockErrors(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-list-cnames-err", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -4012,7 +4012,7 @@ func TestGatewayReconciler_CloudflareListDNSCNAMEsError(t *testing.T) {
 		testMock.listDNSCNAMEsByTargetErr = nil
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 	waitForGatewayProgrammed(g, gw)
@@ -4049,7 +4049,7 @@ func TestGatewayReconciler_CloudflareListDNSCNAMEsError(t *testing.T) {
 	t.Cleanup(func() {
 		var latest gatewayv1.HTTPRoute
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -4087,14 +4087,14 @@ func TestGatewayReconciler_CloudflareDeleteDNSCNAMEError(t *testing.T) {
 	resetMockErrors(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-del-cname-err", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -4129,7 +4129,7 @@ func TestGatewayReconciler_CloudflareDeleteDNSCNAMEError(t *testing.T) {
 		testMock.deleteDNSErr = nil
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -4145,14 +4145,14 @@ func TestGatewayReconciler_CloudflareClientFactoryError(t *testing.T) {
 	resetMockErrors(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-factory-err", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -4165,7 +4165,7 @@ func TestGatewayReconciler_CloudflareClientFactoryError(t *testing.T) {
 		testMock.newClientErr = nil
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -4186,14 +4186,14 @@ func TestGatewayReconciler_CloudflareDNSCleanupOnZoneRemovalError(t *testing.T) 
 	resetMockErrors(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-zone-rm-err", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -4223,7 +4223,7 @@ func TestGatewayReconciler_CloudflareDNSCleanupOnZoneRemovalError(t *testing.T) 
 		testMock.listZoneIDsErr = nil
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 	waitForGatewayProgrammed(g, gw)
@@ -4258,7 +4258,7 @@ func TestGatewayReconciler_CloudflareDNSCleanupOnZoneRemovalError(t *testing.T) 
 	t.Cleanup(func() {
 		var latest gatewayv1.HTTPRoute
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -4296,14 +4296,14 @@ func TestGatewayReconciler_CloudflareCleanupConnectionsErrorDuringFinalization(t
 	resetMockErrors(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-conn-cleanup-err", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 
@@ -4352,14 +4352,14 @@ func TestGatewayReconciler_CloudflareTunnelLookupErrorDuringFinalization(t *test
 	resetMockErrors(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 	gc := createTestGatewayClass(g, "test-gw-class-fin-lookup-err", ns.Name)
 	t.Cleanup(func() {
 		var latest gatewayv1.GatewayClass
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			testClient.Delete(testCtx, &latest)
+			_ = testClient.Delete(testCtx, &latest)
 		}
 	})
 

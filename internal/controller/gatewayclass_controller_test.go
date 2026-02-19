@@ -31,7 +31,7 @@ func TestGatewayClassReconciler_Accepted(t *testing.T) {
 	}
 	g.Expect(testClient.Create(testCtx, gc)).To(Succeed())
 	t.Cleanup(func() {
-		testClient.Delete(testCtx, gc)
+		_ = testClient.Delete(testCtx, gc)
 	})
 
 	key := client.ObjectKeyFromObject(gc)
@@ -66,7 +66,7 @@ func TestGatewayClassReconciler_AcceptedWithParametersRef(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	createTestSecret(g, ns.Name)
 
@@ -85,7 +85,7 @@ func TestGatewayClassReconciler_AcceptedWithParametersRef(t *testing.T) {
 		},
 	}
 	g.Expect(testClient.Create(testCtx, gc)).To(Succeed())
-	t.Cleanup(func() { testClient.Delete(testCtx, gc) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, gc) })
 
 	key := client.ObjectKeyFromObject(gc)
 	g.Eventually(func(g Gomega) {
@@ -120,7 +120,7 @@ func TestGatewayClassReconciler_WrongControllerIgnored(t *testing.T) {
 		},
 	}
 	g.Expect(testClient.Create(testCtx, gc)).To(Succeed())
-	t.Cleanup(func() { testClient.Delete(testCtx, gc) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, gc) })
 
 	// Our controller should not set Ready or SupportedVersion conditions.
 	// The API server may set a default Accepted=Unknown/Pending condition.
@@ -151,7 +151,7 @@ func TestGatewayClassReconciler_InvalidParametersRefKind(t *testing.T) {
 		},
 	}
 	g.Expect(testClient.Create(testCtx, gc)).To(Succeed())
-	t.Cleanup(func() { testClient.Delete(testCtx, gc) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, gc) })
 
 	key := client.ObjectKeyFromObject(gc)
 	g.Eventually(func(g Gomega) {
@@ -193,7 +193,7 @@ func TestGatewayClassReconciler_InvalidParametersRefNoNamespace(t *testing.T) {
 		},
 	}
 	g.Expect(testClient.Create(testCtx, gc)).To(Succeed())
-	t.Cleanup(func() { testClient.Delete(testCtx, gc) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, gc) })
 
 	key := client.ObjectKeyFromObject(gc)
 	g.Eventually(func(g Gomega) {
@@ -216,7 +216,7 @@ func TestGatewayClassReconciler_ParametersRefSecretNotFound(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	gc := &gatewayv1.GatewayClass{
 		ObjectMeta: metav1.ObjectMeta{
@@ -233,7 +233,7 @@ func TestGatewayClassReconciler_ParametersRefSecretNotFound(t *testing.T) {
 		},
 	}
 	g.Expect(testClient.Create(testCtx, gc)).To(Succeed())
-	t.Cleanup(func() { testClient.Delete(testCtx, gc) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, gc) })
 
 	key := client.ObjectKeyFromObject(gc)
 	g.Eventually(func(g Gomega) {
@@ -261,7 +261,7 @@ func TestGatewayClassReconciler_ParametersRefSecretMissingKeys(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	// Create Secret with only one of the required keys.
 	secret := &corev1.Secret{
@@ -290,7 +290,7 @@ func TestGatewayClassReconciler_ParametersRefSecretMissingKeys(t *testing.T) {
 		},
 	}
 	g.Expect(testClient.Create(testCtx, gc)).To(Succeed())
-	t.Cleanup(func() { testClient.Delete(testCtx, gc) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, gc) })
 
 	key := client.ObjectKeyFromObject(gc)
 	g.Eventually(func(g Gomega) {
@@ -326,7 +326,7 @@ func TestGatewayClassReconciler_Idempotent(t *testing.T) {
 		},
 	}
 	g.Expect(testClient.Create(testCtx, gc)).To(Succeed())
-	t.Cleanup(func() { testClient.Delete(testCtx, gc) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, gc) })
 
 	// Wait for Ready=True.
 	key := client.ObjectKeyFromObject(gc)
@@ -362,7 +362,7 @@ func TestGatewayClassReconciler_SecretUpdateTriggersReconcile(t *testing.T) {
 	g := NewWithT(t)
 
 	ns := createTestNamespace(g)
-	t.Cleanup(func() { testClient.Delete(testCtx, ns) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
 
 	// Create Secret missing CLOUDFLARE_ACCOUNT_ID.
 	secret := &corev1.Secret{
@@ -391,7 +391,7 @@ func TestGatewayClassReconciler_SecretUpdateTriggersReconcile(t *testing.T) {
 		},
 	}
 	g.Expect(testClient.Create(testCtx, gc)).To(Succeed())
-	t.Cleanup(func() { testClient.Delete(testCtx, gc) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, gc) })
 
 	// Wait for Accepted=False.
 	key := client.ObjectKeyFromObject(gc)
@@ -436,7 +436,7 @@ func TestGatewayClassReconciler_SupportedFeatures(t *testing.T) {
 		},
 	}
 	g.Expect(testClient.Create(testCtx, gc)).To(Succeed())
-	t.Cleanup(func() { testClient.Delete(testCtx, gc) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, gc) })
 
 	key := client.ObjectKeyFromObject(gc)
 	g.Eventually(func(g Gomega) {
@@ -475,7 +475,7 @@ func TestGatewayClassReconciler_InvalidParametersRefGroup(t *testing.T) {
 		},
 	}
 	g.Expect(testClient.Create(testCtx, gc)).To(Succeed())
-	t.Cleanup(func() { testClient.Delete(testCtx, gc) })
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, gc) })
 
 	key := client.ObjectKeyFromObject(gc)
 	g.Eventually(func(g Gomega) {

@@ -39,7 +39,7 @@ func newTestClient(t *testing.T, handler http.Handler) cloudflare.Client {
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 // envelope is the standard Cloudflare API response wrapper.
@@ -135,7 +135,7 @@ func TestCreateTunnel(t *testing.T) {
 		mux.HandleFunc("POST /accounts/{accountID}/cfd_tunnel", func(w http.ResponseWriter, r *http.Request) {
 			body, _ := io.ReadAll(r.Body)
 			var params map[string]any
-			json.Unmarshal(body, &params)
+			g.Expect(json.Unmarshal(body, &params)).To(Succeed())
 			g.Expect(params["name"]).To(Equal("my-tunnel"))
 			writeJSON(w, http.StatusOK, envelope(map[string]any{
 				"id":   "tunnel-123",
@@ -435,7 +435,7 @@ func TestUpdateTunnelConfiguration(t *testing.T) {
 		mux := http.NewServeMux()
 		mux.HandleFunc("PUT /accounts/{accountID}/cfd_tunnel/{tunnelID}/configurations", func(w http.ResponseWriter, r *http.Request) {
 			body, _ := io.ReadAll(r.Body)
-			json.Unmarshal(body, &captured)
+			_ = json.Unmarshal(body, &captured)
 			writeJSON(w, http.StatusOK, envelope(map[string]any{
 				"tunnel_id": r.PathValue("tunnelID"),
 			}))
@@ -462,7 +462,7 @@ func TestUpdateTunnelConfiguration(t *testing.T) {
 		mux := http.NewServeMux()
 		mux.HandleFunc("PUT /accounts/{accountID}/cfd_tunnel/{tunnelID}/configurations", func(w http.ResponseWriter, r *http.Request) {
 			body, _ := io.ReadAll(r.Body)
-			json.Unmarshal(body, &captured)
+			_ = json.Unmarshal(body, &captured)
 			writeJSON(w, http.StatusOK, envelope(map[string]any{
 				"tunnel_id": r.PathValue("tunnelID"),
 			}))
@@ -616,7 +616,7 @@ func TestEnsureDNSCNAME(t *testing.T) {
 		})
 		mux.HandleFunc("POST /zones/{zoneID}/dns_records", func(w http.ResponseWriter, r *http.Request) {
 			body, _ := io.ReadAll(r.Body)
-			json.Unmarshal(body, &createdBody)
+			_ = json.Unmarshal(body, &createdBody)
 			writeJSON(w, http.StatusOK, envelope(map[string]any{
 				"id":      "record-new",
 				"name":    createdBody["name"],
@@ -647,7 +647,7 @@ func TestEnsureDNSCNAME(t *testing.T) {
 		})
 		mux.HandleFunc("PUT /zones/{zoneID}/dns_records/{recordID}", func(w http.ResponseWriter, r *http.Request) {
 			body, _ := io.ReadAll(r.Body)
-			json.Unmarshal(body, &updatedBody)
+			_ = json.Unmarshal(body, &updatedBody)
 			writeJSON(w, http.StatusOK, envelope(map[string]any{
 				"id":      r.PathValue("recordID"),
 				"name":    updatedBody["name"],

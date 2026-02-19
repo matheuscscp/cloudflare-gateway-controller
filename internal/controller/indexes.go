@@ -5,6 +5,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -29,29 +30,35 @@ const (
 func SetupIndexes(ctx context.Context, mgr ctrl.Manager) {
 	// Index Gateways by spec.gatewayClassName so we can map GatewayClass
 	// events to affected Gateways for reconciliation.
-	mgr.GetCache().IndexField(ctx, &gatewayv1.Gateway{}, indexGatewayGatewayClassName,
+	if err := mgr.GetCache().IndexField(ctx, &gatewayv1.Gateway{}, indexGatewayGatewayClassName,
 		func(obj client.Object) []string {
 			gw := obj.(*gatewayv1.Gateway)
 			return []string{string(gw.Spec.GatewayClassName)}
-		})
+		}); err != nil {
+		panic(fmt.Sprintf("failed to setup index %s: %v", indexGatewayGatewayClassName, err))
+	}
 
 	// Index Gateways by their managed tunnel token Secret (ns/name) so we
 	// can map Secret events to the owning Gateway for reconciliation.
-	mgr.GetCache().IndexField(ctx, &gatewayv1.Gateway{}, indexGatewayTunnelTokenSecret,
+	if err := mgr.GetCache().IndexField(ctx, &gatewayv1.Gateway{}, indexGatewayTunnelTokenSecret,
 		func(obj client.Object) []string {
 			gw := obj.(*gatewayv1.Gateway)
 			return []string{gw.Namespace + "/" + apiv1.TunnelTokenSecretName(gw)}
-		})
+		}); err != nil {
+		panic(fmt.Sprintf("failed to setup index %s: %v", indexGatewayTunnelTokenSecret, err))
+	}
 
 	// Index GatewayClasses by spec.controllerName.
-	mgr.GetCache().IndexField(ctx, &gatewayv1.GatewayClass{}, indexGatewayClassControllerName,
+	if err := mgr.GetCache().IndexField(ctx, &gatewayv1.GatewayClass{}, indexGatewayClassControllerName,
 		func(obj client.Object) []string {
 			gc := obj.(*gatewayv1.GatewayClass)
 			return []string{string(gc.Spec.ControllerName)}
-		})
+		}); err != nil {
+		panic(fmt.Sprintf("failed to setup index %s: %v", indexGatewayClassControllerName, err))
+	}
 
 	// Index GatewayClasses by spec.parametersRef (Secret namespace/name).
-	mgr.GetCache().IndexField(ctx, &gatewayv1.GatewayClass{}, indexGatewayClassParametersRef,
+	if err := mgr.GetCache().IndexField(ctx, &gatewayv1.GatewayClass{}, indexGatewayClassParametersRef,
 		func(obj client.Object) []string {
 			gc := obj.(*gatewayv1.GatewayClass)
 			if gc.Spec.ParametersRef == nil ||
@@ -60,13 +67,15 @@ func SetupIndexes(ctx context.Context, mgr ctrl.Manager) {
 				gc.Spec.ParametersRef.Namespace == nil {
 				return nil
 			}
-			return []string{string(*gc.Spec.ParametersRef.Namespace) + "/" + string(gc.Spec.ParametersRef.Name)}
-		})
+			return []string{string(*gc.Spec.ParametersRef.Namespace) + "/" + gc.Spec.ParametersRef.Name}
+		}); err != nil {
+		panic(fmt.Sprintf("failed to setup index %s: %v", indexGatewayClassParametersRef, err))
+	}
 
 	// Index GatewayClasses by per-gateway finalizers so we can efficiently
 	// find and clean up stale finalizers when gatewayClassName changes.
 	gatewayFinalizerPrefix := string(gatewayv1.GatewayClassFinalizerGatewaysExist) + "/"
-	mgr.GetCache().IndexField(ctx, &gatewayv1.GatewayClass{}, indexGatewayClassGatewayFinalizer,
+	if err := mgr.GetCache().IndexField(ctx, &gatewayv1.GatewayClass{}, indexGatewayClassGatewayFinalizer,
 		func(obj client.Object) []string {
 			var keys []string
 			for _, f := range obj.GetFinalizers() {
@@ -75,13 +84,15 @@ func SetupIndexes(ctx context.Context, mgr ctrl.Manager) {
 				}
 			}
 			return keys
-		})
+		}); err != nil {
+		panic(fmt.Sprintf("failed to setup index %s: %v", indexGatewayClassGatewayFinalizer, err))
+	}
 
 	// Index HTTPRoutes by their parent Gateway references (ns/name) and by
 	// existing status.parents entries managed by our controller. Including
 	// status.parents ensures that when a parentRef is removed, the old Gateway
 	// is still notified so it can clean up stale status entries.
-	mgr.GetCache().IndexField(ctx, &gatewayv1.HTTPRoute{}, indexHTTPRouteParentGateway,
+	if err := mgr.GetCache().IndexField(ctx, &gatewayv1.HTTPRoute{}, indexHTTPRouteParentGateway,
 		func(obj client.Object) []string {
 			route := obj.(*gatewayv1.HTTPRoute)
 			seen := make(map[string]struct{})
@@ -117,13 +128,15 @@ func SetupIndexes(ctx context.Context, mgr ctrl.Manager) {
 				}
 			}
 			return keys
-		})
+		}); err != nil {
+		panic(fmt.Sprintf("failed to setup index %s: %v", indexHTTPRouteParentGateway, err))
+	}
 
 	// Index HTTPRoutes by routeNamespace/backendServiceNamespace for
 	// cross-namespace backend Service references. This lets us efficiently
 	// map ReferenceGrant events to affected Gateways: the grant's from
 	// namespace + grant's own namespace form an exact index query.
-	mgr.GetCache().IndexField(ctx, &gatewayv1.HTTPRoute{}, indexHTTPRouteBackendServiceNS,
+	if err := mgr.GetCache().IndexField(ctx, &gatewayv1.HTTPRoute{}, indexHTTPRouteBackendServiceNS,
 		func(obj client.Object) []string {
 			route := obj.(*gatewayv1.HTTPRoute)
 			seen := make(map[string]struct{})
@@ -141,5 +154,7 @@ func SetupIndexes(ctx context.Context, mgr ctrl.Manager) {
 				}
 			}
 			return keys
-		})
+		}); err != nil {
+		panic(fmt.Sprintf("failed to setup index %s: %v", indexHTTPRouteBackendServiceNS, err))
+	}
 }

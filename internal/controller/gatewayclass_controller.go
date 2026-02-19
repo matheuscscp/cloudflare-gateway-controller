@@ -38,7 +38,7 @@ type GatewayClassReconciler struct {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 
 func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := log.FromContext(ctx)
+	l := log.FromContext(ctx)
 
 	var gc gatewayv1.GatewayClass
 	if err := r.Get(ctx, req.NamespacedName, &gc); err != nil {
@@ -53,13 +53,13 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, nil
 	}
 
-	log.V(1).Info("Reconciling GatewayClass")
+	l.V(1).Info("Reconciling GatewayClass")
 
 	return r.reconcile(ctx, &gc)
 }
 
 func (r *GatewayClassReconciler) reconcile(ctx context.Context, gc *gatewayv1.GatewayClass) (ctrl.Result, error) {
-	log := log.FromContext(ctx)
+	l := log.FromContext(ctx)
 
 	// Sanity check for the controller container image.
 	if PreflightChecks(WithContainerOS("distroless", 12), WithContainerOS("rhel", 8)) != nil {
@@ -152,11 +152,11 @@ func (r *GatewayClassReconciler) reconcile(ctx context.Context, gc *gatewayv1.Ga
 	}
 
 	if readyStatus == metav1.ConditionFalse {
-		log.Error(fmt.Errorf("%s", readyMessage), "GatewayClass failed")
+		l.Error(fmt.Errorf("%s", readyMessage), "GatewayClass failed")
 		r.Eventf(gc, nil, corev1.EventTypeWarning, readyReason,
 			apiv1.EventActionReconcile, readyMessage)
 	} else {
-		log.Info("GatewayClass reconciled")
+		l.Info("GatewayClass reconciled")
 		r.Eventf(gc, nil, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded,
 			apiv1.EventActionReconcile, "GatewayClass reconciled")
 	}
@@ -203,7 +203,7 @@ func (r *GatewayClassReconciler) checkParametersRef(ctx context.Context, gc *gat
 		return true, "No parametersRef configured"
 	}
 
-	if string(ref.Kind) != apiv1.KindSecret || (ref.Group != "" && ref.Group != "core" && ref.Group != gatewayv1.Group("")) {
+	if string(ref.Kind) != apiv1.KindSecret || (ref.Group != "" && ref.Group != apiv1.GroupCore && ref.Group != gatewayv1.Group("")) {
 		return false, fmt.Sprintf("parametersRef must reference a core/v1 Secret, got %s/%s", ref.Group, ref.Kind)
 	}
 

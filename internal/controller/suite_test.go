@@ -346,7 +346,7 @@ func createTestNamespace(g Gomega) *corev1.Namespace {
 	return ns
 }
 
-func createTestSecret(g Gomega, namespace string) *corev1.Secret {
+func createTestSecret(g Gomega, namespace string) {
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "cloudflare-creds",
@@ -358,7 +358,6 @@ func createTestSecret(g Gomega, namespace string) *corev1.Secret {
 		},
 	}
 	g.Expect(testClient.Create(testCtx, secret)).To(Succeed())
-	return secret
 }
 
 func createTestGatewayClass(g Gomega, name string, secretNamespace string) *gatewayv1.GatewayClass {
