@@ -1,7 +1,7 @@
 // Copyright 2026 Matheus Pimenta.
 // SPDX-License-Identifier: AGPL-3.0
 
-// +groupName=cloudflare-gateway-controller.matheuscscp.github.com
+// +groupName=cloudflare-gateway-controller.io
 package v1
 
 import (
@@ -11,14 +11,14 @@ import (
 // Controller names.
 const (
 	// ControllerName is the identifier used in GatewayClass.spec.controllerName.
-	ControllerName = gatewayv1.GatewayController("github.com/matheuscscp/" + ShortControllerName)
+	ControllerName = gatewayv1.GatewayController(ShortControllerName + ".io/controller")
 
 	// ShortControllerName is a shorter identifier used in events and conditions.
 	ShortControllerName = "cloudflare-gateway-controller"
 )
 
 // Group is the API group for this project.
-const Group = ShortControllerName + ".matheuscscp.github.com"
+const Group = ShortControllerName + ".io"
 
 // Group prefixes.
 const (

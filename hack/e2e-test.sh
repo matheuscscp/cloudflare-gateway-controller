@@ -122,7 +122,7 @@ kind: GatewayClass
 metadata:
   name: cloudflare
 spec:
-  controllerName: github.com/matheuscscp/cloudflare-gateway-controller
+  controllerName: cloudflare-gateway-controller.io/controller
 EOF
 
 log "Waiting for GatewayClass to be Ready..."
@@ -140,7 +140,7 @@ metadata:
   name: test-gateway
   namespace: $TEST_NS
   annotations:
-    gateway.cloudflare-gateway-controller.matheuscscp.github.com/zoneName: "$TEST_ZONE_NAME"
+    gateway.cloudflare-gateway-controller.io/zoneName: "$TEST_ZONE_NAME"
 spec:
   gatewayClassName: cloudflare
   infrastructure:
@@ -276,7 +276,7 @@ metadata:
   name: multi-route-gw
   namespace: $TEST_NS
   annotations:
-    gateway.cloudflare-gateway-controller.matheuscscp.github.com/zoneName: "$TEST_ZONE_NAME"
+    gateway.cloudflare-gateway-controller.io/zoneName: "$TEST_ZONE_NAME"
 spec:
   gatewayClassName: cloudflare
   infrastructure:
@@ -610,7 +610,7 @@ metadata:
   name: patched-gw
   namespace: $TEST_NS
   annotations:
-    gateway.cloudflare-gateway-controller.matheuscscp.github.com/deploymentPatches: |
+    gateway.cloudflare-gateway-controller.io/deploymentPatches: |
       - op: add
         path: /spec/template/metadata/labels/e2e-patch
         value: "applied"
@@ -656,7 +656,7 @@ metadata:
   name: disabled-gw
   namespace: $TEST_NS
   annotations:
-    gateway.cloudflare-gateway-controller.matheuscscp.github.com/zoneName: "$TEST_ZONE_NAME"
+    gateway.cloudflare-gateway-controller.io/zoneName: "$TEST_ZONE_NAME"
 spec:
   gatewayClassName: cloudflare
   infrastructure:
@@ -721,7 +721,7 @@ pass "DNS CNAME exists for disabled-gw"
 
 log "Setting reconcile=disabled and deleting Gateway..."
 kubectl annotate gateway disabled-gw -n "$TEST_NS" \
-    cloudflare-gateway-controller.matheuscscp.github.com/reconcile=disabled --overwrite
+    cloudflare-gateway-controller.io/reconcile=disabled --overwrite
 
 kubectl delete httproute disabled-route -n "$TEST_NS"
 kubectl delete gateway disabled-gw -n "$TEST_NS"
@@ -765,7 +765,7 @@ metadata:
   name: zone-rm-gw
   namespace: $TEST_NS
   annotations:
-    gateway.cloudflare-gateway-controller.matheuscscp.github.com/zoneName: "$TEST_ZONE_NAME"
+    gateway.cloudflare-gateway-controller.io/zoneName: "$TEST_ZONE_NAME"
 spec:
   gatewayClassName: cloudflare
   infrastructure:
@@ -830,7 +830,7 @@ pass "DNS CNAME exists"
 
 log "Removing zoneName annotation..."
 kubectl annotate gateway zone-rm-gw -n "$TEST_NS" \
-    gateway.cloudflare-gateway-controller.matheuscscp.github.com/zoneName-
+    gateway.cloudflare-gateway-controller.io/zoneName-
 
 log "Verifying DNS CNAME removed..."
 check_zr_dns_removed() {
