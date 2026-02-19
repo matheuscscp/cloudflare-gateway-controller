@@ -105,3 +105,15 @@ encouraged) to best-effort patch conditions on the object (e.g. `Ready=Unknown` 
 operations give users immediate visibility into what went wrong, while the returned error
 ensures controller-runtime will keep retrying. If the best-effort status patch itself fails,
 we log that failure but still return the original error.
+
+### Terminal errors
+
+Use `reconcile.TerminalError` when the error is caused by invalid input on a **watched**
+object. The watch will re-trigger reconciliation when the user fixes the input, so retrying
+with backoff is pointless. Terminal errors should set `Ready=False/ReconciliationFailed`
+and emit a `Warning` event. Examples: a malformed annotation value on the primary resource,
+or an invalid label selector in the spec of a watched object.
+
+Do **not** use terminal errors when the invalid input lives on an **unwatched** object (e.g.
+a credentials Secret that is not in the watch list). In that case, the retry backoff is the
+only recovery mechanism, so the error must remain retriable.

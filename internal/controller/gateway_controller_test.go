@@ -914,6 +914,338 @@ func TestGatewayReconciler_HTTPRouteAccepted(t *testing.T) {
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
+func TestGatewayReconciler_HTTPRouteCrossNamespaceAllowAll(t *testing.T) {
+	g := NewWithT(t)
+
+	// Namespace A: where the Gateway lives (credentials are local)
+	nsA := createTestNamespace(g)
+	t.Cleanup(func() { testClient.Delete(testCtx, nsA) })
+
+	// Namespace B: where the HTTPRoute lives
+	nsB := createTestNamespace(g)
+	t.Cleanup(func() { testClient.Delete(testCtx, nsB) })
+
+	createTestSecret(g, nsA.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-cross-route-all", nsA.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	// Gateway with allowedRoutes.namespaces.from=All
+	fromAll := gatewayv1.NamespacesFromAll
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-cross-route-all",
+			Namespace: nsA.Name,
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "http",
+					Protocol: gatewayv1.HTTPProtocolType,
+					Port:     80,
+					AllowedRoutes: &gatewayv1.AllowedRoutes{
+						Namespaces: &gatewayv1.RouteNamespaces{
+							From: &fromAll,
+						},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+	waitForGatewayProgrammed(g, gw)
+
+	// Create an HTTPRoute in namespace B referencing the Gateway in namespace A
+	nsAGW := gatewayv1.Namespace(nsA.Name)
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-cross-route",
+			Namespace: nsB.Name,
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{
+						Name:      gatewayv1.ObjectName(gw.Name),
+						Namespace: &nsAGW,
+					},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"cross.example.com"},
+			Rules: []gatewayv1.HTTPRouteRule{
+				{
+					BackendRefs: []gatewayv1.HTTPBackendRef{
+						{
+							BackendRef: gatewayv1.BackendRef{
+								BackendObjectReference: gatewayv1.BackendObjectReference{
+									Name: "my-service",
+									Port: new(gatewayv1.PortNumber(8080)),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.HTTPRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Verify the cross-namespace HTTPRoute is Accepted
+	routeKey := client.ObjectKeyFromObject(route)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.HTTPRoute
+		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(HaveLen(1))
+		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Verify the Gateway listener counts the cross-namespace route
+	gwKey := client.ObjectKeyFromObject(gw)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
+		g.Expect(result.Status.Listeners).To(HaveLen(1))
+		g.Expect(result.Status.Listeners[0].AttachedRoutes).To(Equal(int32(1)))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func TestGatewayReconciler_HTTPRouteCrossNamespaceDenied(t *testing.T) {
+	g := NewWithT(t)
+
+	// Namespace A: where the Gateway lives (default from=Same)
+	nsA := createTestNamespace(g)
+	t.Cleanup(func() { testClient.Delete(testCtx, nsA) })
+
+	// Namespace B: where the HTTPRoute lives
+	nsB := createTestNamespace(g)
+	t.Cleanup(func() { testClient.Delete(testCtx, nsB) })
+
+	createTestSecret(g, nsA.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-cross-route-denied", nsA.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	// Gateway with default listeners (from=Same)
+	gw := createTestGateway(g, "test-gw-cross-route-denied", nsA.Name, gc.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+	waitForGatewayProgrammed(g, gw)
+
+	// Create an HTTPRoute in namespace B referencing the Gateway in namespace A
+	nsAGW := gatewayv1.Namespace(nsA.Name)
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-cross-route-denied",
+			Namespace: nsB.Name,
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{
+						Name:      gatewayv1.ObjectName(gw.Name),
+						Namespace: &nsAGW,
+					},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"denied.example.com"},
+			Rules: []gatewayv1.HTTPRouteRule{
+				{
+					BackendRefs: []gatewayv1.HTTPBackendRef{
+						{
+							BackendRef: gatewayv1.BackendRef{
+								BackendObjectReference: gatewayv1.BackendObjectReference{
+									Name: "my-service",
+									Port: new(gatewayv1.PortNumber(8080)),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.HTTPRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Verify the cross-namespace HTTPRoute is denied: Accepted=False/NotAllowedByListeners
+	routeKey := client.ObjectKeyFromObject(route)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.HTTPRoute
+		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(HaveLen(1))
+		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.RouteReasonNotAllowedByListeners)))
+		g.Expect(accepted.Message).To(ContainSubstring("not allowed by any listener"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Verify the denied route is NOT counted as attached
+	gwKey := client.ObjectKeyFromObject(gw)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
+		g.Expect(result.Status.Listeners).To(HaveLen(1))
+		g.Expect(result.Status.Listeners[0].AttachedRoutes).To(Equal(int32(0)))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func TestGatewayReconciler_HTTPRouteCrossNamespaceSelector(t *testing.T) {
+	g := NewWithT(t)
+
+	// Namespace A: where the Gateway lives
+	nsA := createTestNamespace(g)
+	t.Cleanup(func() { testClient.Delete(testCtx, nsA) })
+
+	// Namespace B: where the HTTPRoute lives (will have matching label)
+	nsB := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: "test-",
+			Labels: map[string]string{
+				"gateway-access": "allowed",
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, nsB)).To(Succeed())
+	t.Cleanup(func() { testClient.Delete(testCtx, nsB) })
+
+	createTestSecret(g, nsA.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-cross-route-sel", nsA.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	// Gateway with allowedRoutes.namespaces.from=Selector
+	fromSelector := gatewayv1.NamespacesFromSelector
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-cross-route-sel",
+			Namespace: nsA.Name,
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "http",
+					Protocol: gatewayv1.HTTPProtocolType,
+					Port:     80,
+					AllowedRoutes: &gatewayv1.AllowedRoutes{
+						Namespaces: &gatewayv1.RouteNamespaces{
+							From: &fromSelector,
+							Selector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{
+									"gateway-access": "allowed",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+	waitForGatewayProgrammed(g, gw)
+
+	// Create an HTTPRoute in namespace B (which has the matching label)
+	nsBGW := gatewayv1.Namespace(nsA.Name)
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-cross-route-sel",
+			Namespace: nsB.Name,
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{
+						Name:      gatewayv1.ObjectName(gw.Name),
+						Namespace: &nsBGW,
+					},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"selector.example.com"},
+			Rules: []gatewayv1.HTTPRouteRule{
+				{
+					BackendRefs: []gatewayv1.HTTPBackendRef{
+						{
+							BackendRef: gatewayv1.BackendRef{
+								BackendObjectReference: gatewayv1.BackendObjectReference{
+									Name: "my-service",
+									Port: new(gatewayv1.PortNumber(8080)),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.HTTPRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
+			testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Verify the cross-namespace HTTPRoute is Accepted (selector matches)
+	routeKey := client.ObjectKeyFromObject(route)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.HTTPRoute
+		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(HaveLen(1))
+		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
 func TestGatewayReconciler_HTTPRouteDeletion(t *testing.T) {
 	g := NewWithT(t)
 
@@ -1360,14 +1692,15 @@ func TestGatewayReconciler_DeploymentPatchesInvalidYAML(t *testing.T) {
 		}
 	})
 
-	// The Gateway should report an error via Ready condition
+	// The Gateway should report a terminal error via Ready=False condition
 	gwKey := client.ObjectKeyFromObject(gw)
 	g.Eventually(func(g Gomega) {
 		var result gatewayv1.Gateway
 		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
 		ready := conditions.Find(result.Status.Conditions, apiv1.ConditionReady)
 		g.Expect(ready).NotTo(BeNil())
-		g.Expect(ready.Status).To(Equal(metav1.ConditionUnknown))
+		g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(ready.Reason).To(Equal(apiv1.ReasonReconciliationFailed))
 		g.Expect(ready.Message).To(ContainSubstring("deploymentPatches"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
@@ -1420,14 +1753,15 @@ func TestGatewayReconciler_DeploymentPatchesInvalidOps(t *testing.T) {
 		}
 	})
 
-	// The Gateway should report an error via Ready condition
+	// The Gateway should report a terminal error via Ready=False condition
 	gwKey := client.ObjectKeyFromObject(gw)
 	g.Eventually(func(g Gomega) {
 		var result gatewayv1.Gateway
 		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
 		ready := conditions.Find(result.Status.Conditions, apiv1.ConditionReady)
 		g.Expect(ready).NotTo(BeNil())
-		g.Expect(ready.Status).To(Equal(metav1.ConditionUnknown))
+		g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(ready.Reason).To(Equal(apiv1.ReasonReconciliationFailed))
 		g.Expect(ready.Message).To(ContainSubstring("deploymentPatches"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }

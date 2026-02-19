@@ -22,6 +22,7 @@ const (
 	KindGateway                  = "Gateway"
 	KindHTTPRoute                = "HTTPRoute"
 	KindReferenceGrant           = "ReferenceGrant"
+	KindNamespace                = "Namespace"
 	KindSecret                   = "Secret"
 	KindService                  = "Service"
 	KindDeployment               = "Deployment"

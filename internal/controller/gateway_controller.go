@@ -6,6 +6,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -19,6 +20,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	acappsv1 "k8s.io/client-go/applyconfigurations/apps/v1"
@@ -30,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	"sigs.k8s.io/yaml"
 
@@ -100,6 +103,7 @@ type GatewayReconciler struct {
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;update
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes/status,verbs=update;patch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;get;list;watch;update;delete
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update
 
 func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -170,7 +174,6 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		return r.reconcileError(ctx, gw, fmt.Errorf("listing HTTPRoutes: %w", err))
 	}
 
-	desiredListeners := buildListenerStatuses(gw, countAttachedRoutes(&allRoutes, gw))
 	now := metav1.Now()
 
 	// Read credentials
@@ -258,7 +261,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	}
 	log.V(1).Info("Reconciled cloudflared Deployment", "action", deployEntry.Action)
 
-	// Filter HTTPRoutes by parentRef and ReferenceGrant, and update tunnel ingress.
+	// Filter HTTPRoutes by parentRef and allowedRoutes, and update tunnel ingress.
 	gatewayRoutes, deniedRoutes, staleRoutes, err := listGatewayRoutes(ctx, r.Client, &allRoutes, gw)
 	if err != nil {
 		return r.reconcileError(ctx, gw, err)
@@ -269,13 +272,16 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 			errs = append(errs, fmt.Sprintf("failed to remove stale HTTPRoute %s/%s status: %v", route.Namespace, route.Name, err))
 		}
 	}
-	// Set ResolvedRefs=False/RefNotPermitted on denied routes (cross-namespace
-	// parentRef not permitted by any ReferenceGrant).
+	// Set Accepted=False/NotAllowedByListeners on denied routes (cross-namespace
+	// route not permitted by the Gateway's listener allowedRoutes).
 	for _, route := range deniedRoutes {
 		if err := r.updateDeniedRouteStatus(ctx, gw, route); err != nil {
 			errs = append(errs, fmt.Sprintf("failed to update denied HTTPRoute %s/%s status: %v", route.Namespace, route.Name, err))
 		}
 	}
+
+	// Build listener statuses using only allowed routes.
+	desiredListeners := buildListenerStatuses(gw, countAttachedRoutes(gatewayRoutes, gw))
 
 	ingress, routesWithDeniedRefs, err := buildIngressRules(ctx, r.Client, gatewayRoutes)
 	if err != nil {
@@ -445,15 +451,22 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 // additional conditions (e.g. Accepted=False for credential errors). Other existing
 // conditions are preserved.
 func (r *GatewayReconciler) reconcileError(ctx context.Context, gw *gatewayv1.Gateway, reconcileErr error, extraConds ...metav1.Condition) (ctrl.Result, error) {
+	terminal := errors.Is(reconcileErr, reconcile.TerminalError(nil))
+	readyStatus := metav1.ConditionUnknown
+	readyReason := apiv1.ReasonProgressingWithRetry
+	if terminal {
+		readyStatus = metav1.ConditionFalse
+		readyReason = apiv1.ReasonReconciliationFailed
+	}
 	msg := reconcileErr.Error()
 	now := metav1.Now()
 	desiredConds := append([]metav1.Condition{
 		{
 			Type:               apiv1.ConditionReady,
-			Status:             metav1.ConditionUnknown,
+			Status:             readyStatus,
 			ObservedGeneration: gw.Generation,
 			LastTransitionTime: now,
-			Reason:             apiv1.ReasonProgressingWithRetry,
+			Reason:             readyReason,
 			Message:            msg,
 		},
 	}, extraConds...)
@@ -473,7 +486,7 @@ func (r *GatewayReconciler) reconcileError(ctx context.Context, gw *gatewayv1.Ga
 		log.FromContext(ctx).V(1).Info("Patched Gateway status with error conditions")
 	}
 
-	r.Eventf(gw, nil, corev1.EventTypeWarning, apiv1.ReasonProgressingWithRetry,
+	r.Eventf(gw, nil, corev1.EventTypeWarning, readyReason,
 		apiv1.EventActionReconcile, "Reconciliation failed: %v", reconcileErr)
 	return ctrl.Result{}, reconcileErr
 }
@@ -1040,11 +1053,44 @@ func listenersChanged(existing, desired []gatewayv1.ListenerStatus) bool {
 	return false
 }
 
+// routeNamespaceAllowed checks whether an HTTPRoute in routeNamespace is allowed
+// to attach to the given Gateway based on the Gateway's listener allowedRoutes
+// configuration. Returns true if any listener permits the route's namespace.
+func routeNamespaceAllowed(ctx context.Context, r client.Reader, gw *gatewayv1.Gateway, routeNamespace string) (bool, error) {
+	if routeNamespace == gw.Namespace {
+		return true, nil
+	}
+	for _, l := range gw.Spec.Listeners {
+		if l.AllowedRoutes == nil || l.AllowedRoutes.Namespaces == nil || l.AllowedRoutes.Namespaces.From == nil {
+			continue // default is Same
+		}
+		switch *l.AllowedRoutes.Namespaces.From {
+		case gatewayv1.NamespacesFromAll:
+			return true, nil
+		case gatewayv1.NamespacesFromSelector:
+			if l.AllowedRoutes.Namespaces.Selector == nil {
+				continue
+			}
+			selector, err := metav1.LabelSelectorAsSelector(l.AllowedRoutes.Namespaces.Selector)
+			if err != nil {
+				return false, reconcile.TerminalError(fmt.Errorf("parsing allowedRoutes namespace selector on listener %q: %w", l.Name, err))
+			}
+			var ns corev1.Namespace
+			if err := r.Get(ctx, types.NamespacedName{Name: routeNamespace}, &ns); err != nil {
+				return false, fmt.Errorf("getting namespace %q: %w", routeNamespace, err)
+			}
+			if selector.Matches(labels.Set(ns.Labels)) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
 // listGatewayRoutes filters non-deleting HTTPRoutes from the pre-fetched list that
 // reference the given Gateway via spec.parentRefs. Cross-namespace routes are only
-// included if a ReferenceGrant in the Gateway's namespace permits the reference.
-// Routes denied due to missing or failed ReferenceGrant checks are returned
-// separately so the caller can report them without blocking reconciliation.
+// included if the Gateway's listener allowedRoutes configuration permits the route's
+// namespace. Denied routes are returned separately so the caller can report them.
 // Routes that appear in allRoutes but do not have a matching parentRef (e.g. stale
 // status.parents entries from a previous parentRef) are returned as stale.
 func listGatewayRoutes(ctx context.Context, r client.Client, allRoutes *gatewayv1.HTTPRouteList, gw *gatewayv1.Gateway) (allowed, denied, stale []*gatewayv1.HTTPRoute, err error) {
@@ -1069,11 +1115,11 @@ func listGatewayRoutes(ctx context.Context, r client.Client, allRoutes *gatewayv
 			continue
 		}
 
-		granted, grantErr := httpRouteReferenceGranted(ctx, r, hr.Namespace, gw)
-		if grantErr != nil {
-			return nil, nil, nil, fmt.Errorf("checking ReferenceGrant for HTTPRoute %s/%s: %w", hr.Namespace, hr.Name, grantErr)
+		ok, checkErr := routeNamespaceAllowed(ctx, r, gw, hr.Namespace)
+		if checkErr != nil {
+			return nil, nil, nil, fmt.Errorf("checking allowedRoutes for HTTPRoute %s/%s: %w", hr.Namespace, hr.Name, checkErr)
 		}
-		if !granted {
+		if !ok {
 			denied = append(denied, hr)
 			continue
 		}
@@ -1158,15 +1204,11 @@ func pathFromMatches(matches []gatewayv1.HTTPRouteMatch) string {
 	return ""
 }
 
-// countAttachedRoutes counts the number of non-deleting HTTPRoutes attached to each
+// countAttachedRoutes counts the number of allowed HTTPRoutes attached to each
 // listener of the given Gateway. Routes without a sectionName count toward all listeners.
-func countAttachedRoutes(routes *gatewayv1.HTTPRouteList, gw *gatewayv1.Gateway) map[gatewayv1.SectionName]int32 {
+func countAttachedRoutes(routes []*gatewayv1.HTTPRoute, gw *gatewayv1.Gateway) map[gatewayv1.SectionName]int32 {
 	counts := make(map[gatewayv1.SectionName]int32)
-	for i := range routes.Items {
-		hr := &routes.Items[i]
-		if !hr.DeletionTimestamp.IsZero() {
-			continue
-		}
+	for _, hr := range routes {
 		for _, ref := range hr.Spec.ParentRefs {
 			if !parentRefMatches(ref, gw, hr.Namespace) {
 				continue
@@ -1210,18 +1252,20 @@ func (r *GatewayReconciler) buildCloudflaredDeployment(gw *gatewayv1.Gateway) (*
 	}
 
 	// Apply RFC 6902 JSON Patch operations from the annotation if present.
+	// These errors are terminal because the annotation is on the Gateway
+	// (a watched object) and retrying won't fix invalid user input.
 	if patchYAML, ok := gw.Annotations[apiv1.AnnotationDeploymentPatches]; ok {
 		patchJSON, err := yaml.YAMLToJSON([]byte(patchYAML))
 		if err != nil {
-			return nil, fmt.Errorf("parsing deploymentPatches annotation YAML: %w", err)
+			return nil, reconcile.TerminalError(fmt.Errorf("parsing deploymentPatches annotation YAML: %w", err))
 		}
 		patch, err := jsonpatch.DecodePatch(patchJSON)
 		if err != nil {
-			return nil, fmt.Errorf("decoding deploymentPatches annotation: %w", err)
+			return nil, reconcile.TerminalError(fmt.Errorf("decoding deploymentPatches annotation: %w", err))
 		}
 		data, err = patch.Apply(data)
 		if err != nil {
-			return nil, fmt.Errorf("applying deploymentPatches annotation: %w", err)
+			return nil, reconcile.TerminalError(fmt.Errorf("applying deploymentPatches annotation: %w", err))
 		}
 	}
 
@@ -1408,15 +1452,15 @@ func (r *GatewayReconciler) removeRouteStatus(ctx context.Context, gw *gatewayv1
 	return err
 }
 
-// updateDeniedRouteStatus sets ResolvedRefs=False/RefNotPermitted on the
+// updateDeniedRouteStatus sets Accepted=False/NotAllowedByListeners on the
 // status.parents entry for this Gateway on a denied HTTPRoute (cross-namespace
-// parentRef not permitted by any ReferenceGrant). Any stale conditions from a
-// previous reconciliation (e.g. Accepted, DNS) are removed.
+// route not permitted by the Gateway's listener allowedRoutes configuration).
+// Any stale conditions from a previous reconciliation (e.g. DNS) are removed.
 func (r *GatewayReconciler) updateDeniedRouteStatus(ctx context.Context, gw *gatewayv1.Gateway, route *gatewayv1.HTTPRoute) error {
-	resolvedRefsType := string(gatewayv1.RouteConditionResolvedRefs)
-	resolvedRefsStatus := metav1.ConditionFalse
-	resolvedRefsReason := string(gatewayv1.RouteReasonRefNotPermitted)
-	resolvedRefsMsg := fmt.Sprintf("Cross-namespace parentRef to Gateway %s/%s not permitted by any ReferenceGrant", gw.Namespace, gw.Name)
+	acceptedType := string(gatewayv1.RouteConditionAccepted)
+	acceptedStatus := metav1.ConditionFalse
+	acceptedReason := string(gatewayv1.RouteReasonNotAllowedByListeners)
+	acceptedMsg := fmt.Sprintf("Route namespace %q not allowed by any listener on Gateway %s/%s", route.Namespace, gw.Namespace, gw.Name)
 
 	routeKey := client.ObjectKeyFromObject(route)
 	patched := false
@@ -1430,8 +1474,8 @@ func (r *GatewayReconciler) updateDeniedRouteStatus(ctx context.Context, gw *gat
 		// Skip if the entry already has exactly the right condition.
 		if existing != nil &&
 			len(existing.Conditions) == 1 &&
-			!conditions.Changed(existing.Conditions, resolvedRefsType, resolvedRefsStatus,
-				resolvedRefsReason, resolvedRefsMsg, route.Generation) {
+			!conditions.Changed(existing.Conditions, acceptedType, acceptedStatus,
+				acceptedReason, acceptedMsg, route.Generation) {
 			return nil
 		}
 
@@ -1451,17 +1495,17 @@ func (r *GatewayReconciler) updateDeniedRouteStatus(ctx context.Context, gw *gat
 			existing = &route.Status.Parents[len(route.Status.Parents)-1]
 		}
 
-		// Replace all conditions with just ResolvedRefs=False/RefNotPermitted,
-		// removing any stale Accepted or DNS conditions from a previous
+		// Replace all conditions with just Accepted=False/NotAllowedByListeners,
+		// removing any stale DNS or other conditions from a previous
 		// reconciliation when the route was allowed.
 		existing.Conditions = conditions.Set(existing.Conditions, []metav1.Condition{
 			{
-				Type:               resolvedRefsType,
-				Status:             resolvedRefsStatus,
+				Type:               acceptedType,
+				Status:             acceptedStatus,
 				ObservedGeneration: route.Generation,
 				LastTransitionTime: now,
-				Reason:             resolvedRefsReason,
-				Message:            resolvedRefsMsg,
+				Reason:             acceptedReason,
+				Message:            acceptedMsg,
 			},
 		})
 
@@ -1470,8 +1514,8 @@ func (r *GatewayReconciler) updateDeniedRouteStatus(ctx context.Context, gw *gat
 	})
 	if patched {
 		log.FromContext(ctx).V(1).Info("Patched denied HTTPRoute status", "httproute", routeKey)
-		r.Eventf(route, gw, corev1.EventTypeWarning, resolvedRefsReason,
-			apiv1.EventActionReconcile, resolvedRefsMsg)
+		r.Eventf(route, gw, corev1.EventTypeWarning, acceptedReason,
+			apiv1.EventActionReconcile, acceptedMsg)
 	}
 	return err
 }

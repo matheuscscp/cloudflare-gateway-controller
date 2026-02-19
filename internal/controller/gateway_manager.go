@@ -30,7 +30,7 @@ func (r *GatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				predicate.GenerationChangedPredicate{},
 				predicate.AnnotationChangedPredicate{})))).
 
-		// Owned resources: Cloudflared Deployment and tunnel token Secret.
+		// Owned resources: cloudflared Deployment and tunnel token Secret.
 		Owns(&appsv1.Deployment{},
 			builder.WithPredicates(predicates.Debug(apiv1.KindDeployment,
 				predicate.ResourceVersionChangedPredicate{}))).
@@ -52,6 +52,10 @@ func (r *GatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.mapReferenceGrantToGateway),
 			builder.WithPredicates(predicates.Debug(apiv1.KindReferenceGrant,
 				predicate.GenerationChangedPredicate{}))).
+		Watches(&corev1.Namespace{},
+			handler.EnqueueRequestsFromMapFunc(r.mapNamespaceToGateway),
+			builder.WithPredicates(predicates.Debug(apiv1.KindNamespace,
+				predicate.ResourceVersionChangedPredicate{}))).
 		Complete(r)
 }
 
@@ -182,6 +186,30 @@ func (r *GatewayReconciler) mapReferenceGrantToGateway(ctx context.Context, obj 
 					seen[key] = struct{}{}
 					requests = append(requests, reconcile.Request{NamespacedName: key})
 				}
+			}
+		}
+	}
+	return requests
+}
+
+// mapNamespaceToGateway maps a Namespace event to reconcile requests for
+// Gateways that use allowedRoutes with from=Selector on any listener.
+// Namespace label changes may affect which routes are allowed to attach.
+func (r *GatewayReconciler) mapNamespaceToGateway(ctx context.Context, _ client.Object) []reconcile.Request {
+	var gateways gatewayv1.GatewayList
+	if err := r.List(ctx, &gateways); err != nil {
+		log.FromContext(ctx).Error(err, "failed to list Gateways for Namespace")
+		return nil
+	}
+	var requests []reconcile.Request
+	for _, gw := range gateways.Items {
+		for _, l := range gw.Spec.Listeners {
+			if l.AllowedRoutes != nil && l.AllowedRoutes.Namespaces != nil &&
+				l.AllowedRoutes.Namespaces.From != nil && *l.AllowedRoutes.Namespaces.From == gatewayv1.NamespacesFromSelector {
+				requests = append(requests, reconcile.Request{
+					NamespacedName: client.ObjectKeyFromObject(&gw),
+				})
+				break
 			}
 		}
 	}
