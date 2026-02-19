@@ -61,6 +61,11 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 func (r *GatewayClassReconciler) reconcile(ctx context.Context, gc *gatewayv1.GatewayClass) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 
+	// Sanity check for the controller container image.
+	if PreflightChecks(WithContainerOS("distroless", 12), WithContainerOS("rhel", 8)) != nil {
+		return ctrl.Result{}, nil
+	}
+
 	supportedVersion, supportedVersionMessage := r.checkSupportedVersion(ctx)
 	validParams, validParamsMessage := r.checkParametersRef(ctx, gc)
 
