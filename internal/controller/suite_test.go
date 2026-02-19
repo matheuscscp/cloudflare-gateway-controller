@@ -121,6 +121,9 @@ func TestMain(m *testing.M) {
 		}),
 		NewCloudflareClient: func(cfg cloudflare.ClientConfig) (cloudflare.Client, error) {
 			testMock.lastClientConfig = cfg
+			if testMock.newClientErr != nil {
+				return nil, testMock.newClientErr
+			}
 			return testMock, nil
 		},
 		CloudflaredImage: controller.DefaultCloudflaredImage,
@@ -213,17 +216,19 @@ type mockCloudflareClient struct {
 	listDNSCNAMEsByTarget   []string          // hostnames returned by ListDNSCNAMEsByTarget
 
 	// Error injection fields — set these to make mock methods return errors.
-	getTunnelIDByNameErr      error
-	createTunnelErr           error
-	deleteTunnelErr           error
-	getTunnelTokenErr         error
-	getTunnelConfigurationErr error
-	updateTunnelConfigErr     error
-	listZoneIDsErr            error
-	findZoneIDErr             error
-	ensureDNSErr              error
-	deleteDNSErr              error
-	listDNSCNAMEsByTargetErr  error
+	newClientErr                error
+	getTunnelIDByNameErr        error
+	createTunnelErr             error
+	deleteTunnelErr             error
+	getTunnelTokenErr           error
+	getTunnelConfigurationErr   error
+	updateTunnelConfigErr       error
+	cleanupTunnelConnectionsErr error
+	listZoneIDsErr              error
+	findZoneIDErr               error
+	ensureDNSErr                error
+	deleteDNSErr                error
+	listDNSCNAMEsByTargetErr    error
 }
 
 type mockDNSCall struct {
@@ -251,6 +256,9 @@ func (m *mockCloudflareClient) ListTunnels(_ context.Context) ([]cloudflare.Tunn
 }
 
 func (m *mockCloudflareClient) CleanupTunnelConnections(_ context.Context, _ string) error {
+	if m.cleanupTunnelConnectionsErr != nil {
+		return m.cleanupTunnelConnectionsErr
+	}
 	return nil
 }
 
@@ -442,12 +450,14 @@ func findEvent(g Gomega, namespace, objectName, eventType, reason, action, noteS
 // this to avoid leaking error state to subsequent tests.
 func resetMockErrors(t *testing.T) {
 	t.Cleanup(func() {
+		testMock.newClientErr = nil
 		testMock.getTunnelIDByNameErr = nil
 		testMock.createTunnelErr = nil
 		testMock.deleteTunnelErr = nil
 		testMock.getTunnelTokenErr = nil
 		testMock.getTunnelConfigurationErr = nil
 		testMock.updateTunnelConfigErr = nil
+		testMock.cleanupTunnelConnectionsErr = nil
 		testMock.listZoneIDsErr = nil
 		testMock.findZoneIDErr = nil
 		testMock.ensureDNSErr = nil
