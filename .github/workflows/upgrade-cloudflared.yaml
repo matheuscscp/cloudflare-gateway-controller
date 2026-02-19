@@ -5,7 +5,7 @@ name: upgrade-cloudflared
 
 on:
   schedule:
-    - cron: "0 8 * * 1" # every Monday
+    - cron: "0 8 * * 2" # every Tuesday
   workflow_dispatch:
 
 jobs:
