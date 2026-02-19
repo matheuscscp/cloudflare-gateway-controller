@@ -35,6 +35,7 @@ type IngressRule struct {
 type Client interface {
 	CreateTunnel(ctx context.Context, name string) (tunnelID string, err error)
 	GetTunnelIDByName(ctx context.Context, name string) (tunnelID string, err error)
+	CleanupTunnelConnections(ctx context.Context, tunnelID string) error
 	DeleteTunnel(ctx context.Context, tunnelID string) error
 	GetTunnelToken(ctx context.Context, tunnelID string) (token string, err error)
 	GetTunnelConfiguration(ctx context.Context, tunnelID string) ([]IngressRule, error)
@@ -105,6 +106,13 @@ func (c *client) GetTunnelIDByName(ctx context.Context, name string) (string, er
 		return "", fmt.Errorf("listing tunnels by name %q: %w", name, err)
 	}
 	return "", nil
+}
+
+func (c *client) CleanupTunnelConnections(ctx context.Context, tunnelID string) error {
+	_, err := c.client.ZeroTrust.Tunnels.Cloudflared.Connections.Delete(ctx, tunnelID, zero_trust.TunnelCloudflaredConnectionDeleteParams{
+		AccountID: cloudflare.String(c.accountID),
+	})
+	return err
 }
 
 func (c *client) DeleteTunnel(ctx context.Context, tunnelID string) error {

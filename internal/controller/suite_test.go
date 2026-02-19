@@ -246,6 +246,10 @@ func (m *mockCloudflareClient) GetTunnelIDByName(_ context.Context, _ string) (s
 	return m.tunnelID, nil
 }
 
+func (m *mockCloudflareClient) CleanupTunnelConnections(_ context.Context, _ string) error {
+	return nil
+}
+
 func (m *mockCloudflareClient) DeleteTunnel(_ context.Context, tunnelID string) error {
 	if m.deleteTunnelErr != nil {
 		return m.deleteTunnelErr

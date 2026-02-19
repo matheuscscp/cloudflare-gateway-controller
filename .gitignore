@@ -38,4 +38,4 @@ go.work.sum
 *.token
 
 # Local run logs
-run.log
+*.log

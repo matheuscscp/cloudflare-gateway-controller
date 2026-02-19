@@ -752,6 +752,10 @@ func (r *GatewayReconciler) finalizeEnabled(ctx context.Context, gw *gatewayv1.G
 			return fmt.Errorf("cleaning up DNS during finalization: %w", err)
 		}
 		log.V(1).Info("Cleaned up DNS CNAME records")
+		if err := tc.CleanupTunnelConnections(ctx, tunnelID); err != nil {
+			return fmt.Errorf("cleaning up tunnel connections: %w", err)
+		}
+		log.V(1).Info("Cleaned up tunnel connections")
 		if err := tc.DeleteTunnel(ctx, tunnelID); err != nil {
 			return fmt.Errorf("deleting tunnel: %w", err)
 		}

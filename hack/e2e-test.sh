@@ -37,15 +37,17 @@ IMAGE_TAG="${IMAGE##*:}"
 log()  { echo "==> $*"; }
 pass() { echo "PASS: $*"; }
 fail() {
-    echo "FAIL: $*" >&2
-    echo "--- Diagnostics ---" >&2
-    kubectl get pods -A --no-headers 2>/dev/null >&2 || true
-    echo "--- Controller logs ---" >&2
-    kubectl logs -n "$CONTROLLER_NS" -l app.kubernetes.io/name="$RELEASE_NAME" --tail=50 2>/dev/null >&2 || true
-    echo "--- GatewayClass status ---" >&2
-    kubectl get gatewayclass -o yaml 2>/dev/null >&2 || true
-    echo "--- Gateway status ---" >&2
-    kubectl get gateway -A -o yaml 2>/dev/null >&2 || true
+    echo "FAIL: $*"
+    echo "--- Pods ---"
+    kubectl get pods -A --no-headers 2>/dev/null || true
+    echo "--- Controller logs (last 30) ---"
+    kubectl logs -n "$CONTROLLER_NS" -l app.kubernetes.io/name="$RELEASE_NAME" --tail=30 2>/dev/null || true
+    echo "--- GatewayClass status ---"
+    kubectl get gatewayclass -o yaml 2>/dev/null || true
+    echo "--- Gateway status ---"
+    kubectl get gateway -A -o yaml 2>/dev/null || true
+    echo "--- HTTPRoute status ---"
+    kubectl get httproute -A -o yaml 2>/dev/null || true
     exit 1
 }
 
@@ -199,7 +201,7 @@ EOF
 log "Waiting for tunnel config to include '$TEST_HOSTNAME'..."
 check_tunnel_has_hostname() {
     cfgwctl tunnel get-config --tunnel-id "$TUNNEL_ID" \
-        | jq -e ".ingress[] | select(.hostname == \"$TEST_HOSTNAME\")" >/dev/null
+        | jq -e ".[] | select(.hostname == \"$TEST_HOSTNAME\")" >/dev/null
 }
 retry 30 2 check_tunnel_has_hostname || fail "tunnel config does not contain hostname"
 pass "Tunnel config has hostname"
@@ -225,7 +227,7 @@ kubectl delete httproute test-route -n "$TEST_NS"
 log "Waiting for tunnel config to remove '$TEST_HOSTNAME'..."
 check_tunnel_no_hostname() {
     ! cfgwctl tunnel get-config --tunnel-id "$TUNNEL_ID" \
-        | jq -e ".ingress[] | select(.hostname == \"$TEST_HOSTNAME\")" >/dev/null 2>&1
+        | jq -e ".[] | select(.hostname == \"$TEST_HOSTNAME\")" >/dev/null 2>&1
 }
 retry 30 2 check_tunnel_no_hostname || fail "tunnel config still contains hostname"
 pass "Tunnel config updated after route deletion"
@@ -250,7 +252,9 @@ pass "Gateway deleted"
 
 log "Verifying tunnel deleted..."
 check_tunnel_deleted() {
-    ! cfgwctl tunnel get-id --name "$TUNNEL_NAME" >/dev/null 2>&1
+    local id
+    id=$(cfgwctl tunnel get-id --name "$TUNNEL_NAME" | jq -r '.tunnelId')
+    [ -z "$id" ] || [ "$id" = "null" ]
 }
 retry 30 2 check_tunnel_deleted || fail "tunnel still exists"
 pass "Tunnel deleted"
