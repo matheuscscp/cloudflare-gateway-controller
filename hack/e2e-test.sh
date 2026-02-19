@@ -97,7 +97,7 @@ helm install "$RELEASE_NAME" "$CHART_DIR" \
     --set image.repository="$IMAGE_REPO" \
     --set image.tag="$IMAGE_TAG" \
     --set image.pullPolicy=Never \
-    --set 'podArgs[0]=--zap-log-level=debug' \
+    --set 'podArgs[0]=--log-level=debug' \
     --wait --timeout 120s
 
 log "Waiting for controller deployment to be ready..."

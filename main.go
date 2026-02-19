@@ -4,12 +4,12 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"os"
 	"runtime/debug"
 
 	"github.com/Masterminds/semver/v3"
+	"github.com/fluxcd/pkg/runtime/logger"
 	"github.com/fluxcd/pkg/ssa"
 	"github.com/spf13/pflag"
 	corev1 "k8s.io/api/core/v1"
@@ -20,7 +20,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
@@ -45,13 +44,11 @@ func main() {
 	cloudflaredImage := pflag.String("cloudflared-image", controller.DefaultCloudflaredImage, "cloudflared container image")
 	leaderElect := pflag.Bool("leader-elect", true, "enable leader election")
 
-	zapOpts := zap.Options{}
-	goflags := flag.NewFlagSet("", flag.ExitOnError)
-	zapOpts.BindFlags(goflags)
-	pflag.CommandLine.AddGoFlagSet(goflags)
+	logOptions := logger.Options{}
+	logOptions.BindFlags(pflag.CommandLine)
 	pflag.Parse()
 
-	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zapOpts)))
+	logger.SetLogger(logger.NewLogger(logOptions))
 
 	setupLog := ctrl.Log.WithName("setup")
 

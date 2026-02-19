@@ -69,7 +69,7 @@ run: fmt vet ## Run the controller locally against the current kubeconfig cluste
 
 .PHONY: run-debug
 run-debug: fmt vet ## Run the controller locally with debug logging (verbosity level 1).
-	go run ./main.go --leader-elect=false --zap-log-level=debug 2>&1 | stdbuf -oL tee run.log
+	go run ./main.go --leader-elect=false --log-level=debug 2>&1 | stdbuf -oL tee run.log
 
 ##@ Dependencies
 
