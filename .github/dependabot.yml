@@ -1,0 +1,27 @@
+# Copyright 2026 Matheus Pimenta.
+# SPDX-License-Identifier: AGPL-3.0
+
+# Docs:
+# https://docs.github.com/github/administering-a-repository/configuration-options-for-dependency-updates
+# https://docs.github.com/en/code-security/dependabot/working-with-dependabot/configuring-multi-ecosystem-updates
+
+version: 2
+multi-ecosystem-groups:
+  project:
+    schedule:
+      interval: weekly
+updates:
+- package-ecosystem: gomod
+  directory: /
+  patterns: ["*"]
+  multi-ecosystem-group: project
+- package-ecosystem: docker
+  directory: /
+  patterns: ["*"]
+  multi-ecosystem-group: project
+- package-ecosystem: github-actions
+  directories:
+  - .github/workflows
+  - .github/actions/*
+  patterns: ["*"]
+  multi-ecosystem-group: project
