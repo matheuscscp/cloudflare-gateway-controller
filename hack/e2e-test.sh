@@ -36,7 +36,18 @@ IMAGE_TAG="${IMAGE##*:}"
 # Logging helpers.
 log()  { echo "==> $*"; }
 pass() { echo "PASS: $*"; }
-fail() { echo "FAIL: $*" >&2; exit 1; }
+fail() {
+    echo "FAIL: $*" >&2
+    echo "--- Diagnostics ---" >&2
+    kubectl get pods -A --no-headers 2>/dev/null >&2 || true
+    echo "--- Controller logs ---" >&2
+    kubectl logs -n "$CONTROLLER_NS" -l app.kubernetes.io/name="$RELEASE_NAME" --tail=50 2>/dev/null >&2 || true
+    echo "--- GatewayClass status ---" >&2
+    kubectl get gatewayclass -o yaml 2>/dev/null >&2 || true
+    echo "--- Gateway status ---" >&2
+    kubectl get gateway -A -o yaml 2>/dev/null >&2 || true
+    exit 1
+}
 
 # Cleanup on exit.
 cleanup() {
@@ -109,7 +120,8 @@ spec:
 EOF
 
 log "Waiting for GatewayClass to be Ready..."
-retry 30 2 kubectl wait gatewayclass/cloudflare --for=condition=Ready --timeout=5s
+retry 30 2 kubectl wait gatewayclass/cloudflare --for=condition=Ready --timeout=5s \
+    || fail "GatewayClass did not become Ready"
 pass "GatewayClass is Ready"
 
 # ─── Phase 3: Gateway lifecycle ────────────────────────────────────────────────
@@ -138,7 +150,8 @@ EOF
 
 log "Waiting for Gateway to be Programmed..."
 retry 60 2 kubectl wait gateway/test-gateway -n "$TEST_NS" \
-    --for=condition=Programmed --timeout=5s
+    --for=condition=Programmed --timeout=5s \
+    || fail "Gateway did not become Programmed"
 pass "Gateway is Programmed"
 
 # Get tunnel name from Gateway UID.

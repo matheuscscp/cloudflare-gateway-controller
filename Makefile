@@ -61,7 +61,7 @@ docker-build: ## Build the controller Docker image locally.
 
 .PHONY: test-e2e
 test-e2e: docker-build build-cfgwctl ## Run end-to-end tests against a kind cluster.
-	hack/e2e-test.sh
+	hack/e2e-test.sh 2>&1 | stdbuf -oL tee test-e2e.log
 
 .PHONY: run
 run: fmt vet ## Run the controller locally against the current kubeconfig cluster.
