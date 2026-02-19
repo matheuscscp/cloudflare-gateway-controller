@@ -40,8 +40,10 @@ fail() {
     echo "FAIL: $*"
     echo "--- Pods ---"
     kubectl get pods -A --no-headers 2>/dev/null || true
-    echo "--- Controller logs (last 30) ---"
-    kubectl logs -n "$CONTROLLER_NS" -l app.kubernetes.io/name="$RELEASE_NAME" --tail=30 2>/dev/null || true
+    echo "--- Controller logs ---"
+    kubectl logs -n "$CONTROLLER_NS" -l app.kubernetes.io/name="$RELEASE_NAME" 2>/dev/null || true
+    echo "--- Events ---"
+    kubectl get events -A --sort-by='.lastTimestamp' 2>/dev/null || true
     echo "--- GatewayClass status ---"
     kubectl get gatewayclass -o yaml 2>/dev/null || true
     echo "--- Gateway status ---"
@@ -94,7 +96,7 @@ helm install "$RELEASE_NAME" "$CHART_DIR" \
     --set image.repository="$IMAGE_REPO" \
     --set image.tag="$IMAGE_TAG" \
     --set image.pullPolicy=Never \
-    --set 'podArgs[0]=--log-level=debug' \
+    --set 'podArgs[0]=--zap-log-level=debug' \
     --wait --timeout 120s
 
 log "Waiting for controller deployment to be ready..."
