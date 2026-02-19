@@ -441,6 +441,9 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 			apiv1.EventActionReconcile, strings.Join(changes, "\n"))
 	}
 
+	if len(errs) > 0 {
+		return ctrl.Result{}, fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
