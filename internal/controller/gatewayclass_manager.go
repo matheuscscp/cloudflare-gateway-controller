@@ -23,7 +23,7 @@ import (
 )
 
 func (r *GatewayClassReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	gatewayClassCRDChangedPredicate := predicate.Funcs{
+	gatewayClassCRDVersionChangedPredicate := predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
 			return e.Object.GetName() == apiv1.CRDGatewayClass
 		},
@@ -48,7 +48,7 @@ func (r *GatewayClassReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		WatchesMetadata(&apiextensionsv1.CustomResourceDefinition{},
 			handler.EnqueueRequestsFromMapFunc(r.managedGatewayClasses(false)),
 			builder.WithPredicates(predicates.Debug(apiv1.KindCustomResourceDefinition,
-				gatewayClassCRDChangedPredicate))).
+				gatewayClassCRDVersionChangedPredicate))).
 		WatchesMetadata(&corev1.Secret{},
 			handler.EnqueueRequestsFromMapFunc(r.managedGatewayClasses(true)),
 			builder.WithPredicates(predicates.Debug(apiv1.KindSecret,

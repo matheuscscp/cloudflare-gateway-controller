@@ -8,6 +8,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -24,6 +25,14 @@ import (
 )
 
 func (r *GatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	gatewayClassReadinessChangedPredicate := predicates.ConditionStatusChanged(
+		apiv1.ConditionReady, func(obj client.Object) []metav1.Condition {
+			if gc, ok := obj.(*gatewayv1.GatewayClass); ok {
+				return gc.Status.Conditions
+			}
+			return nil
+		})
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&gatewayv1.Gateway{},
 			builder.WithPredicates(predicates.Debug(apiv1.KindGateway, predicate.Or(
@@ -43,11 +52,11 @@ func (r *GatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&gatewayv1.GatewayClass{},
 			handler.EnqueueRequestsFromMapFunc(r.mapGatewayClassToGateway),
 			builder.WithPredicates(predicates.Debug(apiv1.KindGatewayClass,
-				predicate.ResourceVersionChangedPredicate{}))).
+				gatewayClassReadinessChangedPredicate))).
 		Watches(&gatewayv1.HTTPRoute{},
 			handler.EnqueueRequestsFromMapFunc(mapHTTPRouteToGateway),
 			builder.WithPredicates(predicates.Debug(apiv1.KindHTTPRoute,
-				predicate.ResourceVersionChangedPredicate{}))).
+				predicate.GenerationChangedPredicate{}))).
 		Watches(&gatewayv1beta1.ReferenceGrant{},
 			handler.EnqueueRequestsFromMapFunc(r.mapReferenceGrantToGateway),
 			builder.WithPredicates(predicates.Debug(apiv1.KindReferenceGrant,
@@ -55,7 +64,7 @@ func (r *GatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&corev1.Namespace{},
 			handler.EnqueueRequestsFromMapFunc(r.mapNamespaceToGateway),
 			builder.WithPredicates(predicates.Debug(apiv1.KindNamespace,
-				predicate.ResourceVersionChangedPredicate{}))).
+				predicate.LabelChangedPredicate{}))).
 		Complete(r)
 }
 
