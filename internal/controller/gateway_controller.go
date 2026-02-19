@@ -1431,7 +1431,7 @@ func (r *GatewayReconciler) removeRouteStatus(ctx context.Context, gw *gatewayv1
 			return nil
 		}
 		patch := client.MergeFromWithOptions(route.DeepCopy(), client.MergeFromWithOptimisticLock{})
-		var filtered []gatewayv1.RouteParentStatus
+		filtered := make([]gatewayv1.RouteParentStatus, 0, len(route.Status.Parents))
 		for _, s := range route.Status.Parents {
 			if s.ControllerName == apiv1.ControllerName &&
 				string(s.ParentRef.Name) == gw.Name &&

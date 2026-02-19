@@ -55,7 +55,7 @@ func TestGatewayClassReconciler_Accepted(t *testing.T) {
 		g.Expect(ready.Reason).To(Equal(apiv1.ReasonReconciliationSucceeded))
 
 		// Verify Normal event was emitted.
-		e := findEvent(g, gc.Name, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded)
+		e := findEvent(g, "default", gc.Name, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded, "", "")
 		g.Expect(e).NotTo(BeNil())
 		g.Expect(e.Note).To(Equal("GatewayClass reconciled"))
 		g.Expect(e.Action).To(Equal(apiv1.EventActionReconcile))
@@ -170,7 +170,7 @@ func TestGatewayClassReconciler_InvalidParametersRefKind(t *testing.T) {
 		g.Expect(ready.Reason).To(Equal(string(gatewayv1.GatewayClassReasonInvalidParameters)))
 
 		// Verify Warning event was emitted.
-		e := findEvent(g, gc.Name, corev1.EventTypeWarning, string(gatewayv1.GatewayClassReasonInvalidParameters))
+		e := findEvent(g, "default", gc.Name, corev1.EventTypeWarning, string(gatewayv1.GatewayClassReasonInvalidParameters), "", "")
 		g.Expect(e).NotTo(BeNil())
 		g.Expect(e.Note).To(ContainSubstring("ConfigMap"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
@@ -251,7 +251,7 @@ func TestGatewayClassReconciler_ParametersRefSecretNotFound(t *testing.T) {
 		g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
 
 		// Verify Warning event was emitted.
-		e := findEvent(g, gc.Name, corev1.EventTypeWarning, string(gatewayv1.GatewayClassReasonInvalidParameters))
+		e := findEvent(g, "default", gc.Name, corev1.EventTypeWarning, string(gatewayv1.GatewayClassReasonInvalidParameters), "", "")
 		g.Expect(e).NotTo(BeNil())
 		g.Expect(e.Note).To(ContainSubstring("not found"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())

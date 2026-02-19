@@ -211,6 +211,19 @@ type mockCloudflareClient struct {
 	zones                   map[string]string // hostname -> zoneID
 	zoneIDs                 []string          // zone IDs returned by ListZoneIDs
 	listDNSCNAMEsByTarget   []string          // hostnames returned by ListDNSCNAMEsByTarget
+
+	// Error injection fields — set these to make mock methods return errors.
+	getTunnelIDByNameErr      error
+	createTunnelErr           error
+	deleteTunnelErr           error
+	getTunnelTokenErr         error
+	getTunnelConfigurationErr error
+	updateTunnelConfigErr     error
+	listZoneIDsErr            error
+	findZoneIDErr             error
+	ensureDNSErr              error
+	deleteDNSErr              error
+	listDNSCNAMEsByTargetErr  error
 }
 
 type mockDNSCall struct {
@@ -220,38 +233,62 @@ type mockDNSCall struct {
 }
 
 func (m *mockCloudflareClient) CreateTunnel(_ context.Context, _ string) (string, error) {
+	if m.createTunnelErr != nil {
+		return "", m.createTunnelErr
+	}
 	return m.tunnelID, nil
 }
 
 func (m *mockCloudflareClient) GetTunnelIDByName(_ context.Context, _ string) (string, error) {
+	if m.getTunnelIDByNameErr != nil {
+		return "", m.getTunnelIDByNameErr
+	}
 	return m.tunnelID, nil
 }
 
 func (m *mockCloudflareClient) DeleteTunnel(_ context.Context, tunnelID string) error {
+	if m.deleteTunnelErr != nil {
+		return m.deleteTunnelErr
+	}
 	m.deleteCalled = true
 	m.deletedID = tunnelID
 	return nil
 }
 
 func (m *mockCloudflareClient) GetTunnelToken(_ context.Context, _ string) (string, error) {
+	if m.getTunnelTokenErr != nil {
+		return "", m.getTunnelTokenErr
+	}
 	return m.tunnelToken, nil
 }
 
 func (m *mockCloudflareClient) GetTunnelConfiguration(_ context.Context, _ string) ([]cloudflare.IngressRule, error) {
+	if m.getTunnelConfigurationErr != nil {
+		return nil, m.getTunnelConfigurationErr
+	}
 	return m.lastTunnelConfigIngress, nil
 }
 
 func (m *mockCloudflareClient) UpdateTunnelConfiguration(_ context.Context, tunnelID string, ingress []cloudflare.IngressRule) error {
+	if m.updateTunnelConfigErr != nil {
+		return m.updateTunnelConfigErr
+	}
 	m.lastTunnelConfigID = tunnelID
 	m.lastTunnelConfigIngress = ingress
 	return nil
 }
 
 func (m *mockCloudflareClient) ListZoneIDs(_ context.Context) ([]string, error) {
+	if m.listZoneIDsErr != nil {
+		return nil, m.listZoneIDsErr
+	}
 	return m.zoneIDs, nil
 }
 
 func (m *mockCloudflareClient) FindZoneIDByHostname(_ context.Context, hostname string) (string, error) {
+	if m.findZoneIDErr != nil {
+		return "", m.findZoneIDErr
+	}
 	if m.zones != nil {
 		if zoneID, ok := m.zones[hostname]; ok {
 			return zoneID, nil
@@ -261,16 +298,25 @@ func (m *mockCloudflareClient) FindZoneIDByHostname(_ context.Context, hostname 
 }
 
 func (m *mockCloudflareClient) EnsureDNSCNAME(_ context.Context, zoneID, hostname, target string) error {
+	if m.ensureDNSErr != nil {
+		return m.ensureDNSErr
+	}
 	m.ensureDNSCalls = append(m.ensureDNSCalls, mockDNSCall{ZoneID: zoneID, Hostname: hostname, Target: target})
 	return nil
 }
 
 func (m *mockCloudflareClient) DeleteDNSCNAME(_ context.Context, zoneID, hostname string) error {
+	if m.deleteDNSErr != nil {
+		return m.deleteDNSErr
+	}
 	m.deleteDNSCalls = append(m.deleteDNSCalls, mockDNSCall{ZoneID: zoneID, Hostname: hostname})
 	return nil
 }
 
 func (m *mockCloudflareClient) ListDNSCNAMEsByTarget(_ context.Context, _, _ string) ([]string, error) {
+	if m.listDNSCNAMEsByTargetErr != nil {
+		return nil, m.listDNSCNAMEsByTargetErr
+	}
 	return m.listDNSCNAMEsByTarget, nil
 }
 
@@ -362,14 +408,44 @@ func waitForGatewayProgrammed(g Gomega, gw *gatewayv1.Gateway) {
 }
 
 // findEvent returns the first events.k8s.io/v1 Event for the given object name
-// matching the specified type and reason.
-func findEvent(g Gomega, objectName, eventType, reason string) *eventsv1.Event {
+// matching the specified type, reason, and action. Pass "" for action to match
+// any action.
+func findEvent(g Gomega, namespace, objectName, eventType, reason, action, noteSubstring string) *eventsv1.Event {
 	var events eventsv1.EventList
-	g.Expect(testClient.List(testCtx, &events, ctrlclient.InNamespace("default"))).To(Succeed())
+	var opts []ctrlclient.ListOption
+	if namespace != "" {
+		opts = append(opts, ctrlclient.InNamespace(namespace))
+	}
+	g.Expect(testClient.List(testCtx, &events, opts...)).To(Succeed())
 	for i, e := range events.Items {
 		if e.Regarding.Name == objectName && e.Type == eventType && e.Reason == reason {
-			return &events.Items[i]
+			if action == "" || e.Action == action {
+				if noteSubstring == "" || strings.Contains(e.Note, noteSubstring) {
+					return &events.Items[i]
+				}
+			}
 		}
 	}
 	return nil
+}
+
+// resetMockErrors resets all error injection fields and call-tracking state
+// on the shared mock at test cleanup. Tests that set mock errors MUST call
+// this to avoid leaking error state to subsequent tests.
+func resetMockErrors(t *testing.T) {
+	t.Cleanup(func() {
+		testMock.getTunnelIDByNameErr = nil
+		testMock.createTunnelErr = nil
+		testMock.deleteTunnelErr = nil
+		testMock.getTunnelTokenErr = nil
+		testMock.getTunnelConfigurationErr = nil
+		testMock.updateTunnelConfigErr = nil
+		testMock.listZoneIDsErr = nil
+		testMock.findZoneIDErr = nil
+		testMock.ensureDNSErr = nil
+		testMock.deleteDNSErr = nil
+		testMock.listDNSCNAMEsByTargetErr = nil
+		testMock.deleteCalled = false
+		testMock.deletedID = ""
+	})
 }
