@@ -27,7 +27,7 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Set up Go
-        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
         with:
           go-version-file: go.mod
 
@@ -60,7 +60,7 @@ jobs:
           printf '%s\n%s\n%s\n%s\n%s\n%s\n' '# Copyright 2026 Matheus Pimenta.' '# SPDX-License-Identifier: AGPL-3.0' '' '{{- if eq .Values.api.channel "experimental" }}' "$(cat "$dest")" '{{- end }}' > "$dest"
 
       - name: Create Pull Request
-        uses: peter-evans/create-pull-request@5e914681df9dc83aa4e4905692ca88beb2f9e91f # v7.0.5
+        uses: peter-evans/create-pull-request@c0f553fe549906ede9cf27b5156039d195d2ece0 # v8.1.0
         with:
           token: ${{ secrets.BOT_GITHUB_TOKEN }}
           commit-message: Upgrade Gateway API to ${{ steps.release.outputs.tag }}
