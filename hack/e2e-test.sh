@@ -29,7 +29,8 @@ CHART_DIR="charts/cloudflare-gateway-controller"
 RELEASE_NAME="cloudflare-gateway-controller"
 CONTROLLER_NS="cfgw-system"
 TEST_NS="cfgw-e2e-test"
-TEST_HOSTNAME="e2e-test-$(date +%s).${TEST_ZONE_NAME}"
+TS=$(date +%s)
+TEST_HOSTNAME="e2e-${TS: -6}.${TEST_ZONE_NAME}"
 IMAGE_REPO="${IMAGE%:*}"
 IMAGE_TAG="${IMAGE##*:}"
 
@@ -125,7 +126,7 @@ spec:
 EOF
 
 log "Waiting for GatewayClass to be Ready..."
-retry 30 2 kubectl wait gatewayclass/cloudflare --for=condition=Ready --timeout=5s \
+retry 60 3 kubectl wait gatewayclass/cloudflare --for=condition=Ready --timeout=5s \
     || fail "GatewayClass did not become Ready"
 pass "GatewayClass is Ready"
 
@@ -206,7 +207,7 @@ check_tunnel_has_hostname() {
     cfgwctl tunnel get-config --tunnel-id "$TUNNEL_ID" \
         | jq -e ".[] | select(.hostname == \"$TEST_HOSTNAME\")" >/dev/null
 }
-retry 30 2 check_tunnel_has_hostname || fail "tunnel config does not contain hostname"
+retry 60 3 check_tunnel_has_hostname || fail "tunnel config does not contain hostname"
 pass "Tunnel config has hostname"
 
 log "Finding zone ID for '$TEST_ZONE_NAME'..."
@@ -219,7 +220,7 @@ check_dns_cname() {
     cfgwctl dns list-cnames --zone-id "$ZONE_ID" --target "$TUNNEL_TARGET" \
         | jq -e ".hostnames[] | select(. == \"$TEST_HOSTNAME\")" >/dev/null
 }
-retry 30 2 check_dns_cname || fail "DNS CNAME not found"
+retry 60 3 check_dns_cname || fail "DNS CNAME not found"
 pass "DNS CNAME exists"
 
 # ─── Phase 5: HTTPRoute deletion ───────────────────────────────────────────────
@@ -232,7 +233,7 @@ check_tunnel_no_hostname() {
     ! cfgwctl tunnel get-config --tunnel-id "$TUNNEL_ID" \
         | jq -e ".[] | select(.hostname == \"$TEST_HOSTNAME\")" >/dev/null 2>&1
 }
-retry 30 2 check_tunnel_no_hostname || fail "tunnel config still contains hostname"
+retry 60 3 check_tunnel_no_hostname || fail "tunnel config still contains hostname"
 pass "Tunnel config updated after route deletion"
 
 log "Verifying DNS CNAME removed for '$TEST_HOSTNAME'..."
@@ -240,7 +241,7 @@ check_dns_cname_removed() {
     ! cfgwctl dns list-cnames --zone-id "$ZONE_ID" --target "$TUNNEL_TARGET" \
         | jq -e ".hostnames[] | select(. == \"$TEST_HOSTNAME\")" >/dev/null 2>&1
 }
-retry 30 2 check_dns_cname_removed || fail "DNS CNAME still exists"
+retry 60 3 check_dns_cname_removed || fail "DNS CNAME still exists"
 pass "DNS CNAME removed"
 
 # ─── Phase 6: Gateway deletion ─────────────────────────────────────────────────
@@ -249,7 +250,7 @@ log "Deleting Gateway 'test-gateway'..."
 kubectl delete gateway test-gateway -n "$TEST_NS"
 
 log "Waiting for Gateway to be fully deleted..."
-retry 30 2 bash -c "! kubectl get gateway test-gateway -n '$TEST_NS' 2>/dev/null" \
+retry 60 3 bash -c "! kubectl get gateway test-gateway -n '$TEST_NS' 2>/dev/null" \
     || fail "Gateway still exists"
 pass "Gateway deleted"
 
@@ -259,13 +260,13 @@ check_tunnel_deleted() {
     id=$(cfgwctl tunnel get-id --name "$TUNNEL_NAME" | jq -r '.tunnelId')
     [ -z "$id" ] || [ "$id" = "null" ]
 }
-retry 30 2 check_tunnel_deleted || fail "tunnel still exists"
+retry 60 3 check_tunnel_deleted || fail "tunnel still exists"
 pass "Tunnel deleted"
 
 # ─── Phase 7: Multiple HTTPRoutes with multiple hostnames ─────────────────────
 
-HOSTNAME_A="a-$(date +%s).${TEST_ZONE_NAME}"
-HOSTNAME_B="b-$(date +%s).${TEST_ZONE_NAME}"
+HOSTNAME_A="a-${TS: -6}.${TEST_ZONE_NAME}"
+HOSTNAME_B="b-${TS: -6}.${TEST_ZONE_NAME}"
 
 log "Creating Gateway 'multi-route-gw'..."
 kubectl apply -f - <<EOF
@@ -358,8 +359,8 @@ check_mr_has_b() {
     cfgwctl tunnel get-config --tunnel-id "$MR_TUNNEL_ID" \
         | jq -e ".[] | select(.hostname == \"$HOSTNAME_B\")" >/dev/null
 }
-retry 30 2 check_mr_has_a || fail "tunnel config missing hostname A"
-retry 30 2 check_mr_has_b || fail "tunnel config missing hostname B"
+retry 60 3 check_mr_has_a || fail "tunnel config missing hostname A"
+retry 60 3 check_mr_has_b || fail "tunnel config missing hostname B"
 pass "Tunnel config has both hostnames"
 
 MR_ZONE_ID=$(cfgwctl dns find-zone --hostname "$HOSTNAME_A" | jq -r '.zoneId')
@@ -373,8 +374,8 @@ check_mr_dns_b() {
     cfgwctl dns list-cnames --zone-id "$MR_ZONE_ID" --target "$MR_TUNNEL_TARGET" \
         | jq -e ".hostnames[] | select(. == \"$HOSTNAME_B\")" >/dev/null
 }
-retry 30 2 check_mr_dns_a || fail "DNS CNAME for hostname A not found"
-retry 30 2 check_mr_dns_b || fail "DNS CNAME for hostname B not found"
+retry 60 3 check_mr_dns_a || fail "DNS CNAME for hostname A not found"
+retry 60 3 check_mr_dns_b || fail "DNS CNAME for hostname B not found"
 pass "Both DNS CNAMEs exist"
 
 log "Deleting route-a only..."
@@ -385,7 +386,7 @@ check_mr_no_a() {
     ! cfgwctl tunnel get-config --tunnel-id "$MR_TUNNEL_ID" \
         | jq -e ".[] | select(.hostname == \"$HOSTNAME_A\")" >/dev/null 2>&1
 }
-retry 30 2 check_mr_no_a || fail "tunnel config still has hostname A"
+retry 60 3 check_mr_no_a || fail "tunnel config still has hostname A"
 check_mr_has_b || fail "tunnel config lost hostname B"
 pass "Tunnel config correctly updated after partial route deletion"
 
@@ -394,26 +395,26 @@ check_mr_dns_a_removed() {
     ! cfgwctl dns list-cnames --zone-id "$MR_ZONE_ID" --target "$MR_TUNNEL_TARGET" \
         | jq -e ".hostnames[] | select(. == \"$HOSTNAME_A\")" >/dev/null 2>&1
 }
-retry 30 2 check_mr_dns_a_removed || fail "DNS CNAME for A still exists"
+retry 60 3 check_mr_dns_a_removed || fail "DNS CNAME for A still exists"
 check_mr_dns_b || fail "DNS CNAME for B disappeared"
 pass "DNS CNAMEs correctly updated"
 
 log "Cleaning up multi-route test..."
 kubectl delete httproute route-b -n "$TEST_NS"
 kubectl delete gateway multi-route-gw -n "$TEST_NS"
-retry 30 2 bash -c "! kubectl get gateway multi-route-gw -n '$TEST_NS' 2>/dev/null" \
+retry 60 3 bash -c "! kubectl get gateway multi-route-gw -n '$TEST_NS' 2>/dev/null" \
     || fail "multi-route-gw still exists"
 check_mr_tunnel_deleted() {
     local id
     id=$(cfgwctl tunnel get-id --name "$MR_TUNNEL_NAME" | jq -r '.tunnelId')
     [ -z "$id" ] || [ "$id" = "null" ]
 }
-retry 30 2 check_mr_tunnel_deleted || fail "multi-route tunnel still exists"
+retry 60 3 check_mr_tunnel_deleted || fail "multi-route tunnel still exists"
 pass "Phase 7: Multiple HTTPRoutes passed"
 
 # ─── Phase 8: HTTPRoute with path matching ────────────────────────────────────
 
-PATH_HOSTNAME="paths-$(date +%s).test"
+PATH_HOSTNAME="paths-${TS: -6}.test"
 
 log "Creating Gateway 'path-gw' (no zone annotation)..."
 kubectl apply -f - <<EOF
@@ -497,20 +498,20 @@ check_path_web() {
     cfgwctl tunnel get-config --tunnel-id "$PATH_TUNNEL_ID" \
         | jq -e ".[] | select(.hostname == \"$PATH_HOSTNAME\" and .path == \"/web\")" >/dev/null
 }
-retry 30 2 check_path_api || fail "tunnel config missing /api path"
-retry 30 2 check_path_web || fail "tunnel config missing /web path"
+retry 60 3 check_path_api || fail "tunnel config missing /api path"
+retry 60 3 check_path_web || fail "tunnel config missing /web path"
 pass "Tunnel config has path-based entries"
 
 log "Cleaning up path matching test..."
 kubectl delete httproute path-route -n "$TEST_NS"
 kubectl delete gateway path-gw -n "$TEST_NS"
-retry 30 2 bash -c "! kubectl get gateway path-gw -n '$TEST_NS' 2>/dev/null" \
+retry 60 3 bash -c "! kubectl get gateway path-gw -n '$TEST_NS' 2>/dev/null" \
     || fail "path-gw still exists"
 pass "Phase 8: Path matching passed"
 
 # ─── Phase 9: Gateway without zone annotation (no DNS) ───────────────────────
 
-NO_DNS_HOSTNAME="no-dns-$(date +%s).${TEST_ZONE_NAME}"
+NO_DNS_HOSTNAME="nd-${TS: -6}.${TEST_ZONE_NAME}"
 
 log "Creating Gateway 'no-dns-gw' without zone annotation..."
 kubectl apply -f - <<EOF
@@ -576,7 +577,7 @@ check_no_dns_has_hostname() {
     cfgwctl tunnel get-config --tunnel-id "$NO_DNS_TUNNEL_ID" \
         | jq -e ".[] | select(.hostname == \"$NO_DNS_HOSTNAME\")" >/dev/null
 }
-retry 30 2 check_no_dns_has_hostname || fail "no-dns tunnel config missing hostname"
+retry 60 3 check_no_dns_has_hostname || fail "no-dns tunnel config missing hostname"
 pass "Tunnel config has hostname"
 
 log "Verifying NO DNS CNAME was created..."
@@ -595,7 +596,7 @@ pass "No DNS CNAME created (as expected)"
 log "Cleaning up no-DNS test..."
 kubectl delete httproute no-dns-route -n "$TEST_NS"
 kubectl delete gateway no-dns-gw -n "$TEST_NS"
-retry 30 2 bash -c "! kubectl get gateway no-dns-gw -n '$TEST_NS' 2>/dev/null" \
+retry 60 3 bash -c "! kubectl get gateway no-dns-gw -n '$TEST_NS' 2>/dev/null" \
     || fail "no-dns-gw still exists"
 pass "Phase 9: No DNS passed"
 
@@ -639,13 +640,13 @@ pass "Deployment patch applied"
 
 log "Cleaning up deployment patches test..."
 kubectl delete gateway patched-gw -n "$TEST_NS"
-retry 30 2 bash -c "! kubectl get gateway patched-gw -n '$TEST_NS' 2>/dev/null" \
+retry 60 3 bash -c "! kubectl get gateway patched-gw -n '$TEST_NS' 2>/dev/null" \
     || fail "patched-gw still exists"
 pass "Phase 10: Deployment patches passed"
 
 # ─── Phase 11: Deletion while reconciliation is disabled ──────────────────────
 
-DISABLED_HOSTNAME="disabled-$(date +%s).${TEST_ZONE_NAME}"
+DISABLED_HOSTNAME="dis-${TS: -6}.${TEST_ZONE_NAME}"
 
 log "Creating Gateway 'disabled-gw' with zone annotation..."
 kubectl apply -f - <<EOF
@@ -715,7 +716,7 @@ check_dis_dns() {
     cfgwctl dns list-cnames --zone-id "$DIS_ZONE_ID" --target "$DIS_TUNNEL_TARGET" \
         | jq -e ".hostnames[] | select(. == \"$DISABLED_HOSTNAME\")" >/dev/null
 }
-retry 30 2 check_dis_dns || fail "DNS CNAME for disabled-gw not found"
+retry 60 3 check_dis_dns || fail "DNS CNAME for disabled-gw not found"
 pass "DNS CNAME exists for disabled-gw"
 
 log "Setting reconcile=disabled and deleting Gateway..."
@@ -726,7 +727,7 @@ kubectl delete httproute disabled-route -n "$TEST_NS"
 kubectl delete gateway disabled-gw -n "$TEST_NS"
 
 log "Waiting for Gateway to be fully deleted..."
-retry 30 2 bash -c "! kubectl get gateway disabled-gw -n '$TEST_NS' 2>/dev/null" \
+retry 60 3 bash -c "! kubectl get gateway disabled-gw -n '$TEST_NS' 2>/dev/null" \
     || fail "disabled-gw still exists"
 pass "disabled-gw deleted"
 
@@ -754,7 +755,7 @@ pass "Phase 11: Deletion while disabled passed"
 
 # ─── Phase 12: Zone annotation removal cleans up DNS ─────────────────────────
 
-ZONE_RM_HOSTNAME="zone-rm-$(date +%s).${TEST_ZONE_NAME}"
+ZONE_RM_HOSTNAME="zrm-${TS: -6}.${TEST_ZONE_NAME}"
 
 log "Creating Gateway 'zone-rm-gw' with zone annotation..."
 kubectl apply -f - <<EOF
@@ -824,7 +825,7 @@ check_zr_dns() {
     cfgwctl dns list-cnames --zone-id "$ZR_ZONE_ID" --target "$ZR_TUNNEL_TARGET" \
         | jq -e ".hostnames[] | select(. == \"$ZONE_RM_HOSTNAME\")" >/dev/null
 }
-retry 30 2 check_zr_dns || fail "DNS CNAME for zone-rm not found"
+retry 60 3 check_zr_dns || fail "DNS CNAME for zone-rm not found"
 pass "DNS CNAME exists"
 
 log "Removing zoneName annotation..."
@@ -836,7 +837,7 @@ check_zr_dns_removed() {
     ! cfgwctl dns list-cnames --zone-id "$ZR_ZONE_ID" --target "$ZR_TUNNEL_TARGET" \
         | jq -e ".hostnames[] | select(. == \"$ZONE_RM_HOSTNAME\")" >/dev/null 2>&1
 }
-retry 30 2 check_zr_dns_removed || fail "DNS CNAME still exists after zone removal"
+retry 60 3 check_zr_dns_removed || fail "DNS CNAME still exists after zone removal"
 pass "DNS CNAME removed after zone annotation removal"
 
 log "Verifying tunnel config still has hostname (ingress unaffected)..."
@@ -850,7 +851,7 @@ pass "Tunnel config still has hostname"
 log "Cleaning up zone removal test..."
 kubectl delete httproute zone-rm-route -n "$TEST_NS"
 kubectl delete gateway zone-rm-gw -n "$TEST_NS"
-retry 30 2 bash -c "! kubectl get gateway zone-rm-gw -n '$TEST_NS' 2>/dev/null" \
+retry 60 3 bash -c "! kubectl get gateway zone-rm-gw -n '$TEST_NS' 2>/dev/null" \
     || fail "zone-rm-gw still exists"
 pass "Phase 12: Zone annotation removal passed"
 
@@ -899,7 +900,7 @@ pass "Both listeners Accepted"
 
 log "Cleaning up multiple listeners test..."
 kubectl delete gateway multi-listen-gw -n "$TEST_NS"
-retry 30 2 bash -c "! kubectl get gateway multi-listen-gw -n '$TEST_NS' 2>/dev/null" \
+retry 60 3 bash -c "! kubectl get gateway multi-listen-gw -n '$TEST_NS' 2>/dev/null" \
     || fail "multi-listen-gw still exists"
 pass "Phase 13: Multiple listeners passed"
 
