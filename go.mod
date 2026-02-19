@@ -8,6 +8,7 @@ require (
 	github.com/evanphx/json-patch/v5 v5.9.11
 	github.com/fluxcd/pkg/ssa v0.69.0
 	github.com/onsi/gomega v1.39.1
+	github.com/spf13/cobra v1.10.0
 	github.com/spf13/pflag v1.0.9
 	k8s.io/api v0.35.1
 	k8s.io/apiextensions-apiserver v0.35.0
@@ -60,7 +61,6 @@ require (
 	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/procfs v0.17.0 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
-	github.com/spf13/cobra v1.10.0 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect

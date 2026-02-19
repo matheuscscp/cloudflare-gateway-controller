@@ -16,7 +16,7 @@ SHELL = /usr/bin/env bash -o pipefail
 GO_TEST_ARGS ?=
 
 .PHONY: all
-all: test build ## Run all build and test targets.
+all: test build build-cfgwctl ## Run all build and test targets.
 
 ##@ Development
 
@@ -47,6 +47,10 @@ test: tidy fmt vet envtest ## Run all unit tests.
 .PHONY: build
 build: fmt vet ## Build the binary.
 	CGO_ENABLED=0 go build -o ./bin/cloudflare-gateway-controller .
+
+.PHONY: build-cfgwctl
+build-cfgwctl: fmt vet ## Build the cfgwctl CLI binary.
+	CGO_ENABLED=0 go build -o ./bin/cfgwctl ./cmd/cfgwctl
 
 .PHONY: run
 run: fmt vet ## Run the controller locally against the current kubeconfig cluster.
