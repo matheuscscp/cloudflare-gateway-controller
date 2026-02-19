@@ -3,3 +3,39 @@ api:
 
 rbac:
   serviceAccountName: "" # When set, skip creating ServiceAccount, ClusterRole and ClusterRoleBinding.
+
+image:
+  repository: ghcr.io/matheuscscp/cloudflare-gateway-controller
+  tag: "" # Defaults to .Chart.AppVersion.
+  pullPolicy: IfNotPresent
+
+replicas: 1
+
+config:
+  cloudflaredImage: "" # Defaults to the built-in DefaultCloudflaredImage.
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 10m
+    memory: 64Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+    - ALL
+
+podAnnotations: {}
+podArgs: []
+podEnv: []
+podVolumes: []
+podVolumeMounts: []

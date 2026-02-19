@@ -15,6 +15,9 @@ SHELL = /usr/bin/env bash -o pipefail
 # Allows for defining additional Go test args, e.g. '-tags integration'.
 GO_TEST_ARGS ?=
 
+# Docker image name for local builds.
+IMG ?= cloudflare-gateway-controller:dev
+
 .PHONY: all
 all: test build build-cfgwctl ## Run all build and test targets.
 
@@ -51,6 +54,14 @@ build: fmt vet ## Build the binary.
 .PHONY: build-cfgwctl
 build-cfgwctl: fmt vet ## Build the cfgwctl CLI binary.
 	CGO_ENABLED=0 go build -o ./bin/cfgwctl ./cmd/cfgwctl
+
+.PHONY: docker-build
+docker-build: ## Build the controller Docker image locally.
+	docker buildx build -t $(IMG) --load .
+
+.PHONY: test-e2e
+test-e2e: docker-build build-cfgwctl ## Run end-to-end tests against a kind cluster.
+	hack/e2e-test.sh
 
 .PHONY: run
 run: fmt vet ## Run the controller locally against the current kubeconfig cluster.
