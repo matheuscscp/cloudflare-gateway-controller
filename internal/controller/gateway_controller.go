@@ -94,6 +94,26 @@ type GatewayReconciler struct {
 	CloudflaredImage    string
 }
 
+// gatewayReadiness holds the computed Programmed and Ready condition values
+// derived from the cloudflared Deployment status.
+type gatewayReadiness struct {
+	readyStatus, programmedStatus   metav1.ConditionStatus
+	readyReason, readyMsg           string
+	programmedReason, programmedMsg string
+}
+
+// routeConditions holds the pre-computed condition values for an HTTPRoute's
+// status.parents entry (ResolvedRefs, DNS, Ready).
+type routeConditions struct {
+	resolvedRefsStatus                  metav1.ConditionStatus
+	resolvedRefsReason, resolvedRefsMsg string
+	dnsEnabled                          bool
+	dnsStatus                           metav1.ConditionStatus
+	dnsReason, dnsMessage               string
+	readyStatus                         metav1.ConditionStatus
+	readyReason, readyMsg               string
+}
+
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gatewayclasses,verbs=get;list;watch;update
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gatewayclasses/finalizers,verbs=update
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch;update
@@ -107,6 +127,9 @@ type GatewayReconciler struct {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
+// Reconcile handles a single Gateway reconciliation request. It validates the
+// GatewayClass, handles deletion via finalize(), adds the finalizer, and
+// delegates to reconcile() for the main reconciliation logic.
 func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 
@@ -158,9 +181,13 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	return r.reconcile(ctx, &gw, &gc)
 }
 
+// reconcile orchestrates the main reconciliation loop for a Gateway:
+// ensure GatewayClass finalizer, list HTTPRoutes, read credentials, create
+// Cloudflare client, ensure tunnel, reconcile tunnel token Secret, apply
+// cloudflared Deployment, filter and clean up routes, build listener statuses,
+// reconcile tunnel ingress, reconcile DNS, check Deployment readiness, update
+// HTTPRoute statuses, and patch Gateway status with events.
 func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway, gc *gatewayv1.GatewayClass) (ctrl.Result, error) {
-	log := log.FromContext(ctx)
-
 	// Ensure GatewayClass finalizer
 	if err := r.ensureGatewayClassFinalizer(ctx, gc, gw); err != nil {
 		return r.reconcileError(ctx, gw, fmt.Errorf("ensuring GatewayClass finalizer: %w", err))
@@ -174,8 +201,6 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	}); err != nil {
 		return r.reconcileError(ctx, gw, fmt.Errorf("listing HTTPRoutes: %w", err))
 	}
-
-	now := metav1.Now()
 
 	// Read credentials
 	cfg, err := readCredentials(ctx, r.Client, gc, gw)
@@ -195,74 +220,43 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		return r.reconcileError(ctx, gw, fmt.Errorf("creating cloudflare client: %w", err))
 	}
 
-	// Look up or create tunnel. The name is deterministic (gateway-{UID}),
-	// so Cloudflare is the source of truth — no local state tracking needed.
+	// Accumulators for resource changes and non-fatal errors, summarized in
+	// the final status patch and event.
 	var changes []string
 	var errs []string
-	name := apiv1.TunnelName(gw)
-	tunnelID, err := tc.GetTunnelIDByName(ctx, name)
+
+	// Ensure tunnel exists
+	tunnelID, created, err := r.ensureTunnel(ctx, tc, gw)
 	if err != nil {
-		return r.reconcileError(ctx, gw, fmt.Errorf("looking up tunnel: %w", err))
+		return r.reconcileError(ctx, gw, err)
 	}
-	if tunnelID == "" {
-		tunnelID, err = tc.CreateTunnel(ctx, name)
-		if err != nil {
-			if !cloudflare.IsConflict(err) {
-				return r.reconcileError(ctx, gw, fmt.Errorf("creating tunnel: %w", err))
-			}
-			tunnelID, err = tc.GetTunnelIDByName(ctx, name)
-			if err != nil {
-				return r.reconcileError(ctx, gw, fmt.Errorf("looking up tunnel after conflict: %w", err))
-			}
-		}
+	if created {
 		changes = append(changes, "created tunnel")
-		log.V(1).Info("Created tunnel", "tunnelID", tunnelID)
 	}
 
-	// Get tunnel token
+	// Reconcile tunnel token Secret
 	tunnelToken, err := tc.GetTunnelToken(ctx, tunnelID)
 	if err != nil {
 		return r.reconcileError(ctx, gw, fmt.Errorf("getting tunnel token: %w", err))
 	}
-
-	// Build and create/update tunnel token Secret
-	secret := buildTunnelTokenSecret(gw, tunnelToken)
-	if err := controllerutil.SetControllerReference(gw, secret, r.Scheme()); err != nil {
-		return r.reconcileError(ctx, gw, fmt.Errorf("setting owner reference on secret: %w", err))
-	}
-	secretResult, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
-		desired := buildTunnelTokenSecret(gw, tunnelToken)
-		secret.Data = desired.Data
-		secret.Labels = desired.Labels
-		secret.Annotations = desired.Annotations
-		return controllerutil.SetControllerReference(gw, secret, r.Scheme())
-	})
+	secretResult, err := r.reconcileTunnelTokenSecret(ctx, gw, tunnelToken)
 	if err != nil {
-		return r.reconcileError(ctx, gw, fmt.Errorf("creating/updating tunnel token secret: %w", err))
+		return r.reconcileError(ctx, gw, err)
 	}
 	if secretResult != controllerutil.OperationResultNone {
 		changes = append(changes, fmt.Sprintf("tunnel token Secret %s", secretResult))
 	}
-	log.V(1).Info("Reconciled tunnel token Secret", "result", secretResult)
 
-	// Apply cloudflared Deployment via Server-Side Apply with dry-run diff.
-	// Only the fields we declare are managed; the SSA manager detects drift
-	// by comparing a server-side dry-run result with the existing object,
-	// skipping the actual apply when no drift is detected.
-	deployObj, err := r.buildCloudflaredDeployment(gw)
+	// Apply cloudflared Deployment
+	deployEntry, err := r.applyCloudflaredDeployment(ctx, gw)
 	if err != nil {
-		return r.reconcileError(ctx, gw, fmt.Errorf("building cloudflared deployment: %w", err))
-	}
-	deployEntry, err := r.ResourceManager.Apply(ctx, deployObj, ssaApplyOptions)
-	if err != nil {
-		return r.reconcileError(ctx, gw, fmt.Errorf("applying cloudflared deployment: %w", err))
+		return r.reconcileError(ctx, gw, err)
 	}
 	if string(deployEntry.Action) != string(ssa.UnchangedAction) {
 		changes = append(changes, fmt.Sprintf("cloudflared Deployment %s", deployEntry.Action))
 	}
-	log.V(1).Info("Reconciled cloudflared Deployment", "action", deployEntry.Action)
 
-	// Filter HTTPRoutes by parentRef and allowedRoutes, and update tunnel ingress.
+	// Filter HTTPRoutes by parentRef and allowedRoutes.
 	gatewayRoutes, deniedRoutes, staleRoutes, err := listGatewayRoutes(ctx, r.Client, &allRoutes, gw)
 	if err != nil {
 		return r.reconcileError(ctx, gw, err)
@@ -284,26 +278,16 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	// Build listener statuses using only allowed routes.
 	desiredListeners := buildListenerStatuses(gw, countAttachedRoutes(gatewayRoutes, gw))
 
-	ingress, routesWithDeniedRefs, err := buildIngressRules(ctx, r.Client, gatewayRoutes)
+	// Reconcile tunnel ingress configuration
+	routesWithDeniedRefs, configUpdated, err := r.reconcileTunnelIngress(ctx, tc, tunnelID, gatewayRoutes)
 	if err != nil {
 		return r.reconcileError(ctx, gw, err)
 	}
-	if len(routesWithDeniedRefs) > 0 {
-		log.V(1).Info("BackendRefs denied due to missing or failed ReferenceGrant checks", "routes", len(routesWithDeniedRefs))
-	}
-	currentIngress, err := tc.GetTunnelConfiguration(ctx, tunnelID)
-	if err != nil {
-		return r.reconcileError(ctx, gw, fmt.Errorf("getting tunnel configuration: %w", err))
-	}
-	if !ingressRulesEqual(currentIngress, ingress) {
-		if err := tc.UpdateTunnelConfiguration(ctx, tunnelID, ingress); err != nil {
-			return r.reconcileError(ctx, gw, fmt.Errorf("updating tunnel configuration: %w", err))
-		}
+	if configUpdated {
 		changes = append(changes, "updated tunnel configuration")
-		log.V(1).Info("Updated tunnel configuration")
 	}
 
-	// Reconcile DNS CNAME records.
+	// Reconcile DNS CNAME records
 	zoneName := gw.Annotations[apiv1.AnnotationZoneName]
 	dnsChanges, dnsErr := r.reconcileDNS(ctx, tc, tunnelID, zoneName, gw, gatewayRoutes)
 	changes = append(changes, dnsChanges...)
@@ -311,7 +295,115 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		errs = append(errs, *dnsErr)
 	}
 
-	// Check Deployment readiness and progress.
+	// Check Deployment readiness
+	readiness := r.checkDeploymentReadiness(ctx, gw)
+
+	// Update HTTPRoute status.parents for allowed routes (after DNS and
+	// Deployment checks so we can report DNS status and Gateway readiness).
+	errs = append(errs, r.updateRouteStatuses(ctx, gw, gatewayRoutes, routesWithDeniedRefs, zoneName, dnsErr,
+		readiness.readyStatus, readiness.readyReason, readiness.readyMsg)...)
+
+	// Patch Gateway status and emit events
+	return r.patchGatewayStatus(ctx, gw, desiredListeners, changes, errs, readiness)
+}
+
+// ensureTunnel looks up the tunnel by its deterministic name (gateway-{UID})
+// and creates it if it doesn't exist. On a creation conflict (another
+// reconciliation created it concurrently), it retries the lookup. Returns the
+// tunnel ID and whether the tunnel was created.
+func (r *GatewayReconciler) ensureTunnel(ctx context.Context, tc cloudflare.Client, gw *gatewayv1.Gateway) (string, bool, error) {
+	name := apiv1.TunnelName(gw)
+	tunnelID, err := tc.GetTunnelIDByName(ctx, name)
+	if err != nil {
+		return "", false, fmt.Errorf("looking up tunnel: %w", err)
+	}
+	if tunnelID != "" {
+		return tunnelID, false, nil
+	}
+
+	tunnelID, err = tc.CreateTunnel(ctx, name)
+	if err != nil {
+		if !cloudflare.IsConflict(err) {
+			return "", false, fmt.Errorf("creating tunnel: %w", err)
+		}
+		tunnelID, err = tc.GetTunnelIDByName(ctx, name)
+		if err != nil {
+			return "", false, fmt.Errorf("looking up tunnel after conflict: %w", err)
+		}
+	}
+	log.FromContext(ctx).V(1).Info("Created tunnel", "tunnelID", tunnelID)
+	return tunnelID, true, nil
+}
+
+// reconcileTunnelTokenSecret builds the tunnel token Secret, sets the Gateway
+// as the controller owner reference, and creates or updates the Secret.
+// Returns the operation result (created, updated, or unchanged).
+func (r *GatewayReconciler) reconcileTunnelTokenSecret(ctx context.Context, gw *gatewayv1.Gateway, tunnelToken string) (controllerutil.OperationResult, error) {
+	secret := buildTunnelTokenSecret(gw, tunnelToken)
+	if err := controllerutil.SetControllerReference(gw, secret, r.Scheme()); err != nil {
+		return "", fmt.Errorf("setting owner reference on secret: %w", err)
+	}
+	result, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
+		desired := buildTunnelTokenSecret(gw, tunnelToken)
+		secret.Data = desired.Data
+		secret.Labels = desired.Labels
+		secret.Annotations = desired.Annotations
+		return controllerutil.SetControllerReference(gw, secret, r.Scheme())
+	})
+	if err != nil {
+		return "", fmt.Errorf("creating/updating tunnel token secret: %w", err)
+	}
+	log.FromContext(ctx).V(1).Info("Reconciled tunnel token Secret", "result", result)
+	return result, nil
+}
+
+// applyCloudflaredDeployment builds the desired cloudflared Deployment and
+// applies it via Server-Side Apply with dry-run diff. Only the fields we
+// declare are managed; the SSA manager detects drift by comparing a
+// server-side dry-run result with the existing object, skipping the actual
+// apply when no drift is detected.
+func (r *GatewayReconciler) applyCloudflaredDeployment(ctx context.Context, gw *gatewayv1.Gateway) (*ssa.ChangeSetEntry, error) {
+	deployObj, err := r.buildCloudflaredDeployment(gw)
+	if err != nil {
+		return nil, fmt.Errorf("building cloudflared deployment: %w", err)
+	}
+	entry, err := r.ResourceManager.Apply(ctx, deployObj, ssaApplyOptions)
+	if err != nil {
+		return nil, fmt.Errorf("applying cloudflared deployment: %w", err)
+	}
+	log.FromContext(ctx).V(1).Info("Reconciled cloudflared Deployment", "action", entry.Action)
+	return entry, nil
+}
+
+// reconcileTunnelIngress builds ingress rules from the allowed HTTPRoutes,
+// compares them with the current tunnel configuration, and updates it if
+// changed. Returns the denied refs map, whether the config was updated, and
+// any error.
+func (r *GatewayReconciler) reconcileTunnelIngress(ctx context.Context, tc cloudflare.Client, tunnelID string, routes []*gatewayv1.HTTPRoute) (map[types.NamespacedName][]string, bool, error) {
+	ingress, routesWithDeniedRefs, err := buildIngressRules(ctx, r.Client, routes)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(routesWithDeniedRefs) > 0 {
+		log.FromContext(ctx).V(1).Info("BackendRefs denied due to missing or failed ReferenceGrant checks", "routes", len(routesWithDeniedRefs))
+	}
+	currentIngress, err := tc.GetTunnelConfiguration(ctx, tunnelID)
+	if err != nil {
+		return nil, false, fmt.Errorf("getting tunnel configuration: %w", err)
+	}
+	if !ingressRulesEqual(currentIngress, ingress) {
+		if err := tc.UpdateTunnelConfiguration(ctx, tunnelID, ingress); err != nil {
+			return nil, false, fmt.Errorf("updating tunnel configuration: %w", err)
+		}
+		log.FromContext(ctx).V(1).Info("Updated tunnel configuration")
+		return routesWithDeniedRefs, true, nil
+	}
+	return routesWithDeniedRefs, false, nil
+}
+
+// checkDeploymentReadiness fetches the cloudflared Deployment and inspects
+// its status conditions to determine the Gateway's Programmed and Ready state.
+func (r *GatewayReconciler) checkDeploymentReadiness(ctx context.Context, gw *gatewayv1.Gateway) gatewayReadiness {
 	var deploy appsv1.Deployment
 	deployAvailable := false
 	deployDeadlineExceeded := false
@@ -329,32 +421,37 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		}
 	}
 
-	readyStatus := metav1.ConditionUnknown
-	readyReason := apiv1.ReasonProgressingWithRetry
-	readyMsg := ""
-	programmedStatus := metav1.ConditionFalse
-	programmedReason := string(gatewayv1.GatewayReasonPending)
-	programmedMsg := "Waiting for cloudflared deployment to become ready"
-	if deployDeadlineExceeded {
-		readyStatus = metav1.ConditionFalse
-		readyReason = apiv1.ReasonReconciliationFailed
-		readyMsg = "cloudflared deployment exceeded progress deadline"
-	} else if deployAvailable {
-		programmedStatus = metav1.ConditionTrue
-		programmedReason = string(gatewayv1.GatewayReasonProgrammed)
-		programmedMsg = "Gateway is programmed"
-		readyStatus = metav1.ConditionTrue
-		readyReason = apiv1.ReasonReconciliationSucceeded
-		readyMsg = "Gateway is ready"
-	} else {
-		readyReason = apiv1.ReasonProgressing
-		readyMsg = "Waiting for cloudflared deployment to become ready"
+	readiness := gatewayReadiness{
+		readyStatus:      metav1.ConditionUnknown,
+		readyReason:      apiv1.ReasonProgressingWithRetry,
+		programmedStatus: metav1.ConditionFalse,
+		programmedReason: string(gatewayv1.GatewayReasonPending),
+		programmedMsg:    "Waiting for cloudflared deployment to become ready",
 	}
+	if deployDeadlineExceeded {
+		readiness.readyStatus = metav1.ConditionFalse
+		readiness.readyReason = apiv1.ReasonReconciliationFailed
+		readiness.readyMsg = "cloudflared deployment exceeded progress deadline"
+	} else if deployAvailable {
+		readiness.programmedStatus = metav1.ConditionTrue
+		readiness.programmedReason = string(gatewayv1.GatewayReasonProgrammed)
+		readiness.programmedMsg = "Gateway is programmed"
+		readiness.readyStatus = metav1.ConditionTrue
+		readiness.readyReason = apiv1.ReasonReconciliationSucceeded
+		readiness.readyMsg = "Gateway is ready"
+	} else {
+		readiness.readyReason = apiv1.ReasonProgressing
+		readiness.readyMsg = "Waiting for cloudflared deployment to become ready"
+	}
+	return readiness
+}
 
-	// Update HTTPRoute status.parents for allowed routes (after DNS and
-	// Deployment checks so we can report DNS status and Gateway readiness).
-	errs = append(errs, r.updateRouteStatuses(ctx, gw, gatewayRoutes, routesWithDeniedRefs, zoneName, dnsErr,
-		readyStatus, readyReason, readyMsg)...)
+// patchGatewayStatus builds the desired Gateway conditions from the readiness
+// state, checks whether a status patch is needed (conditions, listeners, or
+// resource changes), patches the status, and emits summary events/logs.
+func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv1.Gateway, desiredListeners []gatewayv1.ListenerStatus, changes, errs []string, readiness gatewayReadiness) (ctrl.Result, error) {
+	log := log.FromContext(ctx)
+	now := metav1.Now()
 
 	desiredConds := []metav1.Condition{
 		{
@@ -367,32 +464,32 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		},
 		{
 			Type:               string(gatewayv1.GatewayConditionProgrammed),
-			Status:             programmedStatus,
+			Status:             readiness.programmedStatus,
 			ObservedGeneration: gw.Generation,
 			LastTransitionTime: now,
-			Reason:             programmedReason,
-			Message:            programmedMsg,
+			Reason:             readiness.programmedReason,
+			Message:            readiness.programmedMsg,
 		},
 		{
 			Type:               apiv1.ConditionReady,
-			Status:             readyStatus,
+			Status:             readiness.readyStatus,
 			ObservedGeneration: gw.Generation,
 			LastTransitionTime: now,
-			Reason:             readyReason,
-			Message:            readyMsg,
+			Reason:             readiness.readyReason,
+			Message:            readiness.readyMsg,
 		},
 	}
 
 	// Check if Ready is transitioning to a terminal failure state (must be
 	// computed before conditions.Set mutates gw.Status.Conditions).
-	readyTerminal := readyStatus == metav1.ConditionFalse &&
-		conditions.Changed(gw.Status.Conditions, apiv1.ConditionReady, readyStatus, readyReason, readyMsg, gw.Generation)
+	readyTerminal := readiness.readyStatus == metav1.ConditionFalse &&
+		conditions.Changed(gw.Status.Conditions, apiv1.ConditionReady, readiness.readyStatus, readiness.readyReason, readiness.readyMsg, gw.Generation)
 
 	// Skip the status patch if no conditions or listener statuses changed.
 	// Always patch when Progressing so the resource version bumps, signalling
 	// to users that the controller is alive and making progress.
 	requeueAfter := apiv1.ReconcileInterval(gw.Annotations)
-	changed := readyReason == apiv1.ReasonProgressing
+	changed := readiness.readyReason == apiv1.ReasonProgressing
 	if !changed {
 		for _, c := range desiredConds {
 			if conditions.Changed(gw.Status.Conditions, c.Type, c.Status, c.Reason, c.Message, gw.Generation) {
@@ -422,7 +519,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	// Terminal transitions (Ready=False) are included as warnings.
 	var warnings []string
 	if readyTerminal {
-		warnings = append(warnings, readyMsg)
+		warnings = append(warnings, readiness.readyMsg)
 	}
 	warnings = append(warnings, errs...)
 	if len(warnings) > 0 {
@@ -431,7 +528,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		summary = append(summary, changes...)
 		eventReason := apiv1.ReasonProgressingWithRetry
 		if readyTerminal {
-			eventReason = readyReason
+			eventReason = readiness.readyReason
 		}
 		log.Error(fmt.Errorf("%s", strings.Join(warnings, "; ")), "Gateway reconciled with errors", "changes", changes)
 		r.Eventf(gw, nil, corev1.EventTypeWarning, eventReason,
@@ -523,87 +620,20 @@ func (r *GatewayReconciler) finalizeError(ctx context.Context, gw *gatewayv1.Gat
 	return ctrl.Result{}, finalizeErr
 }
 
-// finalize cleans up managed resources (cloudflared Deployment and Cloudflare tunnel)
-// before allowing the Gateway to be deleted, then removes the finalizer.
+// finalize dispatches to finalizeDisabled or finalizeEnabled based on the
+// reconciliation annotation, then removes HTTPRoute status entries, the
+// GatewayClass finalizer, emits a "Gateway finalized" event, and removes
+// the Gateway finalizer.
 func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway, gc *gatewayv1.GatewayClass) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 
-	// When reconciliation is disabled, remove owner references from managed
-	// resources so Kubernetes GC doesn't delete them when the Gateway is removed.
-	// The user is responsible for manually cleaning up.
 	if gw.Annotations[apiv1.AnnotationReconcile] == apiv1.ValueDisabled {
-		removed, err := r.removeOwnerReferences(ctx, gw)
-		defer func() {
-			var removedInfo []string
-			for _, obj := range removed {
-				removedInfo = append(removedInfo, fmt.Sprintf("%s/%s/%s",
-					obj.GetObjectKind().GroupVersionKind().Kind,
-					obj.GetNamespace(),
-					obj.GetName()))
-			}
-			if len(removedInfo) > 0 {
-				log.Info(
-					"Finalization: Gateway disabled, removed owner references from managed objects",
-					"objects", removedInfo)
-			}
-			for _, obj := range removed {
-				r.Eventf(obj, gw, corev1.EventTypeNormal, apiv1.ReasonReconciliationDisabled,
-					apiv1.EventActionFinalize, "Gateway removed owner reference due to disabled finalization")
-			}
-		}()
-		if err != nil {
-			return r.finalizeError(ctx, gw, fmt.Errorf("removing owner references: %w", err))
+		if err := r.finalizeDisabled(ctx, gw); err != nil {
+			return r.finalizeError(ctx, gw, err)
 		}
 	} else {
-		// Delete the cloudflared Deployment and wait for it to be gone
-		// before deleting the tunnel, so there are no active connections.
-		deploy := &appsv1.Deployment{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      apiv1.CloudflaredDeploymentName(gw),
-				Namespace: gw.Namespace,
-			},
-		}
-		if err := r.Delete(ctx, deploy); client.IgnoreNotFound(err) != nil {
-			return r.finalizeError(ctx, gw, fmt.Errorf("deleting cloudflared deployment: %w", err))
-		}
-		log.V(1).Info("Deleted cloudflared Deployment")
-		deployKey := client.ObjectKeyFromObject(deploy)
-		for {
-			if err := r.Get(ctx, deployKey, deploy); apierrors.IsNotFound(err) {
-				break
-			} else if err != nil {
-				return r.finalizeError(ctx, gw, fmt.Errorf("waiting for cloudflared deployment deletion: %w", err))
-			}
-			select {
-			case <-ctx.Done():
-				return r.finalizeError(ctx, gw, fmt.Errorf("waiting for cloudflared deployment deletion: %w", ctx.Err()))
-			case <-time.After(time.Second):
-			}
-		}
-		log.V(1).Info("Cloudflared Deployment is gone")
-
-		cfg, err := readCredentials(ctx, r.Client, gc, gw)
-		if err != nil {
-			return r.finalizeError(ctx, gw, fmt.Errorf("reading credentials for tunnel deletion: %w", err))
-		}
-		tc, err := r.NewCloudflareClient(cfg)
-		if err != nil {
-			return r.finalizeError(ctx, gw, fmt.Errorf("creating cloudflare client for deletion: %w", err))
-		}
-		tunnelID, err := tc.GetTunnelIDByName(ctx, apiv1.TunnelName(gw))
-		if err != nil {
-			return r.finalizeError(ctx, gw, fmt.Errorf("looking up tunnel for deletion: %w", err))
-		}
-		if tunnelID != "" {
-			// Delete DNS CNAME records across all zones.
-			if err := r.cleanupAllDNS(ctx, tc, tunnelID); err != nil {
-				return r.finalizeError(ctx, gw, fmt.Errorf("cleaning up DNS during finalization: %w", err))
-			}
-			log.V(1).Info("Cleaned up DNS CNAME records")
-			if err := tc.DeleteTunnel(ctx, tunnelID); err != nil {
-				return r.finalizeError(ctx, gw, fmt.Errorf("deleting tunnel: %w", err))
-			}
-			log.V(1).Info("Deleted tunnel", "tunnelID", tunnelID)
+		if err := r.finalizeEnabled(ctx, gw, gc); err != nil {
+			return r.finalizeError(ctx, gw, err)
 		}
 	}
 
@@ -634,6 +664,98 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// finalizeDisabled removes owner references from managed resources so
+// Kubernetes GC doesn't delete them when the Gateway is removed with
+// reconciliation disabled. The user is responsible for manual cleanup.
+func (r *GatewayReconciler) finalizeDisabled(ctx context.Context, gw *gatewayv1.Gateway) error {
+	log := log.FromContext(ctx)
+
+	removed, err := r.removeOwnerReferences(ctx, gw)
+
+	// Log and emit events for removed objects, even on partial failure.
+	var removedInfo []string
+	for _, obj := range removed {
+		removedInfo = append(removedInfo, fmt.Sprintf("%s/%s/%s",
+			obj.GetObjectKind().GroupVersionKind().Kind,
+			obj.GetNamespace(),
+			obj.GetName()))
+	}
+	if len(removedInfo) > 0 {
+		log.Info(
+			"Finalization: Gateway disabled, removed owner references from managed objects",
+			"objects", removedInfo)
+	}
+	for _, obj := range removed {
+		r.Eventf(obj, gw, corev1.EventTypeNormal, apiv1.ReasonReconciliationDisabled,
+			apiv1.EventActionFinalize, "Gateway removed owner reference due to disabled finalization")
+	}
+
+	if err != nil {
+		return fmt.Errorf("removing owner references: %w", err)
+	}
+	return nil
+}
+
+// finalizeEnabled deletes the cloudflared Deployment (waiting for it to be
+// fully removed), then reads credentials, cleans up DNS CNAME records across
+// all zones, and deletes the Cloudflare tunnel.
+func (r *GatewayReconciler) finalizeEnabled(ctx context.Context, gw *gatewayv1.Gateway, gc *gatewayv1.GatewayClass) error {
+	log := log.FromContext(ctx)
+
+	// Delete the cloudflared Deployment and wait for it to be gone
+	// before deleting the tunnel, so there are no active connections.
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      apiv1.CloudflaredDeploymentName(gw),
+			Namespace: gw.Namespace,
+		},
+	}
+	if err := r.Delete(ctx, deploy); client.IgnoreNotFound(err) != nil {
+		return fmt.Errorf("deleting cloudflared deployment: %w", err)
+	}
+	log.V(1).Info("Deleted cloudflared Deployment")
+	deployKey := client.ObjectKeyFromObject(deploy)
+	for {
+		if err := r.Get(ctx, deployKey, deploy); apierrors.IsNotFound(err) {
+			break
+		} else if err != nil {
+			return fmt.Errorf("waiting for cloudflared deployment deletion: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("waiting for cloudflared deployment deletion: %w", ctx.Err())
+		case <-time.After(time.Second):
+		}
+	}
+	log.V(1).Info("Cloudflared Deployment is gone")
+
+	cfg, err := readCredentials(ctx, r.Client, gc, gw)
+	if err != nil {
+		return fmt.Errorf("reading credentials for tunnel deletion: %w", err)
+	}
+	tc, err := r.NewCloudflareClient(cfg)
+	if err != nil {
+		return fmt.Errorf("creating cloudflare client for deletion: %w", err)
+	}
+	tunnelID, err := tc.GetTunnelIDByName(ctx, apiv1.TunnelName(gw))
+	if err != nil {
+		return fmt.Errorf("looking up tunnel for deletion: %w", err)
+	}
+	if tunnelID != "" {
+		// Delete DNS CNAME records across all zones.
+		if err := r.cleanupAllDNS(ctx, tc, tunnelID); err != nil {
+			return fmt.Errorf("cleaning up DNS during finalization: %w", err)
+		}
+		log.V(1).Info("Cleaned up DNS CNAME records")
+		if err := tc.DeleteTunnel(ctx, tunnelID); err != nil {
+			return fmt.Errorf("deleting tunnel: %w", err)
+		}
+		log.V(1).Info("Deleted tunnel", "tunnelID", tunnelID)
+	}
+
+	return nil
 }
 
 // removeOwnerReferences removes the Gateway's owner references from managed
@@ -707,7 +829,8 @@ func removeOwnerRef(obj client.Object, ownerUID types.UID) bool {
 // reconcileDNS reconciles DNS CNAME records for the Gateway's zone. When
 // zoneName is empty and DNS was previously enabled (condition was True on any
 // HTTPRoute), all CNAME records pointing to the tunnel across all account
-// zones are deleted. Returns a non-nil error string on failure, which is
+// zones are deleted. Returns a non-nil *string on failure (using
+// new(fmt.Sprintf(...)) to allocate the error message inline), which is
 // reported on each HTTPRoute's DNSRecordsApplied condition.
 func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cloudflare.Client, tunnelID, zoneName string, gw *gatewayv1.Gateway, routes []*gatewayv1.HTTPRoute) ([]string, *string) {
 	log := log.FromContext(ctx)
@@ -1281,6 +1404,9 @@ func (r *GatewayReconciler) buildCloudflaredDeployment(gw *gatewayv1.Gateway) (*
 	return obj, nil
 }
 
+// buildCloudflaredDeploymentApply builds the apply configuration for the
+// cloudflared Deployment, including selector labels, infrastructure
+// labels/annotations, owner reference, and the cloudflared container spec.
 func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gateway) *acappsv1.DeploymentApplyConfiguration {
 	selectorLabels := map[string]string{
 		"app.kubernetes.io/name":       "cloudflared",
@@ -1524,8 +1650,8 @@ func (r *GatewayReconciler) updateDeniedRouteStatus(ctx context.Context, gw *gat
 	return err
 }
 
-// updateRouteStatuses updates the status.parents entry for this Gateway
-// on each allowed HTTPRoute using merge-patch.
+// updateRouteStatuses iterates over allowed HTTPRoutes and delegates to
+// updateRouteStatus for each one, collecting non-fatal errors.
 func (r *GatewayReconciler) updateRouteStatuses(ctx context.Context, gw *gatewayv1.Gateway, routes []*gatewayv1.HTTPRoute, routesWithDeniedRefs map[types.NamespacedName][]string, zoneName string, dnsErr *string, readyStatus metav1.ConditionStatus, readyReason, readyMsg string) []string {
 	var errs []string
 	for _, route := range routes {
@@ -1538,53 +1664,13 @@ func (r *GatewayReconciler) updateRouteStatuses(ctx context.Context, gw *gateway
 }
 
 // updateRouteStatus updates the status.parents entry for this Gateway on the
-// given HTTPRoute using merge-patch. If the entry already exists with up-to-date
-// conditions, no patch is issued.
+// given HTTPRoute using merge-patch. Condition values are pre-computed by
+// buildRouteConditions; this method handles the RetryOnConflict + patch logic.
+// If the entry already exists with up-to-date conditions, no patch is issued.
 func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1.Gateway, route *gatewayv1.HTTPRoute, deniedRefs []string, zoneName string, dnsErr *string, readyStatus metav1.ConditionStatus, readyReason, readyMsg string) error {
 	acceptedType := string(gatewayv1.RouteConditionAccepted)
 	resolvedRefsType := string(gatewayv1.RouteConditionResolvedRefs)
-
-	// ResolvedRefs condition: False/RefNotPermitted when cross-namespace backendRefs
-	// are denied, True/ResolvedRefs otherwise.
-	resolvedRefsStatus := metav1.ConditionTrue
-	resolvedRefsReason := string(gatewayv1.RouteReasonResolvedRefs)
-	resolvedRefsMsg := "References resolved"
-	if len(deniedRefs) > 0 {
-		resolvedRefsStatus = metav1.ConditionFalse
-		resolvedRefsReason = string(gatewayv1.RouteReasonRefNotPermitted)
-		resolvedRefsMsg = "BackendRefs not permitted by ReferenceGrant:\n"
-		for _, ref := range deniedRefs {
-			resolvedRefsMsg += "- " + ref + "\n"
-		}
-		resolvedRefsMsg = strings.TrimSuffix(resolvedRefsMsg, "\n")
-	}
-
-	// Build per-route DNS condition if DNS is enabled on the Gateway.
-	dnsEnabled := zoneName != ""
-	var dnsStatus metav1.ConditionStatus
-	var dnsReason, dnsMessage string
-	if dnsEnabled {
-		if dnsErr != nil {
-			dnsStatus = metav1.ConditionFalse
-			dnsReason = apiv1.ReasonReconciliationFailed
-			dnsMessage = *dnsErr
-		} else {
-			dnsStatus = metav1.ConditionTrue
-			dnsReason = apiv1.ReasonReconciliationSucceeded
-			dnsMessage = routeDNSMessage(route, zoneName)
-		}
-	}
-
-	// Compute route-level Ready condition. Start with the Gateway's Ready state,
-	// then downgrade to Unknown/ProgressingWithRetry if there's a DNS error.
-	routeReadyStatus := readyStatus
-	routeReadyReason := readyReason
-	routeReadyMsg := readyMsg
-	if readyStatus == metav1.ConditionTrue && dnsErr != nil {
-		routeReadyStatus = metav1.ConditionUnknown
-		routeReadyReason = apiv1.ReasonProgressingWithRetry
-		routeReadyMsg = *dnsErr
-	}
+	rc := buildRouteConditions(route, deniedRefs, zoneName, dnsErr, readyStatus, readyReason, readyMsg)
 
 	routeKey := client.ObjectKeyFromObject(route)
 	patched := false
@@ -1599,17 +1685,17 @@ func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1
 		if existing != nil {
 			changed := conditions.Changed(existing.Conditions, acceptedType, metav1.ConditionTrue,
 				string(gatewayv1.RouteReasonAccepted), "HTTPRoute is accepted", route.Generation) ||
-				conditions.Changed(existing.Conditions, resolvedRefsType, resolvedRefsStatus,
-					resolvedRefsReason, resolvedRefsMsg, route.Generation)
-			if dnsEnabled {
+				conditions.Changed(existing.Conditions, resolvedRefsType, rc.resolvedRefsStatus,
+					rc.resolvedRefsReason, rc.resolvedRefsMsg, route.Generation)
+			if rc.dnsEnabled {
 				changed = changed || conditions.Changed(existing.Conditions, apiv1.ConditionDNSRecordsApplied,
-					dnsStatus, dnsReason, dnsMessage, route.Generation)
+					rc.dnsStatus, rc.dnsReason, rc.dnsMessage, route.Generation)
 			} else {
 				// DNS was disabled — check if we need to remove a stale condition.
 				changed = changed || conditions.Find(existing.Conditions, apiv1.ConditionDNSRecordsApplied) != nil
 			}
 			changed = changed || conditions.Changed(existing.Conditions, apiv1.ConditionReady,
-				routeReadyStatus, routeReadyReason, routeReadyMsg, route.Generation)
+				rc.readyStatus, rc.readyReason, rc.readyMsg, route.Generation)
 			if !changed {
 				return nil
 			}
@@ -1637,25 +1723,25 @@ func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1
 			Reason: string(gatewayv1.RouteReasonAccepted), Message: "HTTPRoute is accepted",
 		})
 		existing.Conditions = conditions.Upsert(existing.Conditions, metav1.Condition{
-			Type: resolvedRefsType, Status: resolvedRefsStatus,
+			Type: resolvedRefsType, Status: rc.resolvedRefsStatus,
 			ObservedGeneration: route.Generation, LastTransitionTime: now,
-			Reason: resolvedRefsReason, Message: resolvedRefsMsg,
+			Reason: rc.resolvedRefsReason, Message: rc.resolvedRefsMsg,
 		})
 
-		if dnsEnabled {
+		if rc.dnsEnabled {
 			existing.Conditions = conditions.Upsert(existing.Conditions, metav1.Condition{
-				Type: apiv1.ConditionDNSRecordsApplied, Status: dnsStatus,
+				Type: apiv1.ConditionDNSRecordsApplied, Status: rc.dnsStatus,
 				ObservedGeneration: route.Generation, LastTransitionTime: now,
-				Reason: dnsReason, Message: dnsMessage,
+				Reason: rc.dnsReason, Message: rc.dnsMessage,
 			})
 		} else {
 			existing.Conditions = conditions.Remove(existing.Conditions, apiv1.ConditionDNSRecordsApplied)
 		}
 
 		existing.Conditions = conditions.Upsert(existing.Conditions, metav1.Condition{
-			Type: apiv1.ConditionReady, Status: routeReadyStatus,
+			Type: apiv1.ConditionReady, Status: rc.readyStatus,
 			ObservedGeneration: route.Generation, LastTransitionTime: now,
-			Reason: routeReadyReason, Message: routeReadyMsg,
+			Reason: rc.readyReason, Message: rc.readyMsg,
 		})
 
 		patched = true
@@ -1664,13 +1750,60 @@ func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1
 	if patched {
 		log.FromContext(ctx).V(1).Info("Patched HTTPRoute status", "httproute", routeKey)
 		eventType := corev1.EventTypeNormal
-		if routeReadyStatus != metav1.ConditionTrue {
+		if rc.readyStatus != metav1.ConditionTrue {
 			eventType = corev1.EventTypeWarning
 		}
-		r.Eventf(route, gw, eventType, routeReadyReason,
-			apiv1.EventActionReconcile, "Ready=%s: %s", routeReadyStatus, routeReadyMsg)
+		r.Eventf(route, gw, eventType, rc.readyReason,
+			apiv1.EventActionReconcile, "Ready=%s: %s", rc.readyStatus, rc.readyMsg)
 	}
 	return err
+}
+
+// buildRouteConditions computes the desired condition values for an HTTPRoute's
+// status.parents entry: ResolvedRefs, DNS (if enabled), and Ready. The Ready
+// condition starts from the Gateway's readiness and is downgraded when DNS errors
+// exist.
+func buildRouteConditions(route *gatewayv1.HTTPRoute, deniedRefs []string, zoneName string, dnsErr *string, readyStatus metav1.ConditionStatus, readyReason, readyMsg string) routeConditions {
+	rc := routeConditions{
+		resolvedRefsStatus: metav1.ConditionTrue,
+		resolvedRefsReason: string(gatewayv1.RouteReasonResolvedRefs),
+		resolvedRefsMsg:    "References resolved",
+		dnsEnabled:         zoneName != "",
+		readyStatus:        readyStatus,
+		readyReason:        readyReason,
+		readyMsg:           readyMsg,
+	}
+
+	if len(deniedRefs) > 0 {
+		rc.resolvedRefsStatus = metav1.ConditionFalse
+		rc.resolvedRefsReason = string(gatewayv1.RouteReasonRefNotPermitted)
+		rc.resolvedRefsMsg = "BackendRefs not permitted by ReferenceGrant:\n"
+		for _, ref := range deniedRefs {
+			rc.resolvedRefsMsg += "- " + ref + "\n"
+		}
+		rc.resolvedRefsMsg = strings.TrimSuffix(rc.resolvedRefsMsg, "\n")
+	}
+
+	if rc.dnsEnabled {
+		if dnsErr != nil {
+			rc.dnsStatus = metav1.ConditionFalse
+			rc.dnsReason = apiv1.ReasonReconciliationFailed
+			rc.dnsMessage = *dnsErr
+		} else {
+			rc.dnsStatus = metav1.ConditionTrue
+			rc.dnsReason = apiv1.ReasonReconciliationSucceeded
+			rc.dnsMessage = routeDNSMessage(route, zoneName)
+		}
+	}
+
+	// Downgrade route Ready to Unknown/ProgressingWithRetry if there's a DNS error.
+	if readyStatus == metav1.ConditionTrue && dnsErr != nil {
+		rc.readyStatus = metav1.ConditionUnknown
+		rc.readyReason = apiv1.ReasonProgressingWithRetry
+		rc.readyMsg = *dnsErr
+	}
+
+	return rc
 }
 
 // routeDNSMessage builds a per-route DNS condition message listing the
