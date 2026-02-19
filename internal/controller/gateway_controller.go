@@ -653,11 +653,14 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 	r.Eventf(gw, nil, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded,
 		apiv1.EventActionFinalize, "Gateway finalized")
 
-	// Remove finalizer from Gateway if needed
+	// Remove finalizer from Gateway if needed. Ignore NotFound because a
+	// previous finalization may have already removed the finalizer and
+	// allowed Kubernetes to delete the object while the informer cache
+	// was stale, causing this finalization to run again on the cached copy.
 	if controllerutil.ContainsFinalizer(gw, apiv1.Finalizer) {
 		gwPatch := client.MergeFrom(gw.DeepCopy())
 		controllerutil.RemoveFinalizer(gw, apiv1.Finalizer)
-		if err := r.Patch(ctx, gw, gwPatch); err != nil {
+		if err := r.Patch(ctx, gw, gwPatch); client.IgnoreNotFound(err) != nil {
 			return r.finalizeError(ctx, gw, fmt.Errorf("removing finalizer: %w", err))
 		}
 		log.V(1).Info("Removed finalizer from Gateway")
