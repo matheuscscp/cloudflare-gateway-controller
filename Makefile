@@ -60,7 +60,7 @@ docker-build: ## Build the controller Docker image locally.
 	docker buildx build -t $(IMG) --load .
 
 .PHONY: test-e2e
-test-e2e: docker-build build-cfgwctl ## Run end-to-end tests against a kind cluster.
+test-e2e: build-cfgwctl ## Run end-to-end tests against a kind cluster.
 	hack/e2e-test.sh 2>&1 | stdbuf -oL tee test-e2e.log
 
 .PHONY: run
