@@ -65,11 +65,11 @@ test-e2e: build-cfgwctl ## Run end-to-end tests against a kind cluster.
 
 .PHONY: run
 run: fmt vet ## Run the controller locally against the current kubeconfig cluster.
-	go run ./main.go --leader-elect=false 2>&1 | stdbuf -oL tee run.log
+	go run ./main.go --enable-leader-election=false 2>&1 | stdbuf -oL tee run.log
 
 .PHONY: run-debug
 run-debug: fmt vet ## Run the controller locally with debug logging (verbosity level 1).
-	go run ./main.go --leader-elect=false --log-level=debug 2>&1 | stdbuf -oL tee run.log
+	go run ./main.go --enable-leader-election=false --log-level=debug 2>&1 | stdbuf -oL tee run.log
 
 ##@ Dependencies
 

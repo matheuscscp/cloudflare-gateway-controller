@@ -46,8 +46,10 @@ import (
 const DefaultCloudflaredImage = "ghcr.io/matheuscscp/cloudflare-gateway-controller/cloudflared:2026.2.0@sha256:404528c1cd63c3eb882c257ae524919e4376115e6fe57befca8d603656a91a4c"
 
 // ssaApplyOptions configures Server-Side Apply to recreate objects with
-// immutable field changes and to clean up field managers left behind by
-// kubectl so the controller can reclaim full ownership of managed fields.
+// immutable field changes and to clean up field managers used by kubectl
+// to force use of GitOps. The controller is the sole owner of objects it
+// creates, and offers declarative ways to customize their configuration
+// via JSON patches.
 var ssaApplyOptions = ssa.ApplyOptions{
 	Force: true,
 	Cleanup: ssa.ApplyCleanupOptions{

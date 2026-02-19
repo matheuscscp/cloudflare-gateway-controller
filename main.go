@@ -9,6 +9,7 @@ import (
 	"runtime/debug"
 
 	"github.com/Masterminds/semver/v3"
+	"github.com/fluxcd/pkg/runtime/leaderelection"
 	"github.com/fluxcd/pkg/runtime/logger"
 	"github.com/fluxcd/pkg/ssa"
 	"github.com/spf13/pflag"
@@ -38,28 +39,64 @@ func init() {
 	utilruntime.Must(gatewayv1beta1.Install(scheme))
 }
 
+// getGatewayAPIVersion returns the parsed semver version of the
+// sigs.k8s.io/gateway-api module dependency from the build info.
+func getGatewayAPIVersion() (*semver.Version, error) {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return nil, fmt.Errorf("failed to read build info")
+	}
+	for _, dep := range info.Deps {
+		if dep.Path == "sigs.k8s.io/gateway-api" {
+			v, err := semver.NewVersion(dep.Version)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse gateway-api version '%s': %v", dep.Version, err)
+			}
+			return v, nil
+		}
+	}
+	return nil, fmt.Errorf("gateway-api dependency not found in build info")
+}
+
 func main() {
 	ctx := ctrl.SetupSignalHandler()
 
-	cloudflaredImage := pflag.String("cloudflared-image", controller.DefaultCloudflaredImage, "cloudflared container image")
-	leaderElect := pflag.Bool("leader-elect", true, "enable leader election")
+	cloudflaredImage := pflag.String("cloudflared-image",
+		controller.DefaultCloudflaredImage, "cloudflared container image")
 
 	logOptions := logger.Options{}
 	logOptions.BindFlags(pflag.CommandLine)
+	leaderElectionOptions := leaderelection.Options{}
+	leaderElectionOptions.BindFlags(pflag.CommandLine)
 	pflag.Parse()
+
+	// Enable leader election by default.
+	if !pflag.CommandLine.Changed("enable-leader-election") {
+		leaderElectionOptions.Enable = true
+	}
 
 	logger.SetLogger(logger.NewLogger(logOptions))
 
 	setupLog := ctrl.Log.WithName("setup")
+
+	gatewayAPIVersion, err := getGatewayAPIVersion()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error determining gateway-api version: %v\n", err)
+		os.Exit(1)
+	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
 			BindAddress: ":8080",
 		},
-		HealthProbeBindAddress: ":8081",
-		LeaderElection:         *leaderElect,
-		LeaderElectionID:       apiv1.ShortControllerName,
+		HealthProbeBindAddress:        ":8081",
+		LeaderElection:                leaderElectionOptions.Enable,
+		LeaderElectionID:              apiv1.ShortControllerName,
+		LeaderElectionReleaseOnCancel: leaderElectionOptions.ReleaseOnCancel,
+		LeaseDuration:                 &leaderElectionOptions.LeaseDuration,
+		RenewDeadline:                 &leaderElectionOptions.RenewDeadline,
+		RetryPeriod:                   &leaderElectionOptions.RetryPeriod,
 		Client: ctrlclient.Options{
 			Cache: &ctrlclient.CacheOptions{
 				DisableFor: []ctrlclient.Object{
@@ -86,7 +123,7 @@ func main() {
 	if err := (&controller.GatewayClassReconciler{
 		Client:            client,
 		EventRecorder:     eventRecorder,
-		GatewayAPIVersion: gatewayAPIVersion(),
+		GatewayAPIVersion: *gatewayAPIVersion,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GatewayClass")
 		os.Exit(1)
@@ -116,23 +153,4 @@ func main() {
 		setupLog.Error(err, "unable to start controller")
 		os.Exit(1)
 	}
-}
-
-// gatewayAPIVersion returns the parsed semver version of the
-// sigs.k8s.io/gateway-api module dependency from the build info.
-func gatewayAPIVersion() semver.Version {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		panic("failed to read build info")
-	}
-	for _, dep := range info.Deps {
-		if dep.Path == "sigs.k8s.io/gateway-api" {
-			v, err := semver.NewVersion(dep.Version)
-			if err != nil {
-				panic(fmt.Sprintf("failed to parse gateway-api version '%s': %v", dep.Version, err))
-			}
-			return *v
-		}
-	}
-	panic("gateway-api dependency not found in build info")
 }
