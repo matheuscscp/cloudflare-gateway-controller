@@ -1,5 +1,6 @@
-{{- /* Copyright 2026 Matheus Pimenta. */ -}}
-{{- /* SPDX-License-Identifier: AGPL-3.0 */ -}}
+# Copyright 2026 Matheus Pimenta.
+# SPDX-License-Identifier: AGPL-3.0
+
 {{- if not .Values.rbac.serviceAccountName }}
 apiVersion: v1
 kind: ServiceAccount

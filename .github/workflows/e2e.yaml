@@ -35,7 +35,7 @@ jobs:
           ${CLOUDFLARE_CREDENTIALS}
           EOF
 
-      - name: Run E2E tests
+      - name: Run e2e tests
         env:
           TEST_ZONE_NAME: ci.cloudflare-gateway-controller.dev
         run: make test-e2e
