@@ -22,11 +22,7 @@ jobs:
           cache: true
 
       - name: Build controller image
-        uses: ./.github/actions/docker-build
-        with:
-          platforms: linux/amd64
-          load: "true"
-          tags: cloudflare-gateway-controller:dev
+        run: make docker-build
 
       - name: Write credentials
         env:
