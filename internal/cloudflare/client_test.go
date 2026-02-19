@@ -209,6 +209,81 @@ func TestGetTunnelIDByName(t *testing.T) {
 	})
 }
 
+func TestListTunnels(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /accounts/{accountID}/cfd_tunnel", func(w http.ResponseWriter, r *http.Request) {
+			page := r.URL.Query().Get("page")
+			if page == "2" {
+				writeJSON(w, http.StatusOK, emptyPage())
+				return
+			}
+			writeJSON(w, http.StatusOK, paginatedEnvelope([]map[string]any{
+				{"id": "tunnel-1", "name": "gateway-aaa"},
+				{"id": "tunnel-2", "name": "gateway-bbb"},
+			}))
+		})
+		c := newTestClient(t, mux)
+
+		tunnels, err := c.ListTunnels(context.Background())
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(tunnels).To(Equal([]cloudflare.Tunnel{
+			{ID: "tunnel-1", Name: "gateway-aaa"},
+			{ID: "tunnel-2", Name: "gateway-bbb"},
+		}))
+	})
+
+	t.Run("empty", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /accounts/{accountID}/cfd_tunnel", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, emptyPage())
+		})
+		c := newTestClient(t, mux)
+
+		tunnels, err := c.ListTunnels(context.Background())
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(tunnels).To(BeNil())
+	})
+
+	t.Run("API error", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /accounts/{accountID}/cfd_tunnel", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
+		})
+		c := newTestClient(t, mux)
+
+		_, err := c.ListTunnels(context.Background())
+		g.Expect(err).To(HaveOccurred())
+	})
+}
+
+func TestCleanupTunnelConnections(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("DELETE /accounts/{accountID}/cfd_tunnel/{tunnelID}/connections", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, envelope(nil))
+		})
+		c := newTestClient(t, mux)
+
+		g.Expect(c.CleanupTunnelConnections(context.Background(), "tunnel-123")).To(Succeed())
+	})
+
+	t.Run("API error", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("DELETE /accounts/{accountID}/cfd_tunnel/{tunnelID}/connections", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
+		})
+		c := newTestClient(t, mux)
+
+		g.Expect(c.CleanupTunnelConnections(context.Background(), "tunnel-123")).To(HaveOccurred())
+	})
+}
+
 func TestDeleteTunnel(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		g := NewWithT(t)

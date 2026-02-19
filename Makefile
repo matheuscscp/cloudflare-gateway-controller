@@ -43,7 +43,7 @@ tidy: ## Run go mod tidy.
 .PHONY: test
 test: tidy fmt vet envtest ## Run all unit tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
-	go test ./... $(GO_TEST_ARGS) -coverprofile cover.out
+	go test $(shell go list ./... | grep -v -e '^github.com/matheuscscp/cloudflare-gateway-controller$$' -e '/cmd/') $(GO_TEST_ARGS) -coverprofile cover.out
 
 ##@ Build
 

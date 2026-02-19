@@ -1,0 +1,39 @@
+# Copyright 2026 Matheus Pimenta.
+# SPDX-License-Identifier: AGPL-3.0
+
+name: cleanup
+
+on:
+  schedule:
+    - cron: "0 3 * * 0" # weekly on Sundays at 3 AM UTC
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build cfgwctl
+        run: make build-cfgwctl
+
+      - name: Write credentials
+        env:
+          CLOUDFLARE_CREDENTIALS: ${{ secrets.CLOUDFLARE_CREDENTIALS }}
+        run: |
+          cat <<EOF > api.token
+          ${CLOUDFLARE_CREDENTIALS}
+          EOF
+
+      - name: Cleanup Cloudflare resources
+        run: hack/cleanup-cloudflare.sh
+
+      - name: Cleanup credentials
+        if: always()
+        run: rm -f api.token

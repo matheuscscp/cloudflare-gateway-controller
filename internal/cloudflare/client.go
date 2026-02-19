@@ -31,10 +31,17 @@ type IngressRule struct {
 	Path     string
 }
 
+// Tunnel represents a Cloudflare tunnel with its ID and name.
+type Tunnel struct {
+	ID   string
+	Name string
+}
+
 // Client abstracts Cloudflare tunnel operations.
 type Client interface {
 	CreateTunnel(ctx context.Context, name string) (tunnelID string, err error)
 	GetTunnelIDByName(ctx context.Context, name string) (tunnelID string, err error)
+	ListTunnels(ctx context.Context) ([]Tunnel, error)
 	CleanupTunnelConnections(ctx context.Context, tunnelID string) error
 	DeleteTunnel(ctx context.Context, tunnelID string) error
 	GetTunnelToken(ctx context.Context, tunnelID string) (token string, err error)
@@ -106,6 +113,22 @@ func (c *client) GetTunnelIDByName(ctx context.Context, name string) (string, er
 		return "", fmt.Errorf("listing tunnels by name %q: %w", name, err)
 	}
 	return "", nil
+}
+
+func (c *client) ListTunnels(ctx context.Context) ([]Tunnel, error) {
+	pager := c.client.ZeroTrust.Tunnels.Cloudflared.ListAutoPaging(ctx, zero_trust.TunnelCloudflaredListParams{
+		AccountID: cloudflare.String(c.accountID),
+		IsDeleted: cloudflare.Bool(false),
+	})
+	var tunnels []Tunnel
+	for pager.Next() {
+		t := pager.Current()
+		tunnels = append(tunnels, Tunnel{ID: t.ID, Name: t.Name})
+	}
+	if err := pager.Err(); err != nil {
+		return nil, fmt.Errorf("listing tunnels: %w", err)
+	}
+	return tunnels, nil
 }
 
 func (c *client) CleanupTunnelConnections(ctx context.Context, tunnelID string) error {
