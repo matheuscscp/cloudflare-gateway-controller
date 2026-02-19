@@ -1,3 +1,6 @@
+# Copyright 2026 Matheus Pimenta.
+# SPDX-License-Identifier: AGPL-3.0
+
 name: upgrade-gateway-api
 
 on:
