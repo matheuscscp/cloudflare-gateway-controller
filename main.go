@@ -37,6 +37,7 @@ func init() {
 	utilruntime.Must(apiextensionsv1.AddToScheme(scheme))
 	utilruntime.Must(gatewayv1.Install(scheme))
 	utilruntime.Must(gatewayv1beta1.Install(scheme))
+	utilruntime.Must(apiv1.Install(scheme))
 }
 
 // getGatewayAPIVersion returns the parsed semver version of the

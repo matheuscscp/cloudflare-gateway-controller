@@ -17,13 +17,14 @@ import (
 
 // Index field constants. Named as index<Kind><Field>.
 const (
-	indexGatewayGatewayClassName      = ".gateway.gatewayClassName"
-	indexGatewayTunnelTokenSecret     = ".gateway.tunnelTokenSecret"
-	indexGatewayClassControllerName   = ".gatewayClass.controllerName"
-	indexGatewayClassParametersRef    = ".gatewayClass.parametersRef"
-	indexGatewayClassGatewayFinalizer = ".gatewayClass.gatewayFinalizer"
-	indexHTTPRouteParentGateway       = ".httpRoute.parentGateway"
-	indexHTTPRouteBackendServiceNS    = ".httpRoute.backendServiceNamespace"
+	indexGatewayGatewayClassName            = ".gateway.gatewayClassName"
+	indexGatewayTunnelTokenSecret           = ".gateway.tunnelTokenSecret"
+	indexGatewayInfrastructureParametersRef = ".gateway.infrastructureParametersRef"
+	indexGatewayClassControllerName         = ".gatewayClass.controllerName"
+	indexGatewayClassParametersRef          = ".gatewayClass.parametersRef"
+	indexGatewayClassGatewayFinalizer       = ".gatewayClass.gatewayFinalizer"
+	indexHTTPRouteParentGateway             = ".httpRoute.parentGateway"
+	indexHTTPRouteBackendServiceNS          = ".httpRoute.backendServiceNamespace"
 )
 
 // SetupIndexes registers all shared cache indexes.
@@ -38,14 +39,34 @@ func SetupIndexes(ctx context.Context, mgr ctrl.Manager) {
 		panic(fmt.Sprintf("failed to setup index %s: %v", indexGatewayGatewayClassName, err))
 	}
 
-	// Index Gateways by their managed tunnel token Secret (ns/name) so we
-	// can map Secret events to the owning Gateway for reconciliation.
+	// Index Gateways by their managed tunnel token Secret name so we can
+	// map Secret events to the owning Gateway for reconciliation. The
+	// namespace is filtered at query time via client.InNamespace.
 	if err := mgr.GetCache().IndexField(ctx, &gatewayv1.Gateway{}, indexGatewayTunnelTokenSecret,
 		func(obj client.Object) []string {
 			gw := obj.(*gatewayv1.Gateway)
-			return []string{gw.Namespace + "/" + apiv1.TunnelTokenSecretName(gw)}
+			return []string{apiv1.TunnelTokenSecretName(gw)}
 		}); err != nil {
 		panic(fmt.Sprintf("failed to setup index %s: %v", indexGatewayTunnelTokenSecret, err))
+	}
+
+	// Index Gateways by their infrastructure.parametersRef name when it
+	// references a CloudflareGatewayParameters, so we can map CGP events
+	// to the affected Gateway for reconciliation. The namespace is filtered
+	// at query time via client.InNamespace.
+	if err := mgr.GetCache().IndexField(ctx, &gatewayv1.Gateway{}, indexGatewayInfrastructureParametersRef,
+		func(obj client.Object) []string {
+			gw := obj.(*gatewayv1.Gateway)
+			if gw.Spec.Infrastructure == nil || gw.Spec.Infrastructure.ParametersRef == nil {
+				return nil
+			}
+			ref := gw.Spec.Infrastructure.ParametersRef
+			if string(ref.Kind) != apiv1.KindCloudflareGatewayParameters || ref.Group != gatewayv1.Group(apiv1.Group) {
+				return nil
+			}
+			return []string{ref.Name}
+		}); err != nil {
+		panic(fmt.Sprintf("failed to setup index %s: %v", indexGatewayInfrastructureParametersRef, err))
 	}
 
 	// Index GatewayClasses by spec.controllerName.

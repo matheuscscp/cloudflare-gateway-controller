@@ -34,7 +34,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
-	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
@@ -116,6 +115,7 @@ type routeConditions struct {
 	readyReason, readyMsg               string
 }
 
+// +kubebuilder:rbac:groups=cloudflare-gateway-controller.io,resources=cloudflaregatewayparameters,verbs=get;list;watch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gatewayclasses,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gatewayclasses/finalizers,verbs=update
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch;update;patch
@@ -204,8 +204,20 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		return r.reconcileError(ctx, gw, fmt.Errorf("listing HTTPRoutes: %w", err))
 	}
 
+	// Resolve CloudflareGatewayParameters if referenced.
+	params, err := readParameters(ctx, r.Client, gw)
+	if err != nil {
+		return r.reconcileError(ctx, gw, fmt.Errorf("reading parameters: %w", err),
+			metav1.Condition{
+				Type:    string(gatewayv1.GatewayConditionAccepted),
+				Status:  metav1.ConditionFalse,
+				Reason:  string(gatewayv1.GatewayReasonInvalidParameters),
+				Message: fmt.Sprintf("Failed to read parameters: %v", err),
+			})
+	}
+
 	// Read credentials
-	cfg, err := readCredentials(ctx, r.Client, gc, gw)
+	cfg, err := readCredentials(ctx, r.Client, gc, gw, params)
 	if err != nil {
 		return r.reconcileError(ctx, gw, fmt.Errorf("reading credentials: %w", err),
 			metav1.Condition{
@@ -250,7 +262,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	}
 
 	// Apply cloudflared Deployment
-	deployEntry, err := r.applyCloudflaredDeployment(ctx, gw)
+	deployEntry, err := r.applyCloudflaredDeployment(ctx, gw, params)
 	if err != nil {
 		return r.reconcileError(ctx, gw, err)
 	}
@@ -290,8 +302,11 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	}
 
 	// Reconcile DNS CNAME records
-	zoneName := gw.Annotations[apiv1.AnnotationZoneName]
-	dnsChanges, dnsErr := r.reconcileDNS(ctx, tc, tunnelID, zoneName, gw, gatewayRoutes)
+	var zoneName string
+	if params != nil && params.Spec.DNS != nil {
+		zoneName = params.Spec.DNS.Zone.Name
+	}
+	dnsChanges, dnsErr := r.reconcileDNS(ctx, tc, tunnelID, zoneName, gatewayRoutes)
 	changes = append(changes, dnsChanges...)
 	if dnsErr != nil {
 		errs = append(errs, *dnsErr)
@@ -364,8 +379,8 @@ func (r *GatewayReconciler) reconcileTunnelTokenSecret(ctx context.Context, gw *
 // declare are managed; the SSA manager detects drift by comparing a
 // server-side dry-run result with the existing object, skipping the actual
 // apply when no drift is detected.
-func (r *GatewayReconciler) applyCloudflaredDeployment(ctx context.Context, gw *gatewayv1.Gateway) (*ssa.ChangeSetEntry, error) {
-	deployObj, err := r.buildCloudflaredDeployment(gw)
+func (r *GatewayReconciler) applyCloudflaredDeployment(ctx context.Context, gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters) (*ssa.ChangeSetEntry, error) {
+	deployObj, err := r.buildCloudflaredDeployment(gw, params)
 	if err != nil {
 		return nil, fmt.Errorf("building cloudflared deployment: %w", err)
 	}
@@ -736,7 +751,11 @@ func (r *GatewayReconciler) finalizeEnabled(ctx context.Context, gw *gatewayv1.G
 	}
 	l.V(1).Info("Cloudflared Deployment is gone")
 
-	cfg, err := readCredentials(ctx, r.Client, gc, gw)
+	params, err := readParameters(ctx, r.Client, gw)
+	if err != nil {
+		return fmt.Errorf("reading parameters for tunnel deletion: %w", err)
+	}
+	cfg, err := readCredentials(ctx, r.Client, gc, gw, params)
 	if err != nil {
 		return fmt.Errorf("reading credentials for tunnel deletion: %w", err)
 	}
@@ -750,7 +769,7 @@ func (r *GatewayReconciler) finalizeEnabled(ctx context.Context, gw *gatewayv1.G
 	}
 	if tunnelID != "" {
 		// Delete DNS CNAME records across all zones.
-		if err := r.cleanupAllDNS(ctx, tc, tunnelID); err != nil {
+		if _, err := r.cleanupAllDNS(ctx, tc, tunnelID); err != nil {
 			return fmt.Errorf("cleaning up DNS during finalization: %w", err)
 		}
 		l.V(1).Info("Cleaned up DNS CNAME records")
@@ -836,24 +855,19 @@ func removeOwnerRef(obj client.Object, ownerUID types.UID) bool {
 }
 
 // reconcileDNS reconciles DNS CNAME records for the Gateway's zone. When
-// zoneName is empty and DNS was previously enabled (condition was True on any
-// HTTPRoute), all CNAME records pointing to the tunnel across all account
-// zones are deleted. Returns a non-nil *string on failure (using
+// zoneName is empty, all CNAME records pointing to the tunnel across all
+// account zones are deleted. Returns a non-nil *string on failure (using
 // new(fmt.Sprintf(...)) to allocate the error message inline), which is
 // reported on each HTTPRoute's DNSRecordsApplied condition.
-func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cloudflare.Client, tunnelID, zoneName string, gw *gatewayv1.Gateway, routes []*gatewayv1.HTTPRoute) ([]string, *string) {
+func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cloudflare.Client, tunnelID, zoneName string, routes []*gatewayv1.HTTPRoute) ([]string, *string) {
 	l := log.FromContext(ctx)
 
 	if zoneName == "" {
-		// Only clean up if DNS was previously enabled (condition was True
-		// on any HTTPRoute, meaning records may exist). Skip API calls otherwise.
-		if dnsWasPreviouslyEnabled(routes, gw) {
-			if err := r.cleanupAllDNS(ctx, tc, tunnelID); err != nil {
-				return nil, new(fmt.Sprintf("Failed to clean up DNS records: %v", err))
-			}
-			return []string{"cleaned up all DNS CNAME records"}, nil
+		changes, err := r.cleanupAllDNS(ctx, tc, tunnelID)
+		if err != nil {
+			return nil, new(fmt.Sprintf("Failed to clean up DNS records: %v", err))
 		}
-		return nil, nil
+		return changes, nil
 	}
 
 	zoneID, err := tc.FindZoneIDByHostname(ctx, zoneName)
@@ -909,46 +923,34 @@ func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cloudflare.Clie
 	return dnsChanges, nil
 }
 
-// dnsWasPreviouslyEnabled checks whether any HTTPRoute's status.parents entry
-// for the given Gateway has a DNSRecordsApplied condition with True status.
-func dnsWasPreviouslyEnabled(routes []*gatewayv1.HTTPRoute, gw *gatewayv1.Gateway) bool {
-	for _, route := range routes {
-		existing := findRouteParentStatus(route.Status.Parents, gw)
-		if existing == nil {
-			continue
-		}
-		if conditions.Find(existing.Conditions, apiv1.ConditionDNSRecordsApplied) != nil {
-			return true
-		}
-	}
-	return false
-}
-
 // cleanupAllDNS deletes all CNAME records pointing to the tunnel across all
-// account zones. This is used when the zoneName annotation is removed.
-func (r *GatewayReconciler) cleanupAllDNS(ctx context.Context, tc cloudflare.Client, tunnelID string) error {
+// account zones. This is used when DNS config is removed or during finalization.
+// Returns a change message for each deleted record.
+func (r *GatewayReconciler) cleanupAllDNS(ctx context.Context, tc cloudflare.Client, tunnelID string) ([]string, error) {
 	l := log.FromContext(ctx)
 	tunnelTarget := cloudflare.TunnelTarget(tunnelID)
 
 	zoneIDs, err := tc.ListZoneIDs(ctx)
 	if err != nil {
-		return fmt.Errorf("listing zones: %w", err)
+		return nil, fmt.Errorf("listing zones: %w", err)
 	}
 
+	var changes []string
 	for _, zoneID := range zoneIDs {
 		hostnames, err := tc.ListDNSCNAMEsByTarget(ctx, zoneID, tunnelTarget)
 		if err != nil {
-			return fmt.Errorf("listing DNS CNAMEs in zone %s: %w", zoneID, err)
+			return changes, fmt.Errorf("listing DNS CNAMEs in zone %s: %w", zoneID, err)
 		}
 		for _, h := range hostnames {
 			if err := tc.DeleteDNSCNAME(ctx, zoneID, h); err != nil {
-				return fmt.Errorf("deleting DNS CNAME %q in zone %s: %w", h, zoneID, err)
+				return changes, fmt.Errorf("deleting DNS CNAME %q in zone %s: %w", h, zoneID, err)
 			}
-			l.V(1).Info("Deleted DNS CNAME (zoneName removed or object deleted)", "hostname", h, "zoneID", zoneID)
+			changes = append(changes, fmt.Sprintf("deleted DNS CNAME for %s", h))
+			l.V(1).Info("Deleted DNS CNAME", "hostname", h, "zoneID", zoneID)
 		}
 	}
 
-	return nil
+	return changes, nil
 }
 
 // ensureGatewayClassFinalizer adds the GatewayClass finalizer if not already present,
@@ -1026,38 +1028,102 @@ func (r *GatewayReconciler) removeGatewayClassFinalizer(ctx context.Context, gw 
 	return nil
 }
 
-// readCredentials reads the Cloudflare API credentials from the Secret referenced
-// by the Gateway's infrastructure parametersRef or the GatewayClass parametersRef.
-// Cross-namespace references are validated against ReferenceGrants.
-func readCredentials(ctx context.Context, r client.Reader, gc *gatewayv1.GatewayClass, gw *gatewayv1.Gateway) (cloudflare.ClientConfig, error) {
+// readParameters resolves the CloudflareGatewayParameters from the Gateway's
+// infrastructure.parametersRef. Returns nil if no CloudflareGatewayParameters
+// is referenced (i.e. only a Secret is used or no parametersRef is set).
+func readParameters(ctx context.Context, r client.Reader, gw *gatewayv1.Gateway) (*apiv1.CloudflareGatewayParameters, error) {
+	if gw.Spec.Infrastructure == nil || gw.Spec.Infrastructure.ParametersRef == nil {
+		return nil, nil
+	}
+	ref := gw.Spec.Infrastructure.ParametersRef
+	if string(ref.Kind) != apiv1.KindCloudflareGatewayParameters || ref.Group != gatewayv1.Group(apiv1.Group) {
+		return nil, nil
+	}
+	var params apiv1.CloudflareGatewayParameters
+	if err := r.Get(ctx, types.NamespacedName{
+		Namespace: gw.Namespace,
+		Name:      ref.Name,
+	}, &params); err != nil {
+		return nil, fmt.Errorf("getting CloudflareGatewayParameters %s/%s: %w", gw.Namespace, ref.Name, err)
+	}
+	return &params, nil
+}
+
+// readCredentials reads the Cloudflare API credentials from:
+//  1. CloudflareGatewayParameters spec.secretRef (if params has one), or
+//  2. Gateway infrastructure.parametersRef (if it directly references a Secret), or
+//  3. GatewayClass parametersRef (must be a Secret).
+//
+// If infrastructure.parametersRef is set but references an unsupported kind,
+// an error is returned. Cross-namespace references from GatewayClass are
+// validated against ReferenceGrants.
+func readCredentials(ctx context.Context, r client.Reader, gc *gatewayv1.GatewayClass, gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters) (cloudflare.ClientConfig, error) {
 	var secretNamespace, secretName string
 
-	if gw.Spec.Infrastructure != nil && gw.Spec.Infrastructure.ParametersRef != nil {
+	switch {
+	case params != nil && params.Spec.SecretRef != nil:
+		// 1. CloudflareGatewayParameters with secretRef.
+		secretNamespace = params.Namespace
+		secretName = params.Spec.SecretRef.Name
+	case gw.Spec.Infrastructure != nil && gw.Spec.Infrastructure.ParametersRef != nil:
+		// infrastructure.parametersRef is set — must be a Secret or a CGP (handled above).
 		ref := gw.Spec.Infrastructure.ParametersRef
-		if string(ref.Kind) != apiv1.KindSecret || (ref.Group != "" && ref.Group != apiv1.GroupCore && ref.Group != gatewayv1.Group("")) {
-			return cloudflare.ClientConfig{}, fmt.Errorf("infrastructure parametersRef must reference a core/v1 Secret")
+		if string(ref.Kind) == apiv1.KindSecret && (ref.Group == "" || ref.Group == apiv1.GroupCore) {
+			// 2. Gateway infrastructure.parametersRef pointing to a Secret.
+			secretNamespace = gw.Namespace
+			secretName = ref.Name
+		} else if string(ref.Kind) == apiv1.KindCloudflareGatewayParameters && ref.Group == gatewayv1.Group(apiv1.Group) {
+			// CGP without secretRef — fall through to GatewayClass.
+			return readCredentialsFromGatewayClass(ctx, r, gc, gw)
+		} else {
+			return cloudflare.ClientConfig{}, fmt.Errorf("infrastructure parametersRef must reference a core/v1 Secret or a CloudflareGatewayParameters")
 		}
-		secretNamespace = gw.Namespace
-		secretName = ref.Name
-	} else {
-		if gc.Spec.ParametersRef == nil {
-			return cloudflare.ClientConfig{}, fmt.Errorf("gatewayclass %q has no parametersRef", gc.Name)
-		}
-		ref := gc.Spec.ParametersRef
-		if string(ref.Kind) != apiv1.KindSecret || (ref.Group != "" && ref.Group != apiv1.GroupCore && ref.Group != gatewayv1.Group("")) {
-			return cloudflare.ClientConfig{}, fmt.Errorf("parametersRef must reference a core/v1 Secret")
-		}
-		if ref.Namespace == nil {
-			return cloudflare.ClientConfig{}, fmt.Errorf("parametersRef must specify a namespace")
-		}
-		secretNamespace = string(*ref.Namespace)
-		secretName = ref.Name
+	default:
+		// 3. GatewayClass parametersRef (Secret).
+		return readCredentialsFromGatewayClass(ctx, r, gc, gw)
+	}
 
-		if granted, err := secretReferenceGranted(ctx, r, gw.Namespace, secretNamespace, secretName); err != nil {
-			return cloudflare.ClientConfig{}, fmt.Errorf("checking ReferenceGrant: %w", err)
-		} else if !granted {
-			return cloudflare.ClientConfig{}, fmt.Errorf("cross-namespace reference to Secret %s/%s not allowed by any ReferenceGrant", secretNamespace, secretName)
-		}
+	var secret corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{
+		Namespace: secretNamespace,
+		Name:      secretName,
+	}, &secret); err != nil {
+		return cloudflare.ClientConfig{}, fmt.Errorf("getting secret %s/%s: %w", secretNamespace, secretName, err)
+	}
+
+	apiToken := string(secret.Data["CLOUDFLARE_API_TOKEN"])
+	accountID := string(secret.Data["CLOUDFLARE_ACCOUNT_ID"])
+	if apiToken == "" || accountID == "" {
+		return cloudflare.ClientConfig{}, fmt.Errorf("secret %s/%s must contain CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID", secretNamespace, secretName)
+	}
+
+	return cloudflare.ClientConfig{
+		APIToken:  apiToken,
+		AccountID: accountID,
+	}, nil
+}
+
+// readCredentialsFromGatewayClass reads the Cloudflare API credentials from the
+// GatewayClass parametersRef, which must be a Secret. Cross-namespace references
+// are validated against ReferenceGrants.
+func readCredentialsFromGatewayClass(ctx context.Context, r client.Reader, gc *gatewayv1.GatewayClass, gw *gatewayv1.Gateway) (cloudflare.ClientConfig, error) {
+	if gc.Spec.ParametersRef == nil {
+		return cloudflare.ClientConfig{}, fmt.Errorf("gatewayclass %q has no parametersRef", gc.Name)
+	}
+	ref := gc.Spec.ParametersRef
+	if string(ref.Kind) != apiv1.KindSecret || (ref.Group != "" && ref.Group != apiv1.GroupCore && ref.Group != gatewayv1.Group("")) {
+		return cloudflare.ClientConfig{}, fmt.Errorf("parametersRef must reference a core/v1 Secret")
+	}
+	if ref.Namespace == nil {
+		return cloudflare.ClientConfig{}, fmt.Errorf("parametersRef must specify a namespace")
+	}
+	secretNamespace := string(*ref.Namespace)
+	secretName := ref.Name
+
+	if granted, err := secretReferenceGranted(ctx, r, gw.Namespace, secretNamespace, secretName); err != nil {
+		return cloudflare.ClientConfig{}, fmt.Errorf("checking ReferenceGrant: %w", err)
+	} else if !granted {
+		return cloudflare.ClientConfig{}, fmt.Errorf("cross-namespace reference to Secret %s/%s not allowed by any ReferenceGrant", secretNamespace, secretName)
 	}
 
 	var secret corev1.Secret
@@ -1378,30 +1444,30 @@ func buildTunnelTokenSecret(gw *gatewayv1.Gateway, tunnelToken string) *corev1.S
 
 // buildCloudflaredDeployment builds the desired cloudflared Deployment as an
 // unstructured object suitable for server-side apply via the SSA manager.
-// If the Gateway has an AnnotationDeploymentPatches annotation, the RFC 6902
-// JSON Patch operations (written in YAML) are applied to the base Deployment.
-func (r *GatewayReconciler) buildCloudflaredDeployment(gw *gatewayv1.Gateway) (*unstructured.Unstructured, error) {
+// If the CloudflareGatewayParameters has deployment patches, the RFC 6902
+// JSON Patch operations are applied to the base Deployment.
+func (r *GatewayReconciler) buildCloudflaredDeployment(gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters) (*unstructured.Unstructured, error) {
 	apply := r.buildCloudflaredDeploymentApply(gw)
 	data, err := json.Marshal(apply)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling deployment: %w", err)
 	}
 
-	// Apply RFC 6902 JSON Patch operations from the annotation if present.
-	// These errors are terminal because the annotation is on the Gateway
-	// (a watched object) and retrying won't fix invalid user input.
-	if patchYAML, ok := gw.Annotations[apiv1.AnnotationDeploymentPatches]; ok {
-		patchJSON, err := yaml.YAMLToJSON([]byte(patchYAML))
+	// Apply RFC 6902 JSON Patch operations from CloudflareGatewayParameters if present.
+	// These errors are terminal because the CRD is a watched object and
+	// retrying won't fix invalid user input.
+	if params != nil && params.Spec.Tunnels != nil && params.Spec.Tunnels.Cloudflared != nil && len(params.Spec.Tunnels.Cloudflared.Patches) > 0 {
+		patchJSON, err := json.Marshal(params.Spec.Tunnels.Cloudflared.Patches)
 		if err != nil {
-			return nil, reconcile.TerminalError(fmt.Errorf("parsing deploymentPatches annotation YAML: %w", err))
+			return nil, reconcile.TerminalError(fmt.Errorf("marshaling deployment patches: %w", err))
 		}
 		patch, err := jsonpatch.DecodePatch(patchJSON)
 		if err != nil {
-			return nil, reconcile.TerminalError(fmt.Errorf("decoding deploymentPatches annotation: %w", err))
+			return nil, reconcile.TerminalError(fmt.Errorf("decoding deployment patches: %w", err))
 		}
 		data, err = patch.Apply(data)
 		if err != nil {
-			return nil, reconcile.TerminalError(fmt.Errorf("applying deploymentPatches annotation: %w", err))
+			return nil, reconcile.TerminalError(fmt.Errorf("applying deployment patches: %w", err))
 		}
 	}
 
