@@ -13,8 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
-      id-token: write
+      id-token: write # for creating OIDC tokens for signing.
+      packages: write # for pushing and signing container images.
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

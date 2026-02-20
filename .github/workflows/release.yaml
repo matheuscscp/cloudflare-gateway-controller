@@ -14,9 +14,6 @@ on:
         default: 'rc'
         required: true
 
-permissions:
-  contents: read
-
 env:
   IMAGE: ghcr.io/${{ github.repository }}
 
