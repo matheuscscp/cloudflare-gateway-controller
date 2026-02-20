@@ -10,22 +10,23 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
-// Gateway CRD names.
+// CRD names.
 const (
 	CRDGatewayClass = "gatewayclasses.gateway.networking.k8s.io"
 )
 
 // Kind constants.
 const (
-	KindCustomResourceDefinition = "CustomResourceDefinition"
-	KindGatewayClass             = "GatewayClass"
-	KindGateway                  = "Gateway"
-	KindHTTPRoute                = "HTTPRoute"
-	KindReferenceGrant           = "ReferenceGrant"
-	KindNamespace                = "Namespace"
-	KindSecret                   = "Secret"
-	KindService                  = "Service"
-	KindDeployment               = "Deployment"
+	KindCustomResourceDefinition    = "CustomResourceDefinition"
+	KindCloudflareGatewayParameters = "CloudflareGatewayParameters"
+	KindGatewayClass                = "GatewayClass"
+	KindGateway                     = "Gateway"
+	KindHTTPRoute                   = "HTTPRoute"
+	KindReferenceGrant              = "ReferenceGrant"
+	KindNamespace                   = "Namespace"
+	KindSecret                      = "Secret"
+	KindService                     = "Service"
+	KindDeployment                  = "Deployment"
 )
 
 // GroupCore is the Kubernetes core API group name used in Gateway API
@@ -42,7 +43,7 @@ const (
 const (
 	// Finalizer is the finalizer added to resources managed by this controller
 	// to ensure cleanup is performed before the resource is removed.
-	Finalizer = prefix + "finalizer"
+	Finalizer = Group + "/finalizer"
 )
 
 // FinalizerGatewayClass returns the finalizer added to a GatewayClass for a
@@ -60,27 +61,11 @@ const (
 
 	// AnnotationReconcile enables or disables reconciliation.
 	// Set to "disabled" to pause reconciliation.
-	AnnotationReconcile = prefix + "reconcile"
+	AnnotationReconcile = Group + "/reconcile"
 
 	// AnnotationReconcileEvery overrides the default reconciliation interval.
 	// The value must be a valid Go duration string (e.g. "5m", "1h").
-	AnnotationReconcileEvery = prefix + "reconcileEvery"
-
-	// AnnotationZoneName opts a Gateway into DNS CNAME management for the given zone.
-	// When set, the Gateway controller manages all DNS CNAME records for hostnames
-	// from attached HTTPRoutes, pointing to the tunnel's cfargotunnel.com target.
-	AnnotationZoneName = prefixGateway + "zoneName"
-
-	// AnnotationDeploymentPatches customizes the cloudflared Deployment via
-	// RFC 6902 JSON Patch operations written in YAML. The value is a YAML-encoded
-	// array of patch operations applied after the base Deployment is built.
-	// Example:
-	//   - op: add
-	//     path: /spec/template/spec/tolerations
-	//     value:
-	//       - key: "example.com/special-node"
-	//         operator: "Exists"
-	AnnotationDeploymentPatches = prefixGateway + "deploymentPatches"
+	AnnotationReconcileEvery = Group + "/reconcileEvery"
 )
 
 // Reconciliation defaults.

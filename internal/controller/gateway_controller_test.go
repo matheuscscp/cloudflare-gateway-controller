@@ -11,6 +11,7 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -260,7 +261,9 @@ func TestGatewayReconciler_Deletion(t *testing.T) {
 	g.Eventually(func(g Gomega) {
 		e := findEvent(g, ns.Name, gw.Name, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded, apiv1.EventActionFinalize, "")
 		g.Expect(e).NotTo(BeNil())
-		g.Expect(e.Note).To(Equal("Gateway finalized"))
+		g.Expect(e.Note).To(HavePrefix("Gateway finalized"))
+		g.Expect(e.Note).To(ContainSubstring("deleted cloudflared Deployment"))
+		g.Expect(e.Note).To(ContainSubstring("deleted tunnel"))
 	}).WithTimeout(5 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
 }
 
@@ -562,16 +565,19 @@ func TestGatewayReconciler_DNSReconciliation(t *testing.T) {
 
 	waitForGatewayClassReady(g, gc)
 
+	params := createTestParameters(g, "test-gw-dns-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		DNS: &apiv1.DNSConfig{Zone: apiv1.DNSZoneConfig{Name: "example.com"}},
+	})
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-gw-dns",
 			Namespace: ns.Name,
-			Annotations: map[string]string{
-				apiv1.AnnotationZoneName: "example.com",
-			},
 		},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
 			Listeners: []gatewayv1.Listener{
 				{
 					Name:     "http",
@@ -675,16 +681,19 @@ func TestGatewayReconciler_DNSStaleCleanup(t *testing.T) {
 	testMock.ensureDNSCalls = nil
 	testMock.deleteDNSCalls = nil
 
+	params := createTestParameters(g, "test-gw-dns-stale-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		DNS: &apiv1.DNSConfig{Zone: apiv1.DNSZoneConfig{Name: "example.com"}},
+	})
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-gw-dns-stale",
 			Namespace: ns.Name,
-			Annotations: map[string]string{
-				apiv1.AnnotationZoneName: "example.com",
-			},
 		},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
 			Listeners: []gatewayv1.Listener{
 				{
 					Name:     "http",
@@ -731,16 +740,19 @@ func TestGatewayReconciler_DNSSkippedHostnames(t *testing.T) {
 	testMock.deleteDNSCalls = nil
 	testMock.listDNSCNAMEsByTarget = nil
 
+	params := createTestParameters(g, "test-gw-dns-skip-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		DNS: &apiv1.DNSConfig{Zone: apiv1.DNSZoneConfig{Name: "example.com"}},
+	})
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-gw-dns-skip",
 			Namespace: ns.Name,
-			Annotations: map[string]string{
-				apiv1.AnnotationZoneName: "example.com",
-			},
 		},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
 			Listeners: []gatewayv1.Listener{
 				{
 					Name:     "http",
@@ -1488,22 +1500,29 @@ func TestGatewayReconciler_DeploymentPatches(t *testing.T) {
 
 	waitForGatewayClassReady(g, gc)
 
+	params := createTestParameters(g, "test-gw-deploy-patches-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		Tunnels: &apiv1.TunnelsConfig{
+			Cloudflared: &apiv1.CloudflaredConfig{
+				Patches: []apiv1.JSONPatchOperation{
+					{
+						Op:    "add",
+						Path:  "/spec/template/spec/tolerations",
+						Value: &apiextensionsv1.JSON{Raw: []byte(`[{"key":"example.com/special-node","operator":"Exists"}]`)},
+					},
+				},
+			},
+		},
+	})
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-gw-deploy-patches",
 			Namespace: ns.Name,
-			Annotations: map[string]string{
-				apiv1.AnnotationDeploymentPatches: `
-- op: add
-  path: /spec/template/spec/tolerations
-  value:
-    - key: "example.com/special-node"
-      operator: "Exists"
-`,
-			},
 		},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
 			Listeners: []gatewayv1.Listener{
 				{
 					Name:     "http",
@@ -1549,25 +1568,34 @@ func TestGatewayReconciler_DeploymentPatchesMultiple(t *testing.T) {
 
 	waitForGatewayClassReady(g, gc)
 
+	params := createTestParameters(g, "test-gw-patches-multi-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		Tunnels: &apiv1.TunnelsConfig{
+			Cloudflared: &apiv1.CloudflaredConfig{
+				Patches: []apiv1.JSONPatchOperation{
+					{
+						Op:    "add",
+						Path:  "/spec/replicas",
+						Value: &apiextensionsv1.JSON{Raw: []byte(`3`)},
+					},
+					{
+						Op:    "add",
+						Path:  "/spec/template/spec/tolerations",
+						Value: &apiextensionsv1.JSON{Raw: []byte(`[{"key":"node-role","operator":"Exists"}]`)},
+					},
+				},
+			},
+		},
+	})
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-gw-patches-multi",
 			Namespace: ns.Name,
-			Annotations: map[string]string{
-				apiv1.AnnotationDeploymentPatches: `
-- op: add
-  path: /spec/replicas
-  value: 3
-- op: add
-  path: /spec/template/spec/tolerations
-  value:
-    - key: "node-role"
-      operator: "Exists"
-`,
-			},
 		},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
 			Listeners: []gatewayv1.Listener{
 				{
 					Name:     "http",
@@ -1614,25 +1642,29 @@ func TestGatewayReconciler_DeploymentPatchesResourceRequests(t *testing.T) {
 
 	waitForGatewayClassReady(g, gc)
 
+	params := createTestParameters(g, "test-gw-patches-resources-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		Tunnels: &apiv1.TunnelsConfig{
+			Cloudflared: &apiv1.CloudflaredConfig{
+				Patches: []apiv1.JSONPatchOperation{
+					{
+						Op:    "add",
+						Path:  "/spec/template/spec/containers/0/resources",
+						Value: &apiextensionsv1.JSON{Raw: []byte(`{"requests":{"memory":"128Mi","cpu":"250m"},"limits":{"memory":"256Mi"}}`)},
+					},
+				},
+			},
+		},
+	})
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-gw-patches-resources",
 			Namespace: ns.Name,
-			Annotations: map[string]string{
-				apiv1.AnnotationDeploymentPatches: `
-- op: add
-  path: /spec/template/spec/containers/0/resources
-  value:
-    requests:
-      memory: "128Mi"
-      cpu: "250m"
-    limits:
-      memory: "256Mi"
-`,
-			},
 		},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
 			Listeners: []gatewayv1.Listener{
 				{
 					Name:     "http",
@@ -1680,16 +1712,29 @@ func TestGatewayReconciler_DeploymentPatchesInvalidYAML(t *testing.T) {
 
 	waitForGatewayClassReady(g, gc)
 
+	params := createTestParameters(g, "test-gw-patches-invalid-yaml-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		Tunnels: &apiv1.TunnelsConfig{
+			Cloudflared: &apiv1.CloudflaredConfig{
+				Patches: []apiv1.JSONPatchOperation{
+					{
+						Op:    "replace",
+						Path:  "/spec/nonexistent/field",
+						Value: &apiextensionsv1.JSON{Raw: []byte(`"something"`)},
+					},
+				},
+			},
+		},
+	})
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-gw-patches-invalid-yaml",
 			Namespace: ns.Name,
-			Annotations: map[string]string{
-				apiv1.AnnotationDeploymentPatches: `not: valid: yaml: [`,
-			},
 		},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
 			Listeners: []gatewayv1.Listener{
 				{
 					Name:     "http",
@@ -1716,7 +1761,7 @@ func TestGatewayReconciler_DeploymentPatchesInvalidYAML(t *testing.T) {
 		g.Expect(ready).NotTo(BeNil())
 		g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
 		g.Expect(ready.Reason).To(Equal(apiv1.ReasonReconciliationFailed))
-		g.Expect(ready.Message).To(ContainSubstring("deploymentPatches"))
+		g.Expect(ready.Message).To(ContainSubstring("deployment patches"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
@@ -1737,20 +1782,29 @@ func TestGatewayReconciler_DeploymentPatchesInvalidOps(t *testing.T) {
 
 	waitForGatewayClassReady(g, gc)
 
+	params := createTestParameters(g, "test-gw-patches-invalid-ops-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		Tunnels: &apiv1.TunnelsConfig{
+			Cloudflared: &apiv1.CloudflaredConfig{
+				Patches: []apiv1.JSONPatchOperation{
+					{
+						Op:    "replace",
+						Path:  "/spec/nonexistent/field",
+						Value: &apiextensionsv1.JSON{Raw: []byte(`"something"`)},
+					},
+				},
+			},
+		},
+	})
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-gw-patches-invalid-ops",
 			Namespace: ns.Name,
-			Annotations: map[string]string{
-				apiv1.AnnotationDeploymentPatches: `
-- op: replace
-  path: /spec/nonexistent/field
-  value: "something"
-`,
-			},
 		},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
 			Listeners: []gatewayv1.Listener{
 				{
 					Name:     "http",
@@ -1777,7 +1831,7 @@ func TestGatewayReconciler_DeploymentPatchesInvalidOps(t *testing.T) {
 		g.Expect(ready).NotTo(BeNil())
 		g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
 		g.Expect(ready.Reason).To(Equal(apiv1.ReasonReconciliationFailed))
-		g.Expect(ready.Message).To(ContainSubstring("deploymentPatches"))
+		g.Expect(ready.Message).To(ContainSubstring("deployment patches"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
@@ -1896,16 +1950,19 @@ func TestGatewayReconciler_DeletionWithHTTPRoutes(t *testing.T) {
 
 	waitForGatewayClassReady(g, gc)
 
+	params := createTestParameters(g, "test-gw-del-routes-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		DNS: &apiv1.DNSConfig{Zone: apiv1.DNSZoneConfig{Name: "example.com"}},
+	})
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-gw-del-routes",
 			Namespace: ns.Name,
-			Annotations: map[string]string{
-				apiv1.AnnotationZoneName: "example.com",
-			},
 		},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
 			Listeners: []gatewayv1.Listener{
 				{
 					Name:     "http",
@@ -2015,7 +2072,9 @@ func TestGatewayReconciler_DeletionWithHTTPRoutes(t *testing.T) {
 	g.Eventually(func(g Gomega) {
 		e := findEvent(g, ns.Name, gw.Name, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded, apiv1.EventActionFinalize, "")
 		g.Expect(e).NotTo(BeNil())
-		g.Expect(e.Note).To(Equal("Gateway finalized"))
+		g.Expect(e.Note).To(HavePrefix("Gateway finalized"))
+		g.Expect(e.Note).To(ContainSubstring("deleted cloudflared Deployment"))
+		g.Expect(e.Note).To(ContainSubstring("deleted tunnel"))
 	}).WithTimeout(5 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
 
 	// Verify "Removed status entry" event on the HTTPRoute.
@@ -2383,16 +2442,19 @@ func TestGatewayReconciler_DNSZoneRemovalCleanup(t *testing.T) {
 
 	waitForGatewayClassReady(g, gc)
 
+	params := createTestParameters(g, "test-gw-dns-removal-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		DNS: &apiv1.DNSConfig{Zone: apiv1.DNSZoneConfig{Name: "example.com"}},
+	})
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-gw-dns-removal",
 			Namespace: ns.Name,
-			Annotations: map[string]string{
-				apiv1.AnnotationZoneName: "example.com",
-			},
 		},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
 			Listeners: []gatewayv1.Listener{
 				{
 					Name:     "http",
@@ -2462,13 +2524,12 @@ func TestGatewayReconciler_DNSZoneRemovalCleanup(t *testing.T) {
 	testMock.listDNSCNAMEsByTarget = []string{"removal.example.com"}
 	testMock.deleteDNSCalls = nil
 
-	// Remove zoneName annotation from Gateway.
-	gwKey := client.ObjectKeyFromObject(gw)
+	// Remove DNS config from CloudflareGatewayParameters.
 	g.Eventually(func(g Gomega) {
-		var latest gatewayv1.Gateway
-		g.Expect(testClient.Get(testCtx, gwKey, &latest)).To(Succeed())
-		delete(latest.Annotations, apiv1.AnnotationZoneName)
-		g.Expect(testClient.Update(testCtx, &latest)).To(Succeed())
+		var latestParams apiv1.CloudflareGatewayParameters
+		g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(params), &latestParams)).To(Succeed())
+		latestParams.Spec.DNS = nil
+		g.Expect(testClient.Update(testCtx, &latestParams)).To(Succeed())
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
 	// DNS cleanup should be called.
@@ -3158,16 +3219,19 @@ func TestGatewayReconciler_DNSMultipleHostnamesMixed(t *testing.T) {
 	testMock.deleteDNSCalls = nil
 	testMock.listDNSCNAMEsByTarget = nil
 
+	params := createTestParameters(g, "test-gw-dns-mixed-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		DNS: &apiv1.DNSConfig{Zone: apiv1.DNSZoneConfig{Name: "example.com"}},
+	})
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-gw-dns-mixed",
 			Namespace: ns.Name,
-			Annotations: map[string]string{
-				apiv1.AnnotationZoneName: "example.com",
-			},
 		},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
 			Listeners: []gatewayv1.Listener{
 				{
 					Name:     "http",
@@ -3504,16 +3568,19 @@ func TestGatewayReconciler_CloudflareDNSFindZoneError(t *testing.T) {
 
 	waitForGatewayClassReady(g, gc)
 
+	params := createTestParameters(g, "test-gw-dns-zone-err-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		DNS: &apiv1.DNSConfig{Zone: apiv1.DNSZoneConfig{Name: "example.com"}},
+	})
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-gw-dns-zone-err",
 			Namespace: ns.Name,
-			Annotations: map[string]string{
-				apiv1.AnnotationZoneName: "example.com",
-			},
 		},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
 			Listeners: []gatewayv1.Listener{
 				{
 					Name:     "http",
@@ -3601,16 +3668,19 @@ func TestGatewayReconciler_CloudflareDNSEnsureError(t *testing.T) {
 
 	waitForGatewayClassReady(g, gc)
 
+	params := createTestParameters(g, "test-gw-dns-ensure-err-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		DNS: &apiv1.DNSConfig{Zone: apiv1.DNSZoneConfig{Name: "example.com"}},
+	})
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-gw-dns-ensure-err",
 			Namespace: ns.Name,
-			Annotations: map[string]string{
-				apiv1.AnnotationZoneName: "example.com",
-			},
 		},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
 			Listeners: []gatewayv1.Listener{
 				{
 					Name:     "http",
@@ -3754,16 +3824,19 @@ func TestGatewayReconciler_CloudflareListZoneIDsErrorDuringFinalization(t *testi
 
 	waitForGatewayClassReady(g, gc)
 
+	params := createTestParameters(g, "test-gw-list-zones-err-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		DNS: &apiv1.DNSConfig{Zone: apiv1.DNSZoneConfig{Name: "example.com"}},
+	})
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-gw-list-zones-err",
 			Namespace: ns.Name,
-			Annotations: map[string]string{
-				apiv1.AnnotationZoneName: "example.com",
-			},
 		},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
 			Listeners: []gatewayv1.Listener{
 				{
 					Name:     "http",
@@ -3988,16 +4061,19 @@ func TestGatewayReconciler_CloudflareListDNSCNAMEsError(t *testing.T) {
 
 	waitForGatewayClassReady(g, gc)
 
+	params := createTestParameters(g, "test-gw-list-cnames-err-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		DNS: &apiv1.DNSConfig{Zone: apiv1.DNSZoneConfig{Name: "example.com"}},
+	})
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-gw-list-cnames-err",
 			Namespace: ns.Name,
-			Annotations: map[string]string{
-				apiv1.AnnotationZoneName: "example.com",
-			},
 		},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
 			Listeners: []gatewayv1.Listener{
 				{
 					Name:     "http",
@@ -4104,16 +4180,19 @@ func TestGatewayReconciler_CloudflareDeleteDNSCNAMEError(t *testing.T) {
 	testMock.listDNSCNAMEsByTarget = []string{"stale-del-err.example.com"}
 	testMock.deleteDNSErr = fmt.Errorf("DNS delete failed")
 
+	params := createTestParameters(g, "test-gw-del-cname-err-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		DNS: &apiv1.DNSConfig{Zone: apiv1.DNSZoneConfig{Name: "example.com"}},
+	})
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-gw-del-cname-err",
 			Namespace: ns.Name,
-			Annotations: map[string]string{
-				apiv1.AnnotationZoneName: "example.com",
-			},
 		},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
 			Listeners: []gatewayv1.Listener{
 				{
 					Name:     "http",
@@ -4199,16 +4278,19 @@ func TestGatewayReconciler_CloudflareDNSCleanupOnZoneRemovalError(t *testing.T) 
 
 	waitForGatewayClassReady(g, gc)
 
+	params := createTestParameters(g, "test-gw-zone-rm-err-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		DNS: &apiv1.DNSConfig{Zone: apiv1.DNSZoneConfig{Name: "example.com"}},
+	})
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-gw-zone-rm-err",
 			Namespace: ns.Name,
-			Annotations: map[string]string{
-				apiv1.AnnotationZoneName: "example.com",
-			},
 		},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
 			Listeners: []gatewayv1.Listener{
 				{
 					Name:     "http",
@@ -4273,15 +4355,14 @@ func TestGatewayReconciler_CloudflareDNSCleanupOnZoneRemovalError(t *testing.T) 
 		g.Expect(dns.Status).To(Equal(metav1.ConditionTrue))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
-	// Set ListZoneIDs error and remove zone annotation.
+	// Set ListZoneIDs error and remove DNS config from CloudflareGatewayParameters.
 	testMock.listZoneIDsErr = fmt.Errorf("zone listing failed")
 
-	gwKey := client.ObjectKeyFromObject(gw)
 	g.Eventually(func(g Gomega) {
-		var latest gatewayv1.Gateway
-		g.Expect(testClient.Get(testCtx, gwKey, &latest)).To(Succeed())
-		delete(latest.Annotations, apiv1.AnnotationZoneName)
-		g.Expect(testClient.Update(testCtx, &latest)).To(Succeed())
+		var latestParams apiv1.CloudflareGatewayParameters
+		g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(params), &latestParams)).To(Succeed())
+		latestParams.Spec.DNS = nil
+		g.Expect(testClient.Update(testCtx, &latestParams)).To(Succeed())
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
 	// Verify Warning event on Gateway with DNS cleanup error (non-fatal).

@@ -132,22 +132,35 @@ pass "GatewayClass is Ready"
 
 # ─── Phase 3: Gateway lifecycle ────────────────────────────────────────────────
 
-log "Creating Gateway 'test-gateway' with zone annotation..."
+log "Creating CloudflareGatewayParameters 'test-params'..."
+kubectl apply -f - <<EOF
+apiVersion: cloudflare-gateway-controller.io/v1
+kind: CloudflareGatewayParameters
+metadata:
+  name: test-params
+  namespace: $TEST_NS
+spec:
+  secretRef:
+    name: cloudflare-creds
+  dns:
+    zone:
+      name: "$TEST_ZONE_NAME"
+EOF
+
+log "Creating Gateway 'test-gateway'..."
 kubectl apply -f - <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: test-gateway
   namespace: $TEST_NS
-  annotations:
-    gateway.cloudflare-gateway-controller.io/zoneName: "$TEST_ZONE_NAME"
 spec:
   gatewayClassName: cloudflare
   infrastructure:
     parametersRef:
-      group: ""
-      kind: Secret
-      name: cloudflare-creds
+      group: cloudflare-gateway-controller.io
+      kind: CloudflareGatewayParameters
+      name: test-params
   listeners:
   - name: http
     protocol: HTTP
@@ -268,6 +281,21 @@ pass "Tunnel deleted"
 HOSTNAME_A="a-${TS: -6}.${TEST_ZONE_NAME}"
 HOSTNAME_B="b-${TS: -6}.${TEST_ZONE_NAME}"
 
+log "Creating CloudflareGatewayParameters 'multi-route-params'..."
+kubectl apply -f - <<EOF
+apiVersion: cloudflare-gateway-controller.io/v1
+kind: CloudflareGatewayParameters
+metadata:
+  name: multi-route-params
+  namespace: $TEST_NS
+spec:
+  secretRef:
+    name: cloudflare-creds
+  dns:
+    zone:
+      name: "$TEST_ZONE_NAME"
+EOF
+
 log "Creating Gateway 'multi-route-gw'..."
 kubectl apply -f - <<EOF
 apiVersion: gateway.networking.k8s.io/v1
@@ -275,15 +303,13 @@ kind: Gateway
 metadata:
   name: multi-route-gw
   namespace: $TEST_NS
-  annotations:
-    gateway.cloudflare-gateway-controller.io/zoneName: "$TEST_ZONE_NAME"
 spec:
   gatewayClassName: cloudflare
   infrastructure:
     parametersRef:
-      group: ""
-      kind: Secret
-      name: cloudflare-creds
+      group: cloudflare-gateway-controller.io
+      kind: CloudflareGatewayParameters
+      name: multi-route-params
   listeners:
   - name: http
     protocol: HTTP
@@ -416,7 +442,7 @@ pass "Phase 7: Multiple HTTPRoutes passed"
 
 PATH_HOSTNAME="paths-${TS: -6}.test"
 
-log "Creating Gateway 'path-gw' (no zone annotation)..."
+log "Creating Gateway 'path-gw' (no DNS config)..."
 kubectl apply -f - <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
@@ -509,11 +535,11 @@ retry 60 3 bash -c "! kubectl get gateway path-gw -n '$TEST_NS' 2>/dev/null" \
     || fail "path-gw still exists"
 pass "Phase 8: Path matching passed"
 
-# ─── Phase 9: Gateway without zone annotation (no DNS) ───────────────────────
+# ─── Phase 9: Gateway without DNS config (no DNS) ────────────────────────────
 
 NO_DNS_HOSTNAME="nd-${TS: -6}.${TEST_ZONE_NAME}"
 
-log "Creating Gateway 'no-dns-gw' without zone annotation..."
+log "Creating Gateway 'no-dns-gw' without DNS config..."
 kubectl apply -f - <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
@@ -600,27 +626,40 @@ retry 60 3 bash -c "! kubectl get gateway no-dns-gw -n '$TEST_NS' 2>/dev/null" \
     || fail "no-dns-gw still exists"
 pass "Phase 9: No DNS passed"
 
-# ─── Phase 10: Deployment patches via annotation ─────────────────────────────
+# ─── Phase 10: Deployment patches via CloudflareGatewayParameters ─────────────
 
-log "Creating Gateway 'patched-gw' with deployment patch annotation..."
+log "Creating CloudflareGatewayParameters 'patched-params' with deployment patches..."
+kubectl apply -f - <<EOF
+apiVersion: cloudflare-gateway-controller.io/v1
+kind: CloudflareGatewayParameters
+metadata:
+  name: patched-params
+  namespace: $TEST_NS
+spec:
+  secretRef:
+    name: cloudflare-creds
+  tunnels:
+    cloudflared:
+      patches:
+      - op: add
+        path: /spec/template/metadata/labels/e2e-patch
+        value: "applied"
+EOF
+
+log "Creating Gateway 'patched-gw' with deployment patches..."
 kubectl apply -f - <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: patched-gw
   namespace: $TEST_NS
-  annotations:
-    gateway.cloudflare-gateway-controller.io/deploymentPatches: |
-      - op: add
-        path: /spec/template/metadata/labels/e2e-patch
-        value: "applied"
 spec:
   gatewayClassName: cloudflare
   infrastructure:
     parametersRef:
-      group: ""
-      kind: Secret
-      name: cloudflare-creds
+      group: cloudflare-gateway-controller.io
+      kind: CloudflareGatewayParameters
+      name: patched-params
   listeners:
   - name: http
     protocol: HTTP
@@ -648,22 +687,35 @@ pass "Phase 10: Deployment patches passed"
 
 DISABLED_HOSTNAME="dis-${TS: -6}.${TEST_ZONE_NAME}"
 
-log "Creating Gateway 'disabled-gw' with zone annotation..."
+log "Creating CloudflareGatewayParameters 'disabled-params'..."
+kubectl apply -f - <<EOF
+apiVersion: cloudflare-gateway-controller.io/v1
+kind: CloudflareGatewayParameters
+metadata:
+  name: disabled-params
+  namespace: $TEST_NS
+spec:
+  secretRef:
+    name: cloudflare-creds
+  dns:
+    zone:
+      name: "$TEST_ZONE_NAME"
+EOF
+
+log "Creating Gateway 'disabled-gw'..."
 kubectl apply -f - <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: disabled-gw
   namespace: $TEST_NS
-  annotations:
-    gateway.cloudflare-gateway-controller.io/zoneName: "$TEST_ZONE_NAME"
 spec:
   gatewayClassName: cloudflare
   infrastructure:
     parametersRef:
-      group: ""
-      kind: Secret
-      name: cloudflare-creds
+      group: cloudflare-gateway-controller.io
+      kind: CloudflareGatewayParameters
+      name: disabled-params
   listeners:
   - name: http
     protocol: HTTP
@@ -753,26 +805,39 @@ cfgwctl tunnel cleanup-connections --tunnel-id "$DIS_TUNNEL_ID"
 cfgwctl tunnel delete --tunnel-id "$DIS_TUNNEL_ID"
 pass "Phase 11: Deletion while disabled passed"
 
-# ─── Phase 12: Zone annotation removal cleans up DNS ─────────────────────────
+# ─── Phase 12: DNS config removal cleans up DNS ──────────────────────────────
 
 ZONE_RM_HOSTNAME="zrm-${TS: -6}.${TEST_ZONE_NAME}"
 
-log "Creating Gateway 'zone-rm-gw' with zone annotation..."
+log "Creating CloudflareGatewayParameters 'zone-rm-params'..."
+kubectl apply -f - <<EOF
+apiVersion: cloudflare-gateway-controller.io/v1
+kind: CloudflareGatewayParameters
+metadata:
+  name: zone-rm-params
+  namespace: $TEST_NS
+spec:
+  secretRef:
+    name: cloudflare-creds
+  dns:
+    zone:
+      name: "$TEST_ZONE_NAME"
+EOF
+
+log "Creating Gateway 'zone-rm-gw'..."
 kubectl apply -f - <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: zone-rm-gw
   namespace: $TEST_NS
-  annotations:
-    gateway.cloudflare-gateway-controller.io/zoneName: "$TEST_ZONE_NAME"
 spec:
   gatewayClassName: cloudflare
   infrastructure:
     parametersRef:
-      group: ""
-      kind: Secret
-      name: cloudflare-creds
+      group: cloudflare-gateway-controller.io
+      kind: CloudflareGatewayParameters
+      name: zone-rm-params
   listeners:
   - name: http
     protocol: HTTP
@@ -828,9 +893,17 @@ check_zr_dns() {
 retry 60 3 check_zr_dns || fail "DNS CNAME for zone-rm not found"
 pass "DNS CNAME exists"
 
-log "Removing zoneName annotation..."
-kubectl annotate gateway zone-rm-gw -n "$TEST_NS" \
-    gateway.cloudflare-gateway-controller.io/zoneName-
+log "Removing DNS config from CloudflareGatewayParameters..."
+kubectl apply -f - <<EOF
+apiVersion: cloudflare-gateway-controller.io/v1
+kind: CloudflareGatewayParameters
+metadata:
+  name: zone-rm-params
+  namespace: $TEST_NS
+spec:
+  secretRef:
+    name: cloudflare-creds
+EOF
 
 log "Verifying DNS CNAME removed..."
 check_zr_dns_removed() {
@@ -838,22 +911,22 @@ check_zr_dns_removed() {
         | jq -e ".hostnames[] | select(. == \"$ZONE_RM_HOSTNAME\")" >/dev/null 2>&1
 }
 retry 60 3 check_zr_dns_removed || fail "DNS CNAME still exists after zone removal"
-pass "DNS CNAME removed after zone annotation removal"
+pass "DNS CNAME removed after DNS config removal"
 
-log "Verifying tunnel config still has hostname (ingress unaffected)..."
+log "Verifying tunnel config still has hostname (tunnel config unaffected)..."
 check_zr_has_hostname() {
     cfgwctl tunnel get-config --tunnel-id "$ZR_TUNNEL_ID" \
         | jq -e ".[] | select(.hostname == \"$ZONE_RM_HOSTNAME\")" >/dev/null
 }
-check_zr_has_hostname || fail "tunnel config lost hostname after zone removal"
+check_zr_has_hostname || fail "tunnel config lost hostname after DNS config removal"
 pass "Tunnel config still has hostname"
 
-log "Cleaning up zone removal test..."
+log "Cleaning up DNS config removal test..."
 kubectl delete httproute zone-rm-route -n "$TEST_NS"
 kubectl delete gateway zone-rm-gw -n "$TEST_NS"
 retry 60 3 bash -c "! kubectl get gateway zone-rm-gw -n '$TEST_NS' 2>/dev/null" \
     || fail "zone-rm-gw still exists"
-pass "Phase 12: Zone annotation removal passed"
+pass "Phase 12: DNS config removal passed"
 
 # ─── Phase 13: Multiple listeners ────────────────────────────────────────────
 

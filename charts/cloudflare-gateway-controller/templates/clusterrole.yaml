@@ -49,6 +49,14 @@ rules:
   - update
   - watch
 - apiGroups:
+  - cloudflare-gateway-controller.io
+  resources:
+  - cloudflaregatewayparameters
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - events.k8s.io
   resources:
   - events

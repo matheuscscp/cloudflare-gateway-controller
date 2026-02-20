@@ -44,7 +44,7 @@ func (r *GatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			builder.WithPredicates(predicates.Debug(apiv1.KindDeployment,
 				predicate.ResourceVersionChangedPredicate{}))).
 		WatchesMetadata(&corev1.Secret{},
-			handler.EnqueueRequestsFromMapFunc(r.mapSecretToGateway),
+			handler.EnqueueRequestsFromMapFunc(r.mapTunnelTokenSecretToGateway),
 			builder.WithPredicates(predicates.Debug(apiv1.KindSecret,
 				predicate.ResourceVersionChangedPredicate{}))).
 
@@ -65,6 +65,10 @@ func (r *GatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.mapNamespaceToGateway),
 			builder.WithPredicates(predicates.Debug(apiv1.KindNamespace,
 				predicate.LabelChangedPredicate{}))).
+		Watches(&apiv1.CloudflareGatewayParameters{},
+			handler.EnqueueRequestsFromMapFunc(r.mapParametersToGateway),
+			builder.WithPredicates(predicates.Debug(apiv1.KindCloudflareGatewayParameters,
+				predicate.GenerationChangedPredicate{}))).
 		Complete(r)
 }
 
@@ -225,14 +229,33 @@ func (r *GatewayReconciler) mapNamespaceToGateway(ctx context.Context, _ client.
 	return requests
 }
 
-// mapSecretToGateway maps a Secret event to reconcile requests for Gateways
+// mapTunnelTokenSecretToGateway maps a Secret event to reconcile requests for Gateways
 // whose managed tunnel token Secret matches the event object.
-func (r *GatewayReconciler) mapSecretToGateway(ctx context.Context, obj client.Object) []reconcile.Request {
+func (r *GatewayReconciler) mapTunnelTokenSecretToGateway(ctx context.Context, obj client.Object) []reconcile.Request {
 	var gateways gatewayv1.GatewayList
-	if err := r.List(ctx, &gateways, client.MatchingFields{
-		indexGatewayTunnelTokenSecret: obj.GetNamespace() + "/" + obj.GetName(),
+	if err := r.List(ctx, &gateways, client.InNamespace(obj.GetNamespace()), client.MatchingFields{
+		indexGatewayTunnelTokenSecret: obj.GetName(),
 	}); err != nil {
 		log.FromContext(ctx).Error(err, "failed to list Gateways for Secret")
+		return nil
+	}
+	var requests []reconcile.Request
+	for _, gw := range gateways.Items {
+		requests = append(requests, reconcile.Request{
+			NamespacedName: client.ObjectKeyFromObject(&gw),
+		})
+	}
+	return requests
+}
+
+// mapParametersToGateway maps a CloudflareGatewayParameters event to reconcile
+// requests for Gateways whose infrastructure.parametersRef references it.
+func (r *GatewayReconciler) mapParametersToGateway(ctx context.Context, obj client.Object) []reconcile.Request {
+	var gateways gatewayv1.GatewayList
+	if err := r.List(ctx, &gateways, client.InNamespace(obj.GetNamespace()), client.MatchingFields{
+		indexGatewayInfrastructureParametersRef: obj.GetName(),
+	}); err != nil {
+		log.FromContext(ctx).Error(err, "failed to list Gateways for CloudflareGatewayParameters")
 		return nil
 	}
 	var requests []reconcile.Request

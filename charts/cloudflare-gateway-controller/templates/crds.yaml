@@ -1,0 +1,121 @@
+# Copyright 2026 Matheus Pimenta.
+# SPDX-License-Identifier: AGPL-3.0
+
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.0
+  name: cloudflaregatewayparameters.cloudflare-gateway-controller.io
+spec:
+  group: cloudflare-gateway-controller.io
+  names:
+    kind: CloudflareGatewayParameters
+    listKind: CloudflareGatewayParametersList
+    plural: cloudflaregatewayparameters
+    shortNames:
+    - cgp
+    singular: cloudflaregatewayparameters
+  scope: Namespaced
+  versions:
+  - name: v1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          CloudflareGatewayParameters provides typed configuration for Gateways
+          managed by this controller. It can be referenced via
+          infrastructure.parametersRef from a Gateway.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: CloudflareGatewayParametersSpec defines the desired configuration.
+            properties:
+              dns:
+                description: DNS configures DNS CNAME record management.
+                properties:
+                  zone:
+                    description: Zone configures the DNS zone for CNAME management.
+                    properties:
+                      name:
+                        description: Name is the DNS zone name (e.g. "example.com").
+                        type: string
+                    required:
+                    - name
+                    type: object
+                required:
+                - zone
+                type: object
+              secretRef:
+                description: |-
+                  SecretRef references a Secret in the same namespace containing
+                  CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID.
+                properties:
+                  name:
+                    description: Name of the Secret.
+                    type: string
+                required:
+                - name
+                type: object
+              tunnels:
+                description: Tunnels configures Cloudflare tunnel settings.
+                properties:
+                  cloudflared:
+                    description: Cloudflared configures the cloudflared Deployment.
+                    properties:
+                      patches:
+                        description: |-
+                          Patches are RFC 6902 JSON Patch operations applied to the
+                          cloudflared Deployment after it is built.
+                        items:
+                          description: JSONPatchOperation represents a single RFC
+                            6902 JSON Patch operation.
+                          properties:
+                            from:
+                              description: From is the source path for move and copy
+                                operations.
+                              type: string
+                            op:
+                              description: Op is the patch operation.
+                              enum:
+                              - add
+                              - remove
+                              - replace
+                              - move
+                              - copy
+                              - test
+                              type: string
+                            path:
+                              description: Path is the JSON Pointer path for the operation.
+                              type: string
+                            value:
+                              description: Value is the value to use for add, replace,
+                                and test operations.
+                              x-kubernetes-preserve-unknown-fields: true
+                          required:
+                          - op
+                          - path
+                          type: object
+                        type: array
+                    type: object
+                type: object
+            type: object
+        type: object
+    served: true
+    storage: true

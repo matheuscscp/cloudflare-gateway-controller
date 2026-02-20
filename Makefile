@@ -24,9 +24,10 @@ all: test lint build build-cfgwctl ## Run all build and test targets.
 ##@ Development
 
 .PHONY: manifests
-manifests: controller-gen ## Generate RBAC manifests and wire them into the Helm chart.
-	$(CONTROLLER_GEN) rbac:roleName=manager-role paths="./..." output:rbac:artifacts:config=config/rbac
+manifests: controller-gen ## Generate RBAC and CRD manifests and wire them into the Helm chart.
+	$(CONTROLLER_GEN) rbac:roleName=manager-role crd object paths="./..." output:rbac:artifacts:config=config/rbac output:crd:artifacts:config=config/crd/bases
 	./hack/gen-chart-rbac.sh
+	./hack/gen-chart-crd.sh
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.
@@ -93,7 +94,7 @@ ENVTEST ?= $(LOCALBIN)/setup-envtest-$(ENVTEST_VERSION)
 GOLANGCI_LINT ?= $(LOCALBIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
 
 ## Tool Versions
-CONTROLLER_GEN_VERSION ?= v0.19.0
+CONTROLLER_GEN_VERSION ?= v0.20.0
 ENVTEST_VERSION ?= $(shell go list -m -f "{{ .Version }}" sigs.k8s.io/controller-runtime | awk -F'[v.]' '{printf "release-%d.%d", $$2, $$3}')
 GOLANGCI_LINT_VERSION ?= v2.9.0
 

@@ -59,7 +59,7 @@ func gatewayAPICRDPath() string {
 	}
 	gomodcache := strings.TrimSpace(string(out))
 
-	return filepath.Join(gomodcache, "sigs.k8s.io", "gateway-api@v"+testGatewayAPIVersion.Original(), "config", "crd", "standard")
+	return filepath.Join(gomodcache, "sigs.k8s.io", "gateway-api@v"+testGatewayAPIVersion.Original(), "config", "crd", "experimental")
 }
 
 func newTestScheme() *runtime.Scheme {
@@ -68,6 +68,7 @@ func newTestScheme() *runtime.Scheme {
 	utilruntime.Must(apiextensionsv1.AddToScheme(s))
 	utilruntime.Must(gatewayv1.Install(s))
 	utilruntime.Must(gatewayv1beta1.Install(s))
+	utilruntime.Must(apiv1.Install(s))
 	return s
 }
 
@@ -77,8 +78,13 @@ func TestMain(m *testing.M) {
 	scheme := newTestScheme()
 
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths: []string{gatewayAPICRDPath()},
-		Scheme:            scheme,
+		CRDInstallOptions: envtest.CRDInstallOptions{
+			Paths: []string{
+				gatewayAPICRDPath(),
+				filepath.Join("..", "..", "charts", "cloudflare-gateway-controller", "templates", "crds.yaml"),
+			},
+		},
+		Scheme: scheme,
 	}
 
 	cfg, err := testEnv.Start()
@@ -398,6 +404,26 @@ func createTestGateway(g Gomega, name, namespace, gcName string) *gatewayv1.Gate
 	}
 	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
 	return gw
+}
+
+func createTestParameters(g Gomega, name, namespace string, spec apiv1.CloudflareGatewayParametersSpec) *apiv1.CloudflareGatewayParameters {
+	params := &apiv1.CloudflareGatewayParameters{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: spec,
+	}
+	g.Expect(testClient.Create(testCtx, params)).To(Succeed())
+	return params
+}
+
+func parametersRef(name string) *gatewayv1.LocalParametersReference {
+	return &gatewayv1.LocalParametersReference{
+		Group: gatewayv1.Group(apiv1.Group),
+		Kind:  gatewayv1.Kind(apiv1.KindCloudflareGatewayParameters),
+		Name:  name,
+	}
 }
 
 func waitForGatewayClassReady(g Gomega, gc *gatewayv1.GatewayClass) {
