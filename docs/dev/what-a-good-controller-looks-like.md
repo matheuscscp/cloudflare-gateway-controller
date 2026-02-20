@@ -55,6 +55,21 @@ For example: in the Gateway controller, the stale DNS records are discovered by 
 the actual state of DNS records in Cloudflare, and then comparing it to the desired state
 computed from the attached HTTPRoutes.
 
+## Exhaustive Configuration Validation
+
+A good controller validates all configuration exhaustively and rejects anything that is
+not supported, even if the controller could technically ignore or work around it. This
+educates users to use the API correctly and prevents subtle misbehavior.
+
+For example: if the controller only supports a single listener on a Gateway, it should
+reject Gateways with zero or multiple listeners with a clear error condition — not silently
+pick the first one or ignore extras. If a field value is outside the supported range, reject
+it explicitly rather than clamping or defaulting. The validation should happen early in the
+reconciliation loop (before any external API calls or side effects) and set an appropriate
+status condition (e.g. `Accepted=False`) with a message that tells the user exactly what to
+fix. The error should be terminal (`reconcile.TerminalError`) when the invalid field lives
+on a watched object, since the watch will re-trigger reconciliation when the user corrects it.
+
 ## Minimizing Write Operations
 
 We avoid making write operations as much as possible, regardless of whether they would be
