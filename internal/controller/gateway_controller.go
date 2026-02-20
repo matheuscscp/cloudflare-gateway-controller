@@ -195,6 +195,11 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		return r.reconcileError(ctx, gw, fmt.Errorf("ensuring GatewayClass finalizer: %w", err))
 	}
 
+	// Validate Gateway spec.
+	if err := validateGateway(gw); err != nil {
+		return r.reconcileError(ctx, gw, err.err, err.cond)
+	}
+
 	// List all HTTPRoutes referencing this Gateway once, then reuse the list
 	// for attached route counts, ingress rules, DNS, and status updates.
 	var allRoutes gatewayv1.HTTPRouteList
@@ -288,12 +293,23 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 			errs = append(errs, fmt.Sprintf("failed to update denied HTTPRoute %s/%s status: %v", route.Namespace, route.Name, err))
 		}
 	}
+	// Set Accepted=False/UnsupportedValue on routes that use unsupported features.
+	var validRoutes []*gatewayv1.HTTPRoute
+	for _, route := range gatewayRoutes {
+		if issues := validateHTTPRoute(route); len(issues) > 0 {
+			if err := r.updateInvalidRouteStatus(ctx, gw, route, issues); err != nil {
+				errs = append(errs, fmt.Sprintf("failed to update invalid HTTPRoute %s/%s status: %v", route.Namespace, route.Name, err))
+			}
+			continue
+		}
+		validRoutes = append(validRoutes, route)
+	}
 
-	// Build listener statuses using only allowed routes.
-	desiredListeners := buildListenerStatuses(gw, countAttachedRoutes(gatewayRoutes, gw))
+	// Build listener statuses using only valid routes.
+	desiredListeners := buildListenerStatuses(gw, countAttachedRoutes(validRoutes, gw))
 
 	// Reconcile tunnel ingress configuration
-	routesWithDeniedRefs, configUpdated, err := r.reconcileTunnelIngress(ctx, tc, tunnelID, gatewayRoutes)
+	routesWithDeniedRefs, configUpdated, err := r.reconcileTunnelIngress(ctx, tc, tunnelID, validRoutes)
 	if err != nil {
 		return r.reconcileError(ctx, gw, err)
 	}
@@ -306,7 +322,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	if params != nil && params.Spec.DNS != nil {
 		zoneName = params.Spec.DNS.Zone.Name
 	}
-	dnsChanges, dnsErr := r.reconcileDNS(ctx, tc, tunnelID, zoneName, gatewayRoutes)
+	dnsChanges, dnsErr := r.reconcileDNS(ctx, tc, tunnelID, zoneName, validRoutes)
 	changes = append(changes, dnsChanges...)
 	if dnsErr != nil {
 		errs = append(errs, *dnsErr)
@@ -317,7 +333,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 
 	// Update HTTPRoute status.parents for allowed routes (after DNS and
 	// Deployment checks so we can report DNS status and Gateway readiness).
-	errs = append(errs, r.updateRouteStatuses(ctx, gw, gatewayRoutes, routesWithDeniedRefs, zoneName, dnsErr,
+	errs = append(errs, r.updateRouteStatuses(ctx, gw, validRoutes, routesWithDeniedRefs, zoneName, dnsErr,
 		readiness.readyStatus, readiness.readyReason, readiness.readyMsg)...)
 
 	// Patch Gateway status and emit events
@@ -1165,51 +1181,76 @@ func readCredentialsFromGatewayClass(ctx context.Context, r client.Reader, gc *g
 	}, nil
 }
 
+// gatewayValidationError holds a terminal error and the condition to set on the Gateway.
+type gatewayValidationError struct {
+	err  error
+	cond metav1.Condition
+}
+
+// validateGateway checks that the Gateway spec only uses features supported by
+// Cloudflare tunnels. Returns nil if valid.
+func validateGateway(gw *gatewayv1.Gateway) *gatewayValidationError {
+	rejectedCond := func(reason gatewayv1.GatewayConditionReason, msg string) *gatewayValidationError {
+		return &gatewayValidationError{
+			err: reconcile.TerminalError(fmt.Errorf("%s", strings.ToLower(msg[:1])+msg[1:])),
+			cond: metav1.Condition{
+				Type:    string(gatewayv1.GatewayConditionAccepted),
+				Status:  metav1.ConditionFalse,
+				Reason:  string(reason),
+				Message: msg,
+			},
+		}
+	}
+
+	if len(gw.Spec.Listeners) != 1 {
+		msg := fmt.Sprintf("Gateway must have exactly one listener, got %d", len(gw.Spec.Listeners))
+		return rejectedCond(gatewayv1.GatewayReasonListenersNotValid, msg)
+	}
+
+	if len(gw.Spec.Addresses) > 0 {
+		return rejectedCond(gatewayv1.GatewayReasonUnsupportedAddress, "spec.addresses is not supported")
+	}
+
+	l := gw.Spec.Listeners[0]
+
+	if l.Protocol != gatewayv1.HTTPProtocolType && l.Protocol != gatewayv1.HTTPSProtocolType {
+		msg := fmt.Sprintf("Listener protocol %q is not supported, must be HTTP or HTTPS", l.Protocol)
+		return rejectedCond(gatewayv1.GatewayReasonListenersNotValid, msg)
+	}
+
+	if l.TLS != nil {
+		return rejectedCond(gatewayv1.GatewayReasonListenersNotValid,
+			"spec.listeners[0].tls is not supported; Cloudflare handles TLS termination")
+	}
+
+	if l.Hostname != nil {
+		return rejectedCond(gatewayv1.GatewayReasonListenersNotValid,
+			"spec.listeners[0].hostname is not supported; use HTTPRoute hostnames instead")
+	}
+
+	if l.AllowedRoutes != nil && len(l.AllowedRoutes.Kinds) > 0 {
+		for _, k := range l.AllowedRoutes.Kinds {
+			group := gatewayv1.Group(gatewayv1.GroupName)
+			if k.Group != nil {
+				group = *k.Group
+			}
+			if group != gatewayv1.Group(gatewayv1.GroupName) || string(k.Kind) != apiv1.KindHTTPRoute {
+				msg := fmt.Sprintf("Only HTTPRoute kind is supported in spec.listeners[0].allowedRoutes.kinds, got %s/%s", group, k.Kind)
+				return rejectedCond(gatewayv1.GatewayReasonListenersNotValid, msg)
+			}
+		}
+	}
+
+	return nil
+}
+
 // buildListenerStatuses builds the desired listener statuses for each Gateway listener,
-// setting Accepted/Programmed conditions based on protocol support and the attached route count.
+// setting Accepted/Programmed conditions based on the attached route count.
 func buildListenerStatuses(gw *gatewayv1.Gateway, attachedRoutes map[gatewayv1.SectionName]int32) []gatewayv1.ListenerStatus {
 	now := metav1.Now()
 	statuses := make([]gatewayv1.ListenerStatus, 0, len(gw.Spec.Listeners))
 	for _, l := range gw.Spec.Listeners {
-		supported := l.Protocol == gatewayv1.HTTPProtocolType || l.Protocol == gatewayv1.HTTPSProtocolType
-
-		var acceptedCond, programmedCond metav1.Condition
-		if supported {
-			acceptedCond = metav1.Condition{
-				Type:               string(gatewayv1.ListenerConditionAccepted),
-				Status:             metav1.ConditionTrue,
-				ObservedGeneration: gw.Generation,
-				LastTransitionTime: now,
-				Reason:             string(gatewayv1.ListenerReasonAccepted),
-				Message:            "Listener is accepted",
-			}
-			programmedCond = metav1.Condition{
-				Type:               string(gatewayv1.ListenerConditionProgrammed),
-				Status:             metav1.ConditionTrue,
-				ObservedGeneration: gw.Generation,
-				LastTransitionTime: now,
-				Reason:             string(gatewayv1.ListenerReasonProgrammed),
-				Message:            "Listener is programmed",
-			}
-		} else {
-			acceptedCond = metav1.Condition{
-				Type:               string(gatewayv1.ListenerConditionAccepted),
-				Status:             metav1.ConditionFalse,
-				ObservedGeneration: gw.Generation,
-				LastTransitionTime: now,
-				Reason:             string(gatewayv1.ListenerReasonUnsupportedProtocol),
-				Message:            fmt.Sprintf("Protocol %q is not supported", l.Protocol),
-			}
-			programmedCond = metav1.Condition{
-				Type:               string(gatewayv1.ListenerConditionProgrammed),
-				Status:             metav1.ConditionFalse,
-				ObservedGeneration: gw.Generation,
-				LastTransitionTime: now,
-				Reason:             string(gatewayv1.ListenerReasonInvalid),
-				Message:            "Listener is not programmed due to unsupported protocol",
-			}
-		}
-
+		// Protocol is validated in validateGateway before we reach here.
 		statuses = append(statuses, gatewayv1.ListenerStatus{
 			Name: l.Name,
 			SupportedKinds: []gatewayv1.RouteGroupKind{
@@ -1220,8 +1261,22 @@ func buildListenerStatuses(gw *gatewayv1.Gateway, attachedRoutes map[gatewayv1.S
 			},
 			AttachedRoutes: attachedRoutes[l.Name],
 			Conditions: []metav1.Condition{
-				acceptedCond,
-				programmedCond,
+				{
+					Type:               string(gatewayv1.ListenerConditionAccepted),
+					Status:             metav1.ConditionTrue,
+					ObservedGeneration: gw.Generation,
+					LastTransitionTime: now,
+					Reason:             string(gatewayv1.ListenerReasonAccepted),
+					Message:            "Listener is accepted",
+				},
+				{
+					Type:               string(gatewayv1.ListenerConditionProgrammed),
+					Status:             metav1.ConditionTrue,
+					ObservedGeneration: gw.Generation,
+					LastTransitionTime: now,
+					Reason:             string(gatewayv1.ListenerReasonProgrammed),
+					Message:            "Listener is programmed",
+				},
 				{
 					Type:               string(gatewayv1.ListenerConditionConflicted),
 					Status:             metav1.ConditionFalse,
@@ -1738,6 +1793,129 @@ func (r *GatewayReconciler) updateDeniedRouteStatus(ctx context.Context, gw *gat
 	})
 	if patched {
 		log.FromContext(ctx).V(1).Info("Patched denied HTTPRoute status", "httproute", routeKey)
+		r.Eventf(route, gw, corev1.EventTypeWarning, acceptedReason,
+			apiv1.EventActionReconcile, acceptedMsg)
+	}
+	return err
+}
+
+// validateHTTPRoute checks that the HTTPRoute only uses features supported by
+// Cloudflare tunnels. Returns a list of unsupported feature descriptions, or
+// nil if the route is valid.
+func validateHTTPRoute(route *gatewayv1.HTTPRoute) []string {
+	var issues []string
+	for i, ref := range route.Spec.ParentRefs {
+		if ref.Port != nil {
+			issues = append(issues, fmt.Sprintf("spec.parentRefs[%d].port is not supported", i))
+		}
+	}
+	for i, rule := range route.Spec.Rules {
+		if len(rule.Filters) > 0 {
+			issues = append(issues, fmt.Sprintf("spec.rules[%d].filters is not supported", i))
+		}
+		if rule.Timeouts != nil {
+			issues = append(issues, fmt.Sprintf("spec.rules[%d].timeouts is not supported", i))
+		}
+		if rule.Retry != nil {
+			issues = append(issues, fmt.Sprintf("spec.rules[%d].retry is not supported", i))
+		}
+		if rule.SessionPersistence != nil {
+			issues = append(issues, fmt.Sprintf("spec.rules[%d].sessionPersistence is not supported", i))
+		}
+		if len(rule.BackendRefs) > 1 {
+			issues = append(issues, fmt.Sprintf("spec.rules[%d].backendRefs: traffic splitting (multiple backends) is not supported; use a Kubernetes Service instead", i))
+		}
+		for j, ref := range rule.BackendRefs {
+			if len(ref.Filters) > 0 {
+				issues = append(issues, fmt.Sprintf("spec.rules[%d].backendRefs[%d].filters is not supported", i, j))
+			}
+			group := ""
+			if ref.Group != nil {
+				group = string(*ref.Group)
+			}
+			kind := apiv1.KindService
+			if ref.Kind != nil {
+				kind = string(*ref.Kind)
+			}
+			if group != "" || kind != apiv1.KindService {
+				issues = append(issues, fmt.Sprintf("spec.rules[%d].backendRefs[%d]: only core Service backends are supported, got group=%q kind=%q", i, j, group, kind))
+			}
+		}
+		for j, m := range rule.Matches {
+			if len(m.Headers) > 0 {
+				issues = append(issues, fmt.Sprintf("spec.rules[%d].matches[%d].headers is not supported", i, j))
+			}
+			if len(m.QueryParams) > 0 {
+				issues = append(issues, fmt.Sprintf("spec.rules[%d].matches[%d].queryParams is not supported", i, j))
+			}
+			if m.Method != nil {
+				issues = append(issues, fmt.Sprintf("spec.rules[%d].matches[%d].method is not supported", i, j))
+			}
+			if m.Path != nil && m.Path.Type != nil && *m.Path.Type != gatewayv1.PathMatchPathPrefix {
+				issues = append(issues, fmt.Sprintf("spec.rules[%d].matches[%d].path.type %q is not supported; only PathPrefix is supported", i, j, *m.Path.Type))
+			}
+		}
+	}
+	return issues
+}
+
+// updateInvalidRouteStatus sets Accepted=False/UnsupportedValue on the
+// status.parents entry for this Gateway on an HTTPRoute that uses unsupported
+// features. Any stale conditions from a previous reconciliation are removed.
+func (r *GatewayReconciler) updateInvalidRouteStatus(ctx context.Context, gw *gatewayv1.Gateway, route *gatewayv1.HTTPRoute, issues []string) error {
+	acceptedType := string(gatewayv1.RouteConditionAccepted)
+	acceptedStatus := metav1.ConditionFalse
+	acceptedReason := string(gatewayv1.RouteReasonUnsupportedValue)
+	acceptedMsg := "Unsupported features:\n- " + strings.Join(issues, "\n- ")
+
+	routeKey := client.ObjectKeyFromObject(route)
+	patched := false
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := r.Get(ctx, routeKey, route); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+
+		existing := findRouteParentStatus(route.Status.Parents, gw)
+
+		if existing != nil &&
+			len(existing.Conditions) == 1 &&
+			!conditions.Changed(existing.Conditions, acceptedType, acceptedStatus,
+				acceptedReason, acceptedMsg, route.Generation) {
+			return nil
+		}
+
+		patch := client.MergeFromWithOptions(route.DeepCopy(), client.MergeFromWithOptimisticLock{})
+		now := metav1.Now()
+
+		if existing == nil {
+			route.Status.Parents = append(route.Status.Parents, gatewayv1.RouteParentStatus{
+				ParentRef: gatewayv1.ParentReference{
+					Group:     new(gatewayv1.Group(gatewayv1.GroupName)),
+					Kind:      new(gatewayv1.Kind(apiv1.KindGateway)),
+					Namespace: new(gatewayv1.Namespace(gw.Namespace)),
+					Name:      gatewayv1.ObjectName(gw.Name),
+				},
+				ControllerName: apiv1.ControllerName,
+			})
+			existing = &route.Status.Parents[len(route.Status.Parents)-1]
+		}
+
+		existing.Conditions = conditions.Set(existing.Conditions, []metav1.Condition{
+			{
+				Type:               acceptedType,
+				Status:             acceptedStatus,
+				ObservedGeneration: route.Generation,
+				LastTransitionTime: now,
+				Reason:             acceptedReason,
+				Message:            acceptedMsg,
+			},
+		})
+
+		patched = true
+		return r.Status().Patch(ctx, route, patch)
+	})
+	if patched {
+		log.FromContext(ctx).V(1).Info("Patched invalid HTTPRoute status", "httproute", routeKey)
 		r.Eventf(route, gw, corev1.EventTypeWarning, acceptedReason,
 			apiv1.EventActionReconcile, acceptedMsg)
 	}

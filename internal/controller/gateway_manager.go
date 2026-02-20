@@ -9,6 +9,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -206,19 +207,29 @@ func (r *GatewayReconciler) mapReferenceGrantToGateway(ctx context.Context, obj 
 }
 
 // mapNamespaceToGateway maps a Namespace event to reconcile requests for
-// Gateways that use allowedRoutes with from=Selector on any listener.
-// Namespace label changes may affect which routes are allowed to attach.
-func (r *GatewayReconciler) mapNamespaceToGateway(ctx context.Context, _ client.Object) []reconcile.Request {
+// Gateways that use allowedRoutes with from=Selector on any listener whose
+// selector matches the Namespace's labels.
+func (r *GatewayReconciler) mapNamespaceToGateway(ctx context.Context, obj client.Object) []reconcile.Request {
 	var gateways gatewayv1.GatewayList
-	if err := r.List(ctx, &gateways); err != nil {
+	if err := r.List(ctx, &gateways, client.MatchingFields{
+		indexGatewayNamespaceSelector: "true",
+	}); err != nil {
 		log.FromContext(ctx).Error(err, "failed to list Gateways for Namespace")
 		return nil
 	}
+	nsLabels := labels.Set(obj.GetLabels())
 	var requests []reconcile.Request
 	for _, gw := range gateways.Items {
 		for _, l := range gw.Spec.Listeners {
-			if l.AllowedRoutes != nil && l.AllowedRoutes.Namespaces != nil &&
-				l.AllowedRoutes.Namespaces.From != nil && *l.AllowedRoutes.Namespaces.From == gatewayv1.NamespacesFromSelector {
+			if l.AllowedRoutes == nil || l.AllowedRoutes.Namespaces == nil ||
+				l.AllowedRoutes.Namespaces.From == nil || *l.AllowedRoutes.Namespaces.From != gatewayv1.NamespacesFromSelector {
+				continue
+			}
+			sel, err := metav1.LabelSelectorAsSelector(l.AllowedRoutes.Namespaces.Selector)
+			if err != nil {
+				continue
+			}
+			if sel.Matches(nsLabels) {
 				requests = append(requests, reconcile.Request{
 					NamespacedName: client.ObjectKeyFromObject(&gw),
 				})
