@@ -46,8 +46,9 @@ test: tidy fmt vet envtest ## Run all unit tests.
 	go test $(shell go list ./... | grep -v -e '^github.com/matheuscscp/cloudflare-gateway-controller$$' -e '/cmd/') $(GO_TEST_ARGS) -coverprofile cover.out
 
 .PHONY: lint
-lint: golangci-lint ## Run golangci linters.
+lint: golangci-lint ## Run golangci and helm linters.
 	$(GOLANGCI_LINT) run
+	helm lint charts/cloudflare-gateway-controller
 
 .PHONY: lint-fix
 lint-fix: golangci-lint ## Run golangci linters and perform fixes.
