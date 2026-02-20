@@ -92,6 +92,12 @@ func TestGatewayReconciler_AcceptedAndProgrammed(t *testing.T) {
 		listenerAccepted := conditions.Find(ls.Conditions, string(gatewayv1.ListenerConditionAccepted))
 		g.Expect(listenerAccepted).NotTo(BeNil())
 		g.Expect(listenerAccepted.Status).To(Equal(metav1.ConditionTrue))
+
+		// Addresses
+		g.Expect(result.Status.Addresses).To(HaveLen(1))
+		g.Expect(result.Status.Addresses[0].Value).To(Equal(cloudflare.TunnelTarget("test-tunnel-id")))
+		g.Expect(result.Status.Addresses[0].Type).NotTo(BeNil())
+		g.Expect(*result.Status.Addresses[0].Type).To(Equal(gatewayv1.HostnameAddressType))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
 	// Verify tunnel token Secret created
