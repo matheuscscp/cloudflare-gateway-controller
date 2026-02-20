@@ -337,7 +337,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		readiness.readyStatus, readiness.readyReason, readiness.readyMsg)...)
 
 	// Patch Gateway status and emit events
-	return r.patchGatewayStatus(ctx, gw, desiredListeners, changes, errs, readiness)
+	return r.patchGatewayStatus(ctx, gw, tunnelID, desiredListeners, changes, errs, readiness)
 }
 
 // ensureTunnel looks up the tunnel by its deterministic name (gateway-{UID})
@@ -482,7 +482,7 @@ func (r *GatewayReconciler) checkDeploymentReadiness(ctx context.Context, gw *ga
 // patchGatewayStatus builds the desired Gateway conditions from the readiness
 // state, checks whether a status patch is needed (conditions, listeners, or
 // resource changes), patches the status, and emits summary events/logs.
-func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv1.Gateway, desiredListeners []gatewayv1.ListenerStatus, changes, errs []string, readiness gatewayReadiness) (ctrl.Result, error) {
+func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv1.Gateway, tunnelID string, desiredListeners []gatewayv1.ListenerStatus, changes, errs []string, readiness gatewayReadiness) (ctrl.Result, error) {
 	l := log.FromContext(ctx)
 	now := metav1.Now()
 
@@ -513,14 +513,20 @@ func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv
 		},
 	}
 
+	desiredAddresses := []gatewayv1.GatewayStatusAddress{{
+		Type:  new(gatewayv1.HostnameAddressType),
+		Value: cloudflare.TunnelTarget(tunnelID),
+	}}
+
 	// Check if Ready is transitioning to a terminal failure state (must be
 	// computed before conditions.Set mutates gw.Status.Conditions).
 	readyTerminal := readiness.readyStatus == metav1.ConditionFalse &&
 		conditions.Changed(gw.Status.Conditions, apiv1.ConditionReady, readiness.readyStatus, readiness.readyReason, readiness.readyMsg, gw.Generation)
 
-	// Skip the status patch if no conditions or listener statuses changed.
-	// Always patch when Progressing so the resource version bumps, signalling
-	// to users that the controller is alive and making progress.
+	// Skip the status patch if no conditions, listener statuses, or
+	// addresses changed. Always patch when Progressing so the resource
+	// version bumps, signalling to users that the controller is alive
+	// and making progress.
 	requeueAfter := apiv1.ReconcileInterval(gw.Annotations)
 	changed := readiness.readyReason == apiv1.ReasonProgressing
 	if !changed {
@@ -534,6 +540,9 @@ func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv
 	if !changed && listenersChanged(gw.Status.Listeners, desiredListeners) {
 		changed = true
 	}
+	if !changed && addressesChanged(gw.Status.Addresses, desiredAddresses) {
+		changed = true
+	}
 	if !changed && len(changes) == 0 && len(errs) == 0 {
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
@@ -542,6 +551,7 @@ func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv
 		patch := client.MergeFrom(gw.DeepCopy())
 		gw.Status.Conditions = conditions.Set(gw.Status.Conditions, desiredConds)
 		gw.Status.Listeners = desiredListeners
+		gw.Status.Addresses = desiredAddresses
 		if err := r.Status().Patch(ctx, gw, patch); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -1324,6 +1334,30 @@ func listenersChanged(existing, desired []gatewayv1.ListenerStatus) bool {
 			if conditions.Changed(e.Conditions, dc.Type, dc.Status, dc.Reason, dc.Message, dc.ObservedGeneration) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// addressesChanged reports whether the desired addresses differ from the existing ones.
+func addressesChanged(existing, desired []gatewayv1.GatewayStatusAddress) bool {
+	if len(existing) != len(desired) {
+		return true
+	}
+	for i := range desired {
+		if existing[i].Value != desired[i].Value {
+			return true
+		}
+		eType := gatewayv1.IPAddressType
+		if existing[i].Type != nil {
+			eType = *existing[i].Type
+		}
+		dType := gatewayv1.IPAddressType
+		if desired[i].Type != nil {
+			dType = *desired[i].Type
+		}
+		if eType != dType {
+			return true
 		}
 	}
 	return false

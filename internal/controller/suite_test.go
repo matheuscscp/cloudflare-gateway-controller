@@ -445,6 +445,10 @@ func waitForGatewayProgrammed(g Gomega, gw *gatewayv1.Gateway) {
 		programmed := conditions.Find(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
 		g.Expect(programmed).NotTo(BeNil())
 		g.Expect(programmed.Status).To(Equal(metav1.ConditionTrue))
+		g.Expect(result.Status.Addresses).To(HaveLen(1))
+		g.Expect(result.Status.Addresses[0].Value).To(Equal(cloudflare.TunnelTarget("test-tunnel-id")))
+		g.Expect(result.Status.Addresses[0].Type).NotTo(BeNil())
+		g.Expect(*result.Status.Addresses[0].Type).To(Equal(gatewayv1.HostnameAddressType))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
