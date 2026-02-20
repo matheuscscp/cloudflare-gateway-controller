@@ -34,6 +34,16 @@ TEST_HOSTNAME="e2e-${TS: -6}.${TEST_ZONE_NAME}"
 IMAGE_REPO="${IMAGE%:*}"
 IMAGE_TAG="${IMAGE##*:}"
 
+# Timing helpers.
+PHASE_START=$(date +%s)
+phase_delta() {
+    local now elapsed
+    now=$(date +%s)
+    elapsed=$((now - PHASE_START))
+    echo "(${elapsed}s)"
+    PHASE_START=$now
+}
+
 # Logging helpers.
 log()  { echo "==> $*"; }
 pass() { echo "PASS: $*"; }
@@ -103,7 +113,7 @@ helm install "$RELEASE_NAME" "$CHART_DIR" \
 log "Waiting for controller deployment to be ready..."
 kubectl rollout status deployment/"$RELEASE_NAME" -n "$CONTROLLER_NS" --timeout=120s
 
-pass "Controller is running"
+pass "Phase 1: Controller is running $(phase_delta)"
 
 # ─── Phase 2: Test resources ───────────────────────────────────────────────────
 
@@ -128,7 +138,7 @@ EOF
 log "Waiting for GatewayClass to be Ready..."
 retry 60 3 kubectl wait gatewayclass/cloudflare --for=condition=Ready --timeout=5s \
     || fail "GatewayClass did not become Ready"
-pass "GatewayClass is Ready"
+pass "Phase 2: GatewayClass is Ready $(phase_delta)"
 
 # ─── Phase 3: Gateway lifecycle ────────────────────────────────────────────────
 
@@ -180,7 +190,7 @@ TUNNEL_NAME="gateway-${GW_UID}"
 log "Verifying tunnel '$TUNNEL_NAME' exists..."
 TUNNEL_ID=$(cfgwctl tunnel get-id --name "$TUNNEL_NAME" | jq -r '.tunnelId')
 [ -n "$TUNNEL_ID" ] && [ "$TUNNEL_ID" != "null" ] || fail "tunnel not found"
-pass "Tunnel exists: $TUNNEL_ID"
+pass "Phase 3: Gateway lifecycle $(phase_delta)"
 
 # ─── Phase 4: HTTPRoute lifecycle ──────────────────────────────────────────────
 
@@ -234,7 +244,7 @@ check_dns_cname() {
         | jq -e ".hostnames[] | select(. == \"$TEST_HOSTNAME\")" >/dev/null
 }
 retry 60 3 check_dns_cname || fail "DNS CNAME not found"
-pass "DNS CNAME exists"
+pass "Phase 4: HTTPRoute lifecycle $(phase_delta)"
 
 # ─── Phase 5: HTTPRoute deletion ───────────────────────────────────────────────
 
@@ -255,7 +265,7 @@ check_dns_cname_removed() {
         | jq -e ".hostnames[] | select(. == \"$TEST_HOSTNAME\")" >/dev/null 2>&1
 }
 retry 60 3 check_dns_cname_removed || fail "DNS CNAME still exists"
-pass "DNS CNAME removed"
+pass "Phase 5: HTTPRoute deletion $(phase_delta)"
 
 # ─── Phase 6: Gateway deletion ─────────────────────────────────────────────────
 
@@ -274,7 +284,7 @@ check_tunnel_deleted() {
     [ -z "$id" ] || [ "$id" = "null" ]
 }
 retry 60 3 check_tunnel_deleted || fail "tunnel still exists"
-pass "Tunnel deleted"
+pass "Phase 6: Gateway deletion $(phase_delta)"
 
 # ─── Phase 7: Multiple HTTPRoutes with multiple hostnames ─────────────────────
 
@@ -436,7 +446,7 @@ check_mr_tunnel_deleted() {
     [ -z "$id" ] || [ "$id" = "null" ]
 }
 retry 60 3 check_mr_tunnel_deleted || fail "multi-route tunnel still exists"
-pass "Phase 7: Multiple HTTPRoutes passed"
+pass "Phase 7: Multiple HTTPRoutes $(phase_delta)"
 
 # ─── Phase 8: HTTPRoute with path matching ────────────────────────────────────
 
@@ -533,7 +543,7 @@ kubectl delete httproute path-route -n "$TEST_NS"
 kubectl delete gateway path-gw -n "$TEST_NS"
 retry 60 3 bash -c "! kubectl get gateway path-gw -n '$TEST_NS' 2>/dev/null" \
     || fail "path-gw still exists"
-pass "Phase 8: Path matching passed"
+pass "Phase 8: Path matching $(phase_delta)"
 
 # ─── Phase 9: Gateway without DNS config (no DNS) ────────────────────────────
 
@@ -624,7 +634,7 @@ kubectl delete httproute no-dns-route -n "$TEST_NS"
 kubectl delete gateway no-dns-gw -n "$TEST_NS"
 retry 60 3 bash -c "! kubectl get gateway no-dns-gw -n '$TEST_NS' 2>/dev/null" \
     || fail "no-dns-gw still exists"
-pass "Phase 9: No DNS passed"
+pass "Phase 9: No DNS $(phase_delta)"
 
 # ─── Phase 10: Deployment patches via CloudflareGatewayParameters ─────────────
 
@@ -681,7 +691,7 @@ log "Cleaning up deployment patches test..."
 kubectl delete gateway patched-gw -n "$TEST_NS"
 retry 60 3 bash -c "! kubectl get gateway patched-gw -n '$TEST_NS' 2>/dev/null" \
     || fail "patched-gw still exists"
-pass "Phase 10: Deployment patches passed"
+pass "Phase 10: Deployment patches $(phase_delta)"
 
 # ─── Phase 11: Deletion while reconciliation is disabled ──────────────────────
 
@@ -803,7 +813,7 @@ kubectl delete secret cloudflared-token-disabled-gw -n "$TEST_NS" --ignore-not-f
 cfgwctl dns delete-cname --zone-id "$DIS_ZONE_ID" --hostname "$DISABLED_HOSTNAME"
 cfgwctl tunnel cleanup-connections --tunnel-id "$DIS_TUNNEL_ID"
 cfgwctl tunnel delete --tunnel-id "$DIS_TUNNEL_ID"
-pass "Phase 11: Deletion while disabled passed"
+pass "Phase 11: Deletion while disabled $(phase_delta)"
 
 # ─── Phase 12: DNS config removal cleans up DNS ──────────────────────────────
 
@@ -926,9 +936,9 @@ kubectl delete httproute zone-rm-route -n "$TEST_NS"
 kubectl delete gateway zone-rm-gw -n "$TEST_NS"
 retry 60 3 bash -c "! kubectl get gateway zone-rm-gw -n '$TEST_NS' 2>/dev/null" \
     || fail "zone-rm-gw still exists"
-pass "Phase 12: DNS config removal passed"
+pass "Phase 12: DNS config removal $(phase_delta)"
 
-# ─── Phase 13: Multiple listeners ────────────────────────────────────────────
+# ─── Phase 13: Multiple listeners rejected ──────────────────────────────────
 
 log "Creating Gateway 'multi-listen-gw' with two listeners..."
 kubectl apply -f - <<EOF
@@ -949,37 +959,33 @@ spec:
     protocol: HTTP
     port: 80
   - name: https
-    protocol: HTTPS
-    port: 443
+    protocol: HTTP
+    port: 8080
 EOF
 
-retry 60 2 kubectl wait gateway/multi-listen-gw -n "$TEST_NS" \
-    --for=condition=Programmed --timeout=5s \
-    || fail "multi-listen-gw did not become Programmed"
-pass "multi-listen-gw is Programmed"
-
-log "Verifying both listeners are Accepted..."
-LISTENER_COUNT=$(kubectl get gateway multi-listen-gw -n "$TEST_NS" \
-    -o jsonpath='{.status.listeners}' | jq 'length')
-[ "$LISTENER_COUNT" = "2" ] || fail "expected 2 listener statuses, got $LISTENER_COUNT"
-
-HTTP_ACCEPTED=$(kubectl get gateway multi-listen-gw -n "$TEST_NS" \
-    -o jsonpath='{.status.listeners[?(@.name=="http")].conditions[?(@.type=="Accepted")].status}')
-HTTPS_ACCEPTED=$(kubectl get gateway multi-listen-gw -n "$TEST_NS" \
-    -o jsonpath='{.status.listeners[?(@.name=="https")].conditions[?(@.type=="Accepted")].status}')
-[ "$HTTP_ACCEPTED" = "True" ] || fail "http listener not Accepted: $HTTP_ACCEPTED"
-[ "$HTTPS_ACCEPTED" = "True" ] || fail "https listener not Accepted: $HTTPS_ACCEPTED"
-pass "Both listeners Accepted"
+log "Verifying Gateway is rejected with Accepted=False..."
+check_multi_listen_rejected() {
+    local accepted_status accepted_reason
+    accepted_status=$(kubectl get gateway multi-listen-gw -n "$TEST_NS" \
+        -o jsonpath='{.status.conditions[?(@.type=="Accepted")].status}')
+    accepted_reason=$(kubectl get gateway multi-listen-gw -n "$TEST_NS" \
+        -o jsonpath='{.status.conditions[?(@.type=="Accepted")].reason}')
+    [ "$accepted_status" = "False" ] && [ "$accepted_reason" = "ListenersNotValid" ]
+}
+retry 60 3 check_multi_listen_rejected \
+    || fail "multi-listen-gw should be rejected with Accepted=False/ListenersNotValid"
+pass "Gateway with multiple listeners correctly rejected"
 
 log "Cleaning up multiple listeners test..."
 kubectl delete gateway multi-listen-gw -n "$TEST_NS"
 retry 60 3 bash -c "! kubectl get gateway multi-listen-gw -n '$TEST_NS' 2>/dev/null" \
     || fail "multi-listen-gw still exists"
-pass "Phase 13: Multiple listeners passed"
+pass "Phase 13: Multiple listeners rejected $(phase_delta)"
 
 # ─── Done ──────────────────────────────────────────────────────────────────────
 
+TOTAL_ELAPSED=$(( $(date +%s) - TS ))
 echo ""
 echo "========================================"
-echo "  All e2e tests passed!"
+echo "  All e2e tests passed! (${TOTAL_ELAPSED}s total)"
 echo "========================================"
