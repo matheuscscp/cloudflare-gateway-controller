@@ -1,0 +1,9 @@
+# Copyright 2026 Matheus Pimenta.
+# SPDX-License-Identifier: AGPL-3.0
+
+# Configuration file to declaratively configure labels.
+# Ref: https://github.com/EndBug/label-sync#Config-files
+
+- name: e2e
+  description: Triggers end-to-end tests on pull requests.
+  color: '#ffd700'
