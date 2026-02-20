@@ -261,7 +261,9 @@ func TestGatewayReconciler_Deletion(t *testing.T) {
 	g.Eventually(func(g Gomega) {
 		e := findEvent(g, ns.Name, gw.Name, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded, apiv1.EventActionFinalize, "")
 		g.Expect(e).NotTo(BeNil())
-		g.Expect(e.Note).To(Equal("Gateway finalized"))
+		g.Expect(e.Note).To(HavePrefix("Gateway finalized"))
+		g.Expect(e.Note).To(ContainSubstring("deleted cloudflared Deployment"))
+		g.Expect(e.Note).To(ContainSubstring("deleted tunnel"))
 	}).WithTimeout(5 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
 }
 
@@ -2070,7 +2072,9 @@ func TestGatewayReconciler_DeletionWithHTTPRoutes(t *testing.T) {
 	g.Eventually(func(g Gomega) {
 		e := findEvent(g, ns.Name, gw.Name, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded, apiv1.EventActionFinalize, "")
 		g.Expect(e).NotTo(BeNil())
-		g.Expect(e.Note).To(Equal("Gateway finalized"))
+		g.Expect(e.Note).To(HavePrefix("Gateway finalized"))
+		g.Expect(e.Note).To(ContainSubstring("deleted cloudflared Deployment"))
+		g.Expect(e.Note).To(ContainSubstring("deleted tunnel"))
 	}).WithTimeout(5 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
 
 	// Verify "Removed status entry" event on the HTTPRoute.

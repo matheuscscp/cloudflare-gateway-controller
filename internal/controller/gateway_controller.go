@@ -611,8 +611,10 @@ func (r *GatewayReconciler) reconcileError(ctx context.Context, gw *gatewayv1.Ga
 
 // finalizeError handles finalization errors by best-effort patching Ready=Unknown
 // on the Gateway status and emitting a Warning event, mirroring reconcileError
-// but for the finalization path.
-func (r *GatewayReconciler) finalizeError(ctx context.Context, gw *gatewayv1.Gateway, finalizeErr error) (ctrl.Result, error) {
+// but for the finalization path. Any changes completed before the error are
+// included in the event so they are not lost.
+func (r *GatewayReconciler) finalizeError(ctx context.Context, gw *gatewayv1.Gateway, changes []string, finalizeErr error) (ctrl.Result, error) {
+	l := log.FromContext(ctx)
 	msg := finalizeErr.Error()
 	now := metav1.Now()
 
@@ -626,14 +628,17 @@ func (r *GatewayReconciler) finalizeError(ctx context.Context, gw *gatewayv1.Gat
 		Message:            msg,
 	})
 	if err := r.Status().Patch(ctx, gw, patch); err != nil {
-		log.FromContext(ctx).Error(err, "Failed to patch Gateway status with error conditions",
+		l.Error(err, "Failed to patch Gateway status with error conditions",
 			"originalError", msg)
 	} else {
-		log.FromContext(ctx).V(1).Info("Patched Gateway status with error conditions")
+		l.V(1).Info("Patched Gateway status with error conditions")
 	}
 
+	summary := []string{fmt.Sprintf("Finalization failed: %v", finalizeErr)}
+	summary = append(summary, changes...)
+	l.Error(finalizeErr, "Finalization failed", "changes", changes)
 	r.Eventf(gw, nil, corev1.EventTypeWarning, apiv1.ReasonProgressingWithRetry,
-		apiv1.EventActionFinalize, "Finalization failed: %v", finalizeErr)
+		apiv1.EventActionFinalize, "%s", strings.Join(summary, "\n"))
 	return ctrl.Result{}, finalizeErr
 }
 
@@ -644,31 +649,34 @@ func (r *GatewayReconciler) finalizeError(ctx context.Context, gw *gatewayv1.Gat
 func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway, gc *gatewayv1.GatewayClass) (ctrl.Result, error) {
 	l := log.FromContext(ctx)
 
+	var changes []string
 	if gw.Annotations[apiv1.AnnotationReconcile] == apiv1.ValueDisabled {
 		if err := r.finalizeDisabled(ctx, gw); err != nil {
-			return r.finalizeError(ctx, gw, err)
+			return r.finalizeError(ctx, gw, changes, err)
 		}
 	} else {
-		if err := r.finalizeEnabled(ctx, gw, gc); err != nil {
-			return r.finalizeError(ctx, gw, err)
+		var err error
+		changes, err = r.finalizeEnabled(ctx, gw, gc)
+		if err != nil {
+			return r.finalizeError(ctx, gw, changes, err)
 		}
 	}
 
 	// Remove this Gateway's entry from status.parents on all referencing HTTPRoutes.
 	if err := r.removeRouteStatuses(ctx, gw); err != nil {
-		return r.finalizeError(ctx, gw, fmt.Errorf("removing HTTPRoute status entries: %w", err))
+		return r.finalizeError(ctx, gw, changes, fmt.Errorf("removing HTTPRoute status entries: %w", err))
 	}
 	l.V(1).Info("Removed HTTPRoute status entries")
 
 	// Remove this Gateway's finalizer from all GatewayClasses.
 	if err := r.removeGatewayClassFinalizer(ctx, gw); err != nil {
-		return r.finalizeError(ctx, gw, fmt.Errorf("removing GatewayClass finalizer: %w", err))
+		return r.finalizeError(ctx, gw, changes, fmt.Errorf("removing GatewayClass finalizer: %w", err))
 	}
 	l.V(1).Info("Removed GatewayClass finalizer")
 
-	l.Info("Gateway finalized")
+	l.Info("Gateway finalized", "changes", changes)
 	r.Eventf(gw, nil, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded,
-		apiv1.EventActionFinalize, "Gateway finalized")
+		apiv1.EventActionFinalize, "Gateway finalized\n%s", strings.Join(changes, "\n"))
 
 	// Remove finalizer from Gateway if needed. Ignore NotFound because a
 	// previous finalization may have already removed the finalizer and
@@ -678,7 +686,7 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 		gwPatch := client.MergeFrom(gw.DeepCopy())
 		controllerutil.RemoveFinalizer(gw, apiv1.Finalizer)
 		if err := r.Patch(ctx, gw, gwPatch); client.IgnoreNotFound(err) != nil {
-			return r.finalizeError(ctx, gw, fmt.Errorf("removing finalizer: %w", err))
+			return r.finalizeError(ctx, gw, changes, fmt.Errorf("removing finalizer: %w", err))
 		}
 		l.V(1).Info("Removed finalizer from Gateway")
 	}
@@ -721,7 +729,7 @@ func (r *GatewayReconciler) finalizeDisabled(ctx context.Context, gw *gatewayv1.
 // finalizeEnabled deletes the cloudflared Deployment (waiting for it to be
 // fully removed), then reads credentials, cleans up DNS CNAME records across
 // all zones, and deletes the Cloudflare tunnel.
-func (r *GatewayReconciler) finalizeEnabled(ctx context.Context, gw *gatewayv1.Gateway, gc *gatewayv1.GatewayClass) error {
+func (r *GatewayReconciler) finalizeEnabled(ctx context.Context, gw *gatewayv1.Gateway, gc *gatewayv1.GatewayClass) ([]string, error) {
 	l := log.FromContext(ctx)
 
 	// Delete the cloudflared Deployment and wait for it to be gone
@@ -733,7 +741,7 @@ func (r *GatewayReconciler) finalizeEnabled(ctx context.Context, gw *gatewayv1.G
 		},
 	}
 	if err := r.Delete(ctx, deploy); client.IgnoreNotFound(err) != nil {
-		return fmt.Errorf("deleting cloudflared deployment: %w", err)
+		return nil, fmt.Errorf("deleting cloudflared deployment: %w", err)
 	}
 	l.V(1).Info("Deleted cloudflared Deployment")
 	deployKey := client.ObjectKeyFromObject(deploy)
@@ -741,11 +749,11 @@ func (r *GatewayReconciler) finalizeEnabled(ctx context.Context, gw *gatewayv1.G
 		if err := r.Get(ctx, deployKey, deploy); apierrors.IsNotFound(err) {
 			break
 		} else if err != nil {
-			return fmt.Errorf("waiting for cloudflared deployment deletion: %w", err)
+			return nil, fmt.Errorf("waiting for cloudflared deployment deletion: %w", err)
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("waiting for cloudflared deployment deletion: %w", ctx.Err())
+			return nil, fmt.Errorf("waiting for cloudflared deployment deletion: %w", ctx.Err())
 		case <-time.After(time.Second):
 		}
 	}
@@ -753,37 +761,44 @@ func (r *GatewayReconciler) finalizeEnabled(ctx context.Context, gw *gatewayv1.G
 
 	params, err := readParameters(ctx, r.Client, gw)
 	if err != nil {
-		return fmt.Errorf("reading parameters for tunnel deletion: %w", err)
+		return nil, fmt.Errorf("reading parameters for tunnel deletion: %w", err)
 	}
 	cfg, err := readCredentials(ctx, r.Client, gc, gw, params)
 	if err != nil {
-		return fmt.Errorf("reading credentials for tunnel deletion: %w", err)
+		return nil, fmt.Errorf("reading credentials for tunnel deletion: %w", err)
 	}
 	tc, err := r.NewCloudflareClient(cfg)
 	if err != nil {
-		return fmt.Errorf("creating cloudflare client for deletion: %w", err)
+		return nil, fmt.Errorf("creating cloudflare client for deletion: %w", err)
 	}
 	tunnelID, err := tc.GetTunnelIDByName(ctx, apiv1.TunnelName(gw))
 	if err != nil {
-		return fmt.Errorf("looking up tunnel for deletion: %w", err)
+		return nil, fmt.Errorf("looking up tunnel for deletion: %w", err)
 	}
-	if tunnelID != "" {
-		// Delete DNS CNAME records across all zones.
-		if _, err := r.cleanupAllDNS(ctx, tc, tunnelID); err != nil {
-			return fmt.Errorf("cleaning up DNS during finalization: %w", err)
-		}
-		l.V(1).Info("Cleaned up DNS CNAME records")
-		if err := tc.CleanupTunnelConnections(ctx, tunnelID); err != nil {
-			return fmt.Errorf("cleaning up tunnel connections: %w", err)
-		}
-		l.V(1).Info("Cleaned up tunnel connections")
-		if err := tc.DeleteTunnel(ctx, tunnelID); err != nil {
-			return fmt.Errorf("deleting tunnel: %w", err)
-		}
-		l.V(1).Info("Deleted tunnel", "tunnelID", tunnelID)
+	changes := []string{"deleted cloudflared Deployment"}
+	if tunnelID == "" {
+		return changes, nil
 	}
 
-	return nil
+	// Delete DNS CNAME records across all zones.
+	dnsChanges, err := r.cleanupAllDNS(ctx, tc, tunnelID)
+	changes = append(changes, dnsChanges...)
+	if err != nil {
+		return changes, fmt.Errorf("cleaning up DNS during finalization: %w", err)
+	}
+	l.V(1).Info("Cleaned up DNS CNAME records")
+	if err := tc.CleanupTunnelConnections(ctx, tunnelID); err != nil {
+		return changes, fmt.Errorf("cleaning up tunnel connections: %w", err)
+	}
+	changes = append(changes, "cleaned up tunnel connections")
+	l.V(1).Info("Cleaned up tunnel connections")
+	if err := tc.DeleteTunnel(ctx, tunnelID); err != nil {
+		return changes, fmt.Errorf("deleting tunnel: %w", err)
+	}
+	changes = append(changes, "deleted tunnel "+tunnelID)
+	l.V(1).Info("Deleted tunnel", "tunnelID", tunnelID)
+
+	return changes, nil
 }
 
 // removeOwnerReferences removes the Gateway's owner references from managed
