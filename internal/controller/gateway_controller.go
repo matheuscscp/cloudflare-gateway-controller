@@ -634,7 +634,8 @@ func (r *GatewayReconciler) finalizeError(ctx context.Context, gw *gatewayv1.Gat
 		l.V(1).Info("Patched Gateway status with error conditions")
 	}
 
-	summary := []string{fmt.Sprintf("Finalization failed: %v", finalizeErr)}
+	summary := make([]string, 0, 1+len(changes))
+	summary = append(summary, fmt.Sprintf("Finalization failed: %v", finalizeErr))
 	summary = append(summary, changes...)
 	l.Error(finalizeErr, "Finalization failed", "changes", changes)
 	r.Eventf(gw, nil, corev1.EventTypeWarning, apiv1.ReasonProgressingWithRetry,
@@ -1059,6 +1060,9 @@ func readParameters(ctx context.Context, r client.Reader, gw *gatewayv1.Gateway)
 		Namespace: gw.Namespace,
 		Name:      ref.Name,
 	}, &params); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, reconcile.TerminalError(fmt.Errorf("CloudflareGatewayParameters %s/%s not found", gw.Namespace, ref.Name))
+		}
 		return nil, fmt.Errorf("getting CloudflareGatewayParameters %s/%s: %w", gw.Namespace, ref.Name, err)
 	}
 	return &params, nil
@@ -1091,7 +1095,7 @@ func readCredentials(ctx context.Context, r client.Reader, gc *gatewayv1.Gateway
 			// CGP without secretRef — fall through to GatewayClass.
 			return readCredentialsFromGatewayClass(ctx, r, gc, gw)
 		} else {
-			return cloudflare.ClientConfig{}, fmt.Errorf("infrastructure parametersRef must reference a core/v1 Secret or a CloudflareGatewayParameters")
+			return cloudflare.ClientConfig{}, reconcile.TerminalError(fmt.Errorf("infrastructure parametersRef must reference a core/v1 Secret or a CloudflareGatewayParameters"))
 		}
 	default:
 		// 3. GatewayClass parametersRef (Secret).
@@ -1123,14 +1127,14 @@ func readCredentials(ctx context.Context, r client.Reader, gc *gatewayv1.Gateway
 // are validated against ReferenceGrants.
 func readCredentialsFromGatewayClass(ctx context.Context, r client.Reader, gc *gatewayv1.GatewayClass, gw *gatewayv1.Gateway) (cloudflare.ClientConfig, error) {
 	if gc.Spec.ParametersRef == nil {
-		return cloudflare.ClientConfig{}, fmt.Errorf("gatewayclass %q has no parametersRef", gc.Name)
+		return cloudflare.ClientConfig{}, reconcile.TerminalError(fmt.Errorf("gatewayclass %q has no parametersRef", gc.Name))
 	}
 	ref := gc.Spec.ParametersRef
 	if string(ref.Kind) != apiv1.KindSecret || (ref.Group != "" && ref.Group != apiv1.GroupCore && ref.Group != gatewayv1.Group("")) {
-		return cloudflare.ClientConfig{}, fmt.Errorf("parametersRef must reference a core/v1 Secret")
+		return cloudflare.ClientConfig{}, reconcile.TerminalError(fmt.Errorf("parametersRef must reference a core/v1 Secret"))
 	}
 	if ref.Namespace == nil {
-		return cloudflare.ClientConfig{}, fmt.Errorf("parametersRef must specify a namespace")
+		return cloudflare.ClientConfig{}, reconcile.TerminalError(fmt.Errorf("parametersRef must specify a namespace"))
 	}
 	secretNamespace := string(*ref.Namespace)
 	secretName := ref.Name
@@ -1138,7 +1142,7 @@ func readCredentialsFromGatewayClass(ctx context.Context, r client.Reader, gc *g
 	if granted, err := secretReferenceGranted(ctx, r, gw.Namespace, secretNamespace, secretName); err != nil {
 		return cloudflare.ClientConfig{}, fmt.Errorf("checking ReferenceGrant: %w", err)
 	} else if !granted {
-		return cloudflare.ClientConfig{}, fmt.Errorf("cross-namespace reference to Secret %s/%s not allowed by any ReferenceGrant", secretNamespace, secretName)
+		return cloudflare.ClientConfig{}, reconcile.TerminalError(fmt.Errorf("cross-namespace reference to Secret %s/%s not allowed by any ReferenceGrant", secretNamespace, secretName))
 	}
 
 	var secret corev1.Secret
