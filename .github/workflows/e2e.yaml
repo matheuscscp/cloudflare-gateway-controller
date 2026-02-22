@@ -5,17 +5,90 @@ name: e2e
 
 on:
   pull_request:
-    types: [labeled]
+    types: [labeled, synchronize]
   schedule:
     - cron: "0 4 * * *" # nightly at 4 AM UTC
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/matheuscscp/cloudflare-gateway-controller/test
+
 jobs:
-  e2e:
+  # Build and push the controller image to GHCR for use by e2e jobs.
+  docker-build:
     if: >-
       github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' && github.event.label.name == 'e2e')
+      (github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'e2e') ||
+      (github.event_name == 'pull_request' && github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'e2e'))
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Log in to GHCR
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build controller image
+        run: make docker-build IMG=${{ env.IMAGE }}:${{ github.sha }}
+
+      - name: Push controller image
+        id: push
+        run: |
+          docker push ${{ env.IMAGE }}:${{ github.sha }}
+          FULL_REF=$(docker inspect --format='{{index .RepoDigests 0}}' "${{ env.IMAGE }}:${{ github.sha }}")
+          echo "digest=${FULL_REF##*@}" >> "$GITHUB_OUTPUT"
+
+  # Clean up orphaned Cloudflare resources from previous failed runs.
+  # Runs in parallel with docker-build so it doesn't add latency.
+  cleanup:
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'e2e') ||
+      (github.event_name == 'pull_request' && github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'e2e'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Go
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build cfgwctl
+        run: make build-cfgwctl
+
+      - name: Write credentials
+        env:
+          CLOUDFLARE_CREDENTIALS: ${{ secrets.CLOUDFLARE_CREDENTIALS }}
+        run: |
+          cat <<EOF > api.token
+          ${CLOUDFLARE_CREDENTIALS}
+          EOF
+
+      - name: Cleanup Cloudflare resources
+        run: hack/cleanup-cloudflare.sh
+
+      - name: Cleanup credentials
+        if: always()
+        run: rm -f api.token
+
+  # Run e2e tests for the simple (single-tunnel, no LB) topology.
+  e2e-simple:
+    needs: [docker-build, cleanup]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -27,8 +100,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Build controller image
-        run: make docker-build
+      - name: Pull controller image by digest
+        run: docker pull ${{ env.IMAGE }}@${{ needs.docker-build.outputs.digest }}
+
+      - name: Tag image for kind
+        run: docker tag ${{ env.IMAGE }}@${{ needs.docker-build.outputs.digest }} controller:e2e
 
       - name: Write credentials
         env:
@@ -38,10 +114,103 @@ jobs:
           ${CLOUDFLARE_CREDENTIALS}
           EOF
 
-      - name: Run e2e tests
+      - name: Run simple e2e tests
         env:
+          IMAGE: controller:e2e
           TEST_ZONE_NAME: ci.cloudflare-gateway-controller.dev
         run: make test-e2e
+
+      - name: Print controller logs
+        if: always()
+        run: for f in *-controller.log; do [ -f "$f" ] && echo "=== $f ===" && cat "$f"; done
+
+      - name: Cleanup credentials
+        if: always()
+        run: rm -f api.token
+
+  # LB topology tests run sequentially in a single job to share the Cloudflare
+  # Load Balancing endpoint quota (max 4 endpoints at a time).
+  e2e-lb:
+    needs: [docker-build, cleanup]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Go
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Pull controller image by digest
+        run: docker pull ${{ env.IMAGE }}@${{ needs.docker-build.outputs.digest }}
+
+      - name: Tag image for kind
+        run: docker tag ${{ env.IMAGE }}@${{ needs.docker-build.outputs.digest }} controller:e2e
+
+      - name: Write credentials
+        env:
+          CLOUDFLARE_CREDENTIALS: ${{ secrets.CLOUDFLARE_CREDENTIALS }}
+        run: |
+          cat <<EOF > api.token
+          ${CLOUDFLARE_CREDENTIALS}
+          EOF
+
+      - name: Run HA e2e tests
+        env:
+          IMAGE: controller:e2e
+          TEST_ZONE_NAME: ci-ha.cloudflare-gateway-controller.dev
+        run: make test-e2e-ha
+
+      - name: Run TS e2e tests
+        env:
+          IMAGE: controller:e2e
+          TEST_ZONE_NAME: ci-ts.cloudflare-gateway-controller.dev
+        run: make test-e2e-ts
+
+      - name: Run TS+AZ e2e tests
+        env:
+          IMAGE: controller:e2e
+          TEST_ZONE_NAME: ci-tsaz.cloudflare-gateway-controller.dev
+        run: make test-e2e-ts-az
+
+      - name: Print controller logs
+        if: always()
+        run: for f in *-controller.log; do [ -f "$f" ] && echo "=== $f ===" && cat "$f"; done
+
+      - name: Cleanup credentials
+        if: always()
+        run: rm -f api.token
+
+  # Clean up Cloudflare resources created during e2e tests.
+  # Runs even if e2e jobs fail to avoid leaving orphaned resources.
+  post-cleanup:
+    if: always()
+    needs: [e2e-simple, e2e-lb]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Go
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build cfgwctl
+        run: make build-cfgwctl
+
+      - name: Write credentials
+        env:
+          CLOUDFLARE_CREDENTIALS: ${{ secrets.CLOUDFLARE_CREDENTIALS }}
+        run: |
+          cat <<EOF > api.token
+          ${CLOUDFLARE_CREDENTIALS}
+          EOF
+
+      - name: Cleanup Cloudflare resources
+        run: hack/cleanup-cloudflare.sh
 
       - name: Cleanup credentials
         if: always()

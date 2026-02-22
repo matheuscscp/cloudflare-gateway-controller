@@ -11,6 +11,9 @@ on:
     paths:
       - .github/labels.yaml
 
+permissions:
+  contents: read
+
 jobs:
   sync-labels:
     runs-on: ubuntu-latest

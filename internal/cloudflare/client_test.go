@@ -807,6 +807,16 @@ func TestDeleteDNSCNAME(t *testing.T) {
 	})
 }
 
+func TestIsNotFound(t *testing.T) {
+	g := NewWithT(t)
+	g.Expect(cloudflare.IsNotFound(nil)).To(BeFalse())
+	g.Expect(cloudflare.IsNotFound(errors.New("some error"))).To(BeFalse())
+	cfErr := &cfgo.Error{StatusCode: 404}
+	g.Expect(cloudflare.IsNotFound(cfErr)).To(BeTrue())
+	cfErr = &cfgo.Error{StatusCode: 400}
+	g.Expect(cloudflare.IsNotFound(cfErr)).To(BeFalse())
+}
+
 func TestListDNSCNAMEsByTarget(t *testing.T) {
 	t.Run("returns matching hostnames", func(t *testing.T) {
 		g := NewWithT(t)
@@ -851,6 +861,654 @@ func TestListDNSCNAMEsByTarget(t *testing.T) {
 		c := newTestClient(t, mux)
 
 		_, err := c.ListDNSCNAMEsByTarget(context.Background(), "zone-1", "tunnel.cfargotunnel.com")
+		g.Expect(err).To(HaveOccurred())
+	})
+}
+
+// --- Load Balancer Monitor tests ---
+
+func TestCreateMonitor(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("POST /accounts/{accountID}/load_balancers/monitors", func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			var params map[string]any
+			g.Expect(json.Unmarshal(body, &params)).To(Succeed())
+			g.Expect(params["description"]).To(Equal("gateway-uid-1"))
+			g.Expect(params["type"]).To(Equal("https"))
+			g.Expect(params["path"]).To(Equal("/ready"))
+			writeJSON(w, http.StatusOK, envelope(map[string]any{
+				"id":          "mon-123",
+				"description": "gateway-uid-1",
+			}))
+		})
+		c := newTestClient(t, mux)
+
+		id, err := c.CreateMonitor(context.Background(), "gateway-uid-1", cloudflare.MonitorConfig{
+			Type: "https", Path: "/ready", Interval: 60, Timeout: 5, ExpectedCodes: "200",
+		})
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(id).To(Equal("mon-123"))
+	})
+
+	t.Run("API error", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("POST /accounts/{accountID}/load_balancers/monitors", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
+		})
+		c := newTestClient(t, mux)
+
+		_, err := c.CreateMonitor(context.Background(), "gateway-uid-1", cloudflare.MonitorConfig{})
+		g.Expect(err).To(HaveOccurred())
+	})
+}
+
+func TestGetMonitorByName(t *testing.T) {
+	t.Run("found", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /accounts/{accountID}/load_balancers/monitors", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, envelope([]map[string]any{
+				{"id": "mon-1", "description": "other"},
+				{"id": "mon-2", "description": "gateway-uid-1"},
+			}))
+		})
+		c := newTestClient(t, mux)
+
+		id, err := c.GetMonitorByName(context.Background(), "gateway-uid-1")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(id).To(Equal("mon-2"))
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /accounts/{accountID}/load_balancers/monitors", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, envelope([]map[string]any{}))
+		})
+		c := newTestClient(t, mux)
+
+		id, err := c.GetMonitorByName(context.Background(), "gateway-uid-1")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(id).To(BeEmpty())
+	})
+
+	t.Run("API error", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /accounts/{accountID}/load_balancers/monitors", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
+		})
+		c := newTestClient(t, mux)
+
+		_, err := c.GetMonitorByName(context.Background(), "gateway-uid-1")
+		g.Expect(err).To(HaveOccurred())
+	})
+}
+
+func TestUpdateMonitor(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("PUT /accounts/{accountID}/load_balancers/monitors/{monitorID}", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, envelope(map[string]any{"id": "mon-123"}))
+		})
+		c := newTestClient(t, mux)
+
+		err := c.UpdateMonitor(context.Background(), "mon-123", "gateway-uid-1", cloudflare.MonitorConfig{
+			Type: "https", Path: "/ready", Interval: 60, Timeout: 5, ExpectedCodes: "200",
+		})
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+
+	t.Run("API error", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("PUT /accounts/{accountID}/load_balancers/monitors/{monitorID}", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
+		})
+		c := newTestClient(t, mux)
+
+		err := c.UpdateMonitor(context.Background(), "mon-123", "name", cloudflare.MonitorConfig{})
+		g.Expect(err).To(HaveOccurred())
+	})
+}
+
+func TestDeleteMonitor(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("DELETE /accounts/{accountID}/load_balancers/monitors/{monitorID}", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, envelope(map[string]any{"id": "mon-123"}))
+		})
+		c := newTestClient(t, mux)
+
+		err := c.DeleteMonitor(context.Background(), "mon-123")
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+
+	t.Run("not found is ignored", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("DELETE /accounts/{accountID}/load_balancers/monitors/{monitorID}", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusNotFound, apiError(http.StatusNotFound))
+		})
+		c := newTestClient(t, mux)
+
+		err := c.DeleteMonitor(context.Background(), "mon-123")
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+
+	t.Run("non-404 error is returned", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("DELETE /accounts/{accountID}/load_balancers/monitors/{monitorID}", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
+		})
+		c := newTestClient(t, mux)
+
+		err := c.DeleteMonitor(context.Background(), "mon-123")
+		g.Expect(err).To(HaveOccurred())
+	})
+}
+
+// --- Load Balancer Pool tests ---
+
+func TestCreatePool(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("POST /accounts/{accountID}/load_balancers/pools", func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			var params map[string]any
+			g.Expect(json.Unmarshal(body, &params)).To(Succeed())
+			g.Expect(params["name"]).To(Equal("gateway-uid-1-az-a"))
+			g.Expect(params["monitor"]).To(Equal("mon-123"))
+			origins := params["origins"].([]any)
+			g.Expect(origins).To(HaveLen(1))
+			origin := origins[0].(map[string]any)
+			g.Expect(origin["name"]).To(Equal("az-a"))
+			g.Expect(origin["address"]).To(Equal("tunnel-1.cfargotunnel.com"))
+			writeJSON(w, http.StatusOK, envelope(map[string]any{
+				"id":   "pool-123",
+				"name": "gateway-uid-1-az-a",
+			}))
+		})
+		c := newTestClient(t, mux)
+
+		id, err := c.CreatePool(context.Background(), cloudflare.PoolConfig{
+			Name:      "gateway-uid-1-az-a",
+			MonitorID: "mon-123",
+			Enabled:   true,
+			Origins: []cloudflare.PoolOrigin{
+				{Name: "az-a", Address: "tunnel-1.cfargotunnel.com", Enabled: true, Weight: 1},
+			},
+		})
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(id).To(Equal("pool-123"))
+	})
+
+	t.Run("API error", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("POST /accounts/{accountID}/load_balancers/pools", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
+		})
+		c := newTestClient(t, mux)
+
+		_, err := c.CreatePool(context.Background(), cloudflare.PoolConfig{Name: "test"})
+		g.Expect(err).To(HaveOccurred())
+	})
+}
+
+func TestGetPoolByName(t *testing.T) {
+	t.Run("found", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /accounts/{accountID}/load_balancers/pools", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, envelope([]map[string]any{
+				{
+					"id": "pool-1", "name": "gateway-uid-1-az-a", "monitor": "mon-1", "enabled": true,
+					"origins": []map[string]any{
+						{"name": "az-a", "address": "tunnel-1.cfargotunnel.com", "enabled": true, "weight": 1.0},
+					},
+				},
+			}))
+		})
+		c := newTestClient(t, mux)
+
+		id, pool, err := c.GetPoolByName(context.Background(), "gateway-uid-1-az-a")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(id).To(Equal("pool-1"))
+		g.Expect(pool).NotTo(BeNil())
+		g.Expect(pool.Name).To(Equal("gateway-uid-1-az-a"))
+		g.Expect(pool.MonitorID).To(Equal("mon-1"))
+		g.Expect(pool.Origins).To(HaveLen(1))
+		g.Expect(pool.Origins[0].Name).To(Equal("az-a"))
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /accounts/{accountID}/load_balancers/pools", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, envelope([]map[string]any{}))
+		})
+		c := newTestClient(t, mux)
+
+		id, pool, err := c.GetPoolByName(context.Background(), "nonexistent")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(id).To(BeEmpty())
+		g.Expect(pool).To(BeNil())
+	})
+
+	t.Run("API error", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /accounts/{accountID}/load_balancers/pools", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
+		})
+		c := newTestClient(t, mux)
+
+		_, _, err := c.GetPoolByName(context.Background(), "test")
+		g.Expect(err).To(HaveOccurred())
+	})
+}
+
+func TestUpdatePool(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("PUT /accounts/{accountID}/load_balancers/pools/{poolID}", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, envelope(map[string]any{"id": "pool-123"}))
+		})
+		c := newTestClient(t, mux)
+
+		err := c.UpdatePool(context.Background(), "pool-123", cloudflare.PoolConfig{
+			Name:      "test-pool",
+			MonitorID: "mon-1",
+			Enabled:   true,
+			Origins:   []cloudflare.PoolOrigin{{Name: "o1", Address: "addr", Enabled: true, Weight: 1}},
+		})
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+
+	t.Run("API error", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("PUT /accounts/{accountID}/load_balancers/pools/{poolID}", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
+		})
+		c := newTestClient(t, mux)
+
+		err := c.UpdatePool(context.Background(), "pool-123", cloudflare.PoolConfig{Name: "test"})
+		g.Expect(err).To(HaveOccurred())
+	})
+}
+
+func TestDeletePool(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("DELETE /accounts/{accountID}/load_balancers/pools/{poolID}", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, envelope(map[string]any{"id": "pool-123"}))
+		})
+		c := newTestClient(t, mux)
+
+		err := c.DeletePool(context.Background(), "pool-123")
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+
+	t.Run("not found is ignored", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("DELETE /accounts/{accountID}/load_balancers/pools/{poolID}", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusNotFound, apiError(http.StatusNotFound))
+		})
+		c := newTestClient(t, mux)
+
+		err := c.DeletePool(context.Background(), "pool-123")
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+
+	t.Run("non-404 error is returned", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("DELETE /accounts/{accountID}/load_balancers/pools/{poolID}", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
+		})
+		c := newTestClient(t, mux)
+
+		err := c.DeletePool(context.Background(), "pool-123")
+		g.Expect(err).To(HaveOccurred())
+	})
+}
+
+func TestListPoolsByPrefix(t *testing.T) {
+	t.Run("filters by prefix", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /accounts/{accountID}/load_balancers/pools", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, envelope([]map[string]any{
+				{"id": "p1", "name": "gateway-uid-1-az-a", "origins": []map[string]any{}},
+				{"id": "p2", "name": "gateway-uid-1-az-b", "origins": []map[string]any{}},
+				{"id": "p3", "name": "gateway-uid-2-az-a", "origins": []map[string]any{}},
+			}))
+		})
+		c := newTestClient(t, mux)
+
+		pools, err := c.ListPoolsByPrefix(context.Background(), "gateway-uid-1-")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(pools).To(HaveLen(2))
+		g.Expect(pools[0].ID).To(Equal("p1"))
+		g.Expect(pools[1].ID).To(Equal("p2"))
+	})
+
+	t.Run("returns nil when no match", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /accounts/{accountID}/load_balancers/pools", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, envelope([]map[string]any{}))
+		})
+		c := newTestClient(t, mux)
+
+		pools, err := c.ListPoolsByPrefix(context.Background(), "gateway-uid-1-")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(pools).To(BeNil())
+	})
+
+	t.Run("API error", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /accounts/{accountID}/load_balancers/pools", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
+		})
+		c := newTestClient(t, mux)
+
+		_, err := c.ListPoolsByPrefix(context.Background(), "gateway-uid-1-")
+		g.Expect(err).To(HaveOccurred())
+	})
+}
+
+// --- Load Balancer tests ---
+
+func TestEnsureLoadBalancer(t *testing.T) {
+	t.Run("creates new LB", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		var createCalled bool
+		mux.HandleFunc("GET /zones/{zoneID}/load_balancers", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, envelope([]map[string]any{}))
+		})
+		mux.HandleFunc("POST /zones/{zoneID}/load_balancers", func(w http.ResponseWriter, r *http.Request) {
+			createCalled = true
+			body, _ := io.ReadAll(r.Body)
+			var params map[string]any
+			g.Expect(json.Unmarshal(body, &params)).To(Succeed())
+			g.Expect(params["name"]).To(Equal("app.example.com"))
+			g.Expect(params["proxied"]).To(BeTrue())
+			g.Expect(params["steering_policy"]).To(Equal("geo"))
+			writeJSON(w, http.StatusOK, envelope(map[string]any{
+				"id":   "lb-123",
+				"name": "app.example.com",
+			}))
+		})
+		c := newTestClient(t, mux)
+
+		err := c.EnsureLoadBalancer(context.Background(), "zone-1", "app.example.com",
+			[]string{"pool-1", "pool-2"}, "geo", "none", nil)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(createCalled).To(BeTrue())
+	})
+
+	t.Run("updates existing LB", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		var updateCalled bool
+		mux.HandleFunc("GET /zones/{zoneID}/load_balancers", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, envelope([]map[string]any{
+				{"id": "lb-other", "name": "other.example.com"},
+				{"id": "lb-123", "name": "app.example.com"},
+			}))
+		})
+		mux.HandleFunc("PUT /zones/{zoneID}/load_balancers/{lbID}", func(w http.ResponseWriter, r *http.Request) {
+			updateCalled = true
+			g.Expect(r.PathValue("lbID")).To(Equal("lb-123"))
+			writeJSON(w, http.StatusOK, envelope(map[string]any{
+				"id":   "lb-123",
+				"name": "app.example.com",
+			}))
+		})
+		c := newTestClient(t, mux)
+
+		err := c.EnsureLoadBalancer(context.Background(), "zone-1", "app.example.com",
+			[]string{"pool-1"}, "geo", "none", nil)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(updateCalled).To(BeTrue())
+	})
+
+	t.Run("list error", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /zones/{zoneID}/load_balancers", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
+		})
+		c := newTestClient(t, mux)
+
+		err := c.EnsureLoadBalancer(context.Background(), "zone-1", "app.example.com",
+			[]string{"pool-1"}, "geo", "none", nil)
+		g.Expect(err).To(HaveOccurred())
+	})
+
+	t.Run("update error", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /zones/{zoneID}/load_balancers", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, envelope([]map[string]any{
+				{"id": "lb-123", "name": "app.example.com"},
+			}))
+		})
+		mux.HandleFunc("PUT /zones/{zoneID}/load_balancers/{lbID}", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
+		})
+		c := newTestClient(t, mux)
+
+		err := c.EnsureLoadBalancer(context.Background(), "zone-1", "app.example.com",
+			[]string{"pool-1"}, "geo", "none", nil)
+		g.Expect(err).To(HaveOccurred())
+	})
+
+	t.Run("create error", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /zones/{zoneID}/load_balancers", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, envelope([]map[string]any{}))
+		})
+		mux.HandleFunc("POST /zones/{zoneID}/load_balancers", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
+		})
+		c := newTestClient(t, mux)
+
+		err := c.EnsureLoadBalancer(context.Background(), "zone-1", "app.example.com",
+			[]string{"pool-1"}, "geo", "none", nil)
+		g.Expect(err).To(HaveOccurred())
+	})
+
+	t.Run("updates existing LB with pool weights", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /zones/{zoneID}/load_balancers", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, envelope([]map[string]any{
+				{"id": "lb-123", "name": "app.example.com"},
+			}))
+		})
+		mux.HandleFunc("PUT /zones/{zoneID}/load_balancers/{lbID}", func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			var params map[string]any
+			g.Expect(json.Unmarshal(body, &params)).To(Succeed())
+			rs := params["random_steering"].(map[string]any)
+			g.Expect(rs["pool_weights"]).To(HaveKeyWithValue("pool-1", 0.7))
+			g.Expect(rs["pool_weights"]).To(HaveKeyWithValue("pool-2", 0.3))
+			writeJSON(w, http.StatusOK, envelope(map[string]any{
+				"id":   "lb-123",
+				"name": "app.example.com",
+			}))
+		})
+		c := newTestClient(t, mux)
+
+		err := c.EnsureLoadBalancer(context.Background(), "zone-1", "app.example.com",
+			[]string{"pool-1", "pool-2"}, "random", "none",
+			map[string]float64{"pool-1": 0.7, "pool-2": 0.3})
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+
+	t.Run("creates LB with pool weights", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /zones/{zoneID}/load_balancers", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, envelope([]map[string]any{}))
+		})
+		mux.HandleFunc("POST /zones/{zoneID}/load_balancers", func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			var params map[string]any
+			g.Expect(json.Unmarshal(body, &params)).To(Succeed())
+			rs := params["random_steering"].(map[string]any)
+			g.Expect(rs["pool_weights"]).To(HaveKeyWithValue("pool-1", 0.9))
+			g.Expect(rs["pool_weights"]).To(HaveKeyWithValue("pool-2", 0.1))
+			writeJSON(w, http.StatusOK, envelope(map[string]any{
+				"id":   "lb-456",
+				"name": "app.example.com",
+			}))
+		})
+		c := newTestClient(t, mux)
+
+		err := c.EnsureLoadBalancer(context.Background(), "zone-1", "app.example.com",
+			[]string{"pool-1", "pool-2"}, "random", "none",
+			map[string]float64{"pool-1": 0.9, "pool-2": 0.1})
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+}
+
+func TestDeleteLoadBalancer(t *testing.T) {
+	t.Run("deletes matching LB", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		var deleteCalled bool
+		mux.HandleFunc("GET /zones/{zoneID}/load_balancers", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, envelope([]map[string]any{
+				{"id": "lb-123", "name": "app.example.com"},
+			}))
+		})
+		mux.HandleFunc("DELETE /zones/{zoneID}/load_balancers/{lbID}", func(w http.ResponseWriter, r *http.Request) {
+			deleteCalled = true
+			writeJSON(w, http.StatusOK, envelope(map[string]any{"id": "lb-123"}))
+		})
+		c := newTestClient(t, mux)
+
+		err := c.DeleteLoadBalancer(context.Background(), "zone-1", "app.example.com")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(deleteCalled).To(BeTrue())
+	})
+
+	t.Run("no-op when LB not found", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /zones/{zoneID}/load_balancers", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, envelope([]map[string]any{}))
+		})
+		c := newTestClient(t, mux)
+
+		err := c.DeleteLoadBalancer(context.Background(), "zone-1", "nonexistent.example.com")
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+
+	t.Run("list error", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /zones/{zoneID}/load_balancers", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
+		})
+		c := newTestClient(t, mux)
+
+		err := c.DeleteLoadBalancer(context.Background(), "zone-1", "app.example.com")
+		g.Expect(err).To(HaveOccurred())
+	})
+
+	t.Run("delete error", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /zones/{zoneID}/load_balancers", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, envelope([]map[string]any{
+				{"id": "lb-123", "name": "app.example.com"},
+			}))
+		})
+		mux.HandleFunc("DELETE /zones/{zoneID}/load_balancers/{lbID}", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
+		})
+		c := newTestClient(t, mux)
+
+		err := c.DeleteLoadBalancer(context.Background(), "zone-1", "app.example.com")
+		g.Expect(err).To(HaveOccurred())
+	})
+
+	t.Run("not found on delete is ignored", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /zones/{zoneID}/load_balancers", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, envelope([]map[string]any{
+				{"id": "lb-123", "name": "app.example.com"},
+			}))
+		})
+		mux.HandleFunc("DELETE /zones/{zoneID}/load_balancers/{lbID}", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusNotFound, apiError(http.StatusNotFound))
+		})
+		c := newTestClient(t, mux)
+
+		err := c.DeleteLoadBalancer(context.Background(), "zone-1", "app.example.com")
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+}
+
+func TestListLoadBalancerHostnames(t *testing.T) {
+	t.Run("returns hostnames", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /zones/{zoneID}/load_balancers", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, envelope([]map[string]any{
+				{"id": "lb-1", "name": "app1.example.com"},
+				{"id": "lb-2", "name": "app2.example.com"},
+			}))
+		})
+		c := newTestClient(t, mux)
+
+		hostnames, err := c.ListLoadBalancerHostnames(context.Background(), "zone-1")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(hostnames).To(Equal([]string{"app1.example.com", "app2.example.com"}))
+	})
+
+	t.Run("returns empty when no LBs", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /zones/{zoneID}/load_balancers", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, envelope([]map[string]any{}))
+		})
+		c := newTestClient(t, mux)
+
+		hostnames, err := c.ListLoadBalancerHostnames(context.Background(), "zone-1")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(hostnames).To(BeEmpty())
+	})
+
+	t.Run("API error", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /zones/{zoneID}/load_balancers", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
+		})
+		c := newTestClient(t, mux)
+
+		_, err := c.ListLoadBalancerHostnames(context.Background(), "zone-1")
 		g.Expect(err).To(HaveOccurred())
 	})
 }

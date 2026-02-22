@@ -20,6 +20,7 @@ func newRootCmd() *cobra.Command {
 
 	cmd.AddCommand(newTunnelCmd(&credentialsFile))
 	cmd.AddCommand(newDNSCmd(&credentialsFile))
+	cmd.AddCommand(newLBCmd(&credentialsFile))
 
 	return cmd
 }

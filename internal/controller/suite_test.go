@@ -19,17 +19,20 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	eventsv1 "k8s.io/api/events/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
+	sigyaml "sigs.k8s.io/yaml"
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
@@ -72,6 +75,75 @@ func newTestScheme() *runtime.Scheme {
 	return s
 }
 
+// chartDir is the path to the Helm chart directory relative to this test package.
+var chartDir = filepath.Join("..", "..", "charts", "cloudflare-gateway-controller")
+
+// setupRBAC loads the ClusterRole from the Helm chart's clusterrole.yaml
+// template, creates it in the test cluster with a ClusterRoleBinding, and
+// returns a rest.Config that impersonates a ServiceAccount bound to that role.
+// This ensures the controller manager runs with the same RBAC permissions as
+// in production.
+func setupRBAC(cfg *rest.Config, s *runtime.Scheme) *rest.Config {
+	data, err := os.ReadFile(filepath.Join(chartDir, "templates", "clusterrole.yaml"))
+	if err != nil {
+		panic(fmt.Sprintf("failed to read chart clusterrole.yaml: %v", err))
+	}
+
+	// Strip Helm template directives and replace template variables.
+	var lines []string
+	for line := range strings.SplitSeq(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "{{") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		line = strings.ReplaceAll(line, "{{ .Release.Name }}", "controller-test")
+		lines = append(lines, line)
+	}
+
+	var role rbacv1.ClusterRole
+	if err := sigyaml.Unmarshal([]byte(strings.Join(lines, "\n")), &role); err != nil {
+		panic(fmt.Sprintf("failed to parse chart clusterrole.yaml: %v", err))
+	}
+
+	c, err := ctrlclient.New(cfg, ctrlclient.Options{Scheme: s})
+	if err != nil {
+		panic(fmt.Sprintf("failed to create admin client: %v", err))
+	}
+
+	ctx := context.Background()
+
+	role.ResourceVersion = ""
+	if err := c.Create(ctx, &role); err != nil {
+		panic(fmt.Sprintf("failed to create ClusterRole: %v", err))
+	}
+
+	crb := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "controller-test"},
+		Subjects: []rbacv1.Subject{{
+			Kind:      "ServiceAccount",
+			Name:      "controller-test",
+			Namespace: "default",
+		}},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "ClusterRole",
+			Name:     "controller-test",
+		},
+	}
+	if err := c.Create(ctx, crb); err != nil {
+		panic(fmt.Sprintf("failed to create ClusterRoleBinding: %v", err))
+	}
+
+	mgrCfg := rest.CopyConfig(cfg)
+	mgrCfg.Impersonate = rest.ImpersonationConfig{
+		UserName: "system:serviceaccount:default:controller-test",
+	}
+	return mgrCfg
+}
+
 func TestMain(m *testing.M) {
 	testCtx, testCancel = context.WithCancel(context.Background())
 
@@ -81,7 +153,7 @@ func TestMain(m *testing.M) {
 		CRDInstallOptions: envtest.CRDInstallOptions{
 			Paths: []string{
 				gatewayAPICRDPath(),
-				filepath.Join("..", "..", "charts", "cloudflare-gateway-controller", "templates", "crds.yaml"),
+				filepath.Join(chartDir, "templates", "crds.yaml"),
 			},
 		},
 		Scheme: scheme,
@@ -92,7 +164,9 @@ func TestMain(m *testing.M) {
 		panic(fmt.Sprintf("failed to start test environment: %v", err))
 	}
 
-	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+	mgrCfg := setupRBAC(cfg, scheme)
+
+	mgr, err := ctrl.NewManager(mgrCfg, ctrl.Options{
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
 			BindAddress: "0",
@@ -212,6 +286,18 @@ type mockCloudflareClient struct {
 	// Credentials tracking
 	lastClientConfig cloudflare.ClientConfig
 
+	// Tunnel name-to-ID mapping for ListTunnels and GetTunnelIDByName.
+	// When set, GetTunnelIDByName looks up the name in this map; when empty,
+	// it falls back to returning tunnelID and tracking the name.
+	tunnels        map[string]string // name -> ID (explicit)
+	trackedTunnels map[string]string // name -> ID (auto-tracked from GetTunnelIDByName/CreateTunnel)
+
+	// tunnelIDFunc generates per-tunnel IDs for multi-tunnel tests.
+	// When set, GetTunnelIDByName returns "" for unknown tunnels (so the
+	// controller calls CreateTunnel), and CreateTunnel uses this to generate
+	// unique IDs. When nil, the existing single-ID behaviour is preserved.
+	tunnelIDFunc func(name string) string
+
 	// HTTPRoute-related tracking
 	lastTunnelConfigID      string
 	lastTunnelConfigIngress []cloudflare.IngressRule
@@ -220,6 +306,18 @@ type mockCloudflareClient struct {
 	zones                   map[string]string // hostname -> zoneID
 	zoneIDs                 []string          // zone IDs returned by ListZoneIDs
 	listDNSCNAMEsByTarget   []string          // hostnames returned by ListDNSCNAMEsByTarget
+
+	// Load Balancer tracking
+	monitors         map[string]string                // monitor name -> ID
+	monitorCounter   int                              // auto-increment counter
+	poolsByName      map[string]string                // pool name -> ID
+	poolConfigs      map[string]cloudflare.PoolConfig // pool ID -> config
+	poolCounter      int                              // auto-increment counter
+	ensureLBCalls    []mockEnsureLBCall               // EnsureLoadBalancer call log
+	deleteLBCalls    []string                         // DeleteLoadBalancer hostname log
+	deletePoolIDs    []string                         // DeletePool ID log
+	deleteMonitorIDs []string                         // DeleteMonitor ID log
+	lbHostnames      []string                         // ListLoadBalancerHostnames return value
 
 	// Error injection fields — set these to make mock methods return errors.
 	newClientErr                error
@@ -230,11 +328,24 @@ type mockCloudflareClient struct {
 	getTunnelConfigurationErr   error
 	updateTunnelConfigErr       error
 	cleanupTunnelConnectionsErr error
+	listTunnelsErr              error
 	listZoneIDsErr              error
 	findZoneIDErr               error
 	ensureDNSErr                error
 	deleteDNSErr                error
 	listDNSCNAMEsByTargetErr    error
+	createMonitorErr            error
+	getMonitorByNameErr         error
+	updateMonitorErr            error
+	deleteMonitorErr            error
+	createPoolErr               error
+	getPoolByNameErr            error
+	updatePoolErr               error
+	deletePoolErr               error
+	listPoolsByPrefixErr        error
+	ensureLBErr                 error
+	deleteLBErr                 error
+	listLBHostnamesErr          error
 }
 
 type mockDNSCall struct {
@@ -243,21 +354,74 @@ type mockDNSCall struct {
 	Target   string
 }
 
-func (m *mockCloudflareClient) CreateTunnel(_ context.Context, _ string) (string, error) {
+type mockEnsureLBCall struct {
+	ZoneID          string
+	Hostname        string
+	PoolIDs         []string
+	SteeringPolicy  string
+	SessionAffinity string
+	PoolWeights     map[string]float64
+}
+
+func (m *mockCloudflareClient) CreateTunnel(_ context.Context, name string) (string, error) {
 	if m.createTunnelErr != nil {
 		return "", m.createTunnelErr
 	}
-	return m.tunnelID, nil
+	id := m.tunnelID
+	if m.tunnelIDFunc != nil {
+		id = m.tunnelIDFunc(name)
+	}
+	if m.trackedTunnels == nil {
+		m.trackedTunnels = make(map[string]string)
+	}
+	m.trackedTunnels[name] = id
+	return id, nil
 }
 
-func (m *mockCloudflareClient) GetTunnelIDByName(_ context.Context, _ string) (string, error) {
+func (m *mockCloudflareClient) GetTunnelIDByName(_ context.Context, name string) (string, error) {
 	if m.getTunnelIDByNameErr != nil {
 		return "", m.getTunnelIDByNameErr
 	}
+	if m.tunnels != nil {
+		return m.tunnels[name], nil
+	}
+	// Return already-tracked tunnel (e.g. from a prior CreateTunnel call).
+	if m.trackedTunnels != nil {
+		if id, ok := m.trackedTunnels[name]; ok {
+			return id, nil
+		}
+	}
+	// When tunnelIDFunc is set, return "" so the controller calls CreateTunnel
+	// (which will generate a unique ID via the func).
+	if m.tunnelIDFunc != nil {
+		return "", nil
+	}
+	// Default: auto-track with the single tunnelID.
+	if m.trackedTunnels == nil {
+		m.trackedTunnels = make(map[string]string)
+	}
+	m.trackedTunnels[name] = m.tunnelID
 	return m.tunnelID, nil
 }
 
 func (m *mockCloudflareClient) ListTunnels(_ context.Context) ([]cloudflare.Tunnel, error) {
+	if m.listTunnelsErr != nil {
+		return nil, m.listTunnelsErr
+	}
+	if m.tunnels != nil {
+		var result []cloudflare.Tunnel
+		for name, id := range m.tunnels {
+			result = append(result, cloudflare.Tunnel{ID: id, Name: name})
+		}
+		return result, nil
+	}
+	if m.trackedTunnels != nil {
+		var result []cloudflare.Tunnel
+		for name, id := range m.trackedTunnels {
+			result = append(result, cloudflare.Tunnel{ID: id, Name: name})
+		}
+		return result, nil
+	}
 	return nil, nil
 }
 
@@ -340,6 +504,136 @@ func (m *mockCloudflareClient) ListDNSCNAMEsByTarget(_ context.Context, _, _ str
 		return nil, m.listDNSCNAMEsByTargetErr
 	}
 	return m.listDNSCNAMEsByTarget, nil
+}
+
+// --- Load Balancer mock methods ---
+
+func (m *mockCloudflareClient) CreateMonitor(_ context.Context, name string, _ cloudflare.MonitorConfig) (string, error) {
+	if m.createMonitorErr != nil {
+		return "", m.createMonitorErr
+	}
+	m.monitorCounter++
+	id := fmt.Sprintf("monitor-id-%d", m.monitorCounter)
+	if m.monitors == nil {
+		m.monitors = make(map[string]string)
+	}
+	m.monitors[name] = id
+	return id, nil
+}
+
+func (m *mockCloudflareClient) GetMonitorByName(_ context.Context, name string) (string, error) {
+	if m.getMonitorByNameErr != nil {
+		return "", m.getMonitorByNameErr
+	}
+	if m.monitors != nil {
+		return m.monitors[name], nil
+	}
+	return "", nil
+}
+
+func (m *mockCloudflareClient) UpdateMonitor(_ context.Context, _, _ string, _ cloudflare.MonitorConfig) error {
+	if m.updateMonitorErr != nil {
+		return m.updateMonitorErr
+	}
+	return nil
+}
+
+func (m *mockCloudflareClient) DeleteMonitor(_ context.Context, monitorID string) error {
+	if m.deleteMonitorErr != nil {
+		return m.deleteMonitorErr
+	}
+	m.deleteMonitorIDs = append(m.deleteMonitorIDs, monitorID)
+	return nil
+}
+
+func (m *mockCloudflareClient) CreatePool(_ context.Context, config cloudflare.PoolConfig) (string, error) {
+	if m.createPoolErr != nil {
+		return "", m.createPoolErr
+	}
+	m.poolCounter++
+	id := fmt.Sprintf("pool-id-%d", m.poolCounter)
+	if m.poolsByName == nil {
+		m.poolsByName = make(map[string]string)
+	}
+	m.poolsByName[config.Name] = id
+	if m.poolConfigs == nil {
+		m.poolConfigs = make(map[string]cloudflare.PoolConfig)
+	}
+	m.poolConfigs[id] = config
+	return id, nil
+}
+
+func (m *mockCloudflareClient) GetPoolByName(_ context.Context, name string) (string, *cloudflare.PoolConfig, error) {
+	if m.getPoolByNameErr != nil {
+		return "", nil, m.getPoolByNameErr
+	}
+	if m.poolsByName != nil {
+		if id, ok := m.poolsByName[name]; ok {
+			if cfg, ok := m.poolConfigs[id]; ok {
+				return id, &cfg, nil
+			}
+			return id, nil, nil
+		}
+	}
+	return "", nil, nil
+}
+
+func (m *mockCloudflareClient) UpdatePool(_ context.Context, _ string, _ cloudflare.PoolConfig) error {
+	if m.updatePoolErr != nil {
+		return m.updatePoolErr
+	}
+	return nil
+}
+
+func (m *mockCloudflareClient) DeletePool(_ context.Context, poolID string) error {
+	if m.deletePoolErr != nil {
+		return m.deletePoolErr
+	}
+	m.deletePoolIDs = append(m.deletePoolIDs, poolID)
+	return nil
+}
+
+func (m *mockCloudflareClient) ListPoolsByPrefix(_ context.Context, prefix string) ([]cloudflare.LoadBalancerPool, error) {
+	if m.listPoolsByPrefixErr != nil {
+		return nil, m.listPoolsByPrefixErr
+	}
+	var result []cloudflare.LoadBalancerPool
+	for name, id := range m.poolsByName {
+		if strings.HasPrefix(name, prefix) {
+			result = append(result, cloudflare.LoadBalancerPool{ID: id, Name: name})
+		}
+	}
+	return result, nil
+}
+
+func (m *mockCloudflareClient) EnsureLoadBalancer(_ context.Context, zoneID, hostname string, poolIDs []string, steeringPolicy, sessionAffinity string, poolWeights map[string]float64) error {
+	if m.ensureLBErr != nil {
+		return m.ensureLBErr
+	}
+	m.ensureLBCalls = append(m.ensureLBCalls, mockEnsureLBCall{
+		ZoneID:          zoneID,
+		Hostname:        hostname,
+		PoolIDs:         poolIDs,
+		SteeringPolicy:  steeringPolicy,
+		SessionAffinity: sessionAffinity,
+		PoolWeights:     poolWeights,
+	})
+	return nil
+}
+
+func (m *mockCloudflareClient) DeleteLoadBalancer(_ context.Context, _, hostname string) error {
+	if m.deleteLBErr != nil {
+		return m.deleteLBErr
+	}
+	m.deleteLBCalls = append(m.deleteLBCalls, hostname)
+	return nil
+}
+
+func (m *mockCloudflareClient) ListLoadBalancerHostnames(_ context.Context, _ string) ([]string, error) {
+	if m.listLBHostnamesErr != nil {
+		return nil, m.listLBHostnamesErr
+	}
+	return m.lbHostnames, nil
 }
 
 func createTestNamespace(g Gomega) *corev1.Namespace {
@@ -487,6 +781,7 @@ func resetMockErrors(t *testing.T) {
 		testMock.getTunnelConfigurationErr = nil
 		testMock.updateTunnelConfigErr = nil
 		testMock.cleanupTunnelConnectionsErr = nil
+		testMock.listTunnelsErr = nil
 		testMock.listZoneIDsErr = nil
 		testMock.findZoneIDErr = nil
 		testMock.ensureDNSErr = nil
@@ -494,5 +789,34 @@ func resetMockErrors(t *testing.T) {
 		testMock.listDNSCNAMEsByTargetErr = nil
 		testMock.deleteCalled = false
 		testMock.deletedID = ""
+		testMock.tunnels = nil
+		testMock.trackedTunnels = nil
+		testMock.tunnelIDFunc = nil
+
+		// LB error injection
+		testMock.createMonitorErr = nil
+		testMock.getMonitorByNameErr = nil
+		testMock.updateMonitorErr = nil
+		testMock.deleteMonitorErr = nil
+		testMock.createPoolErr = nil
+		testMock.getPoolByNameErr = nil
+		testMock.updatePoolErr = nil
+		testMock.deletePoolErr = nil
+		testMock.listPoolsByPrefixErr = nil
+		testMock.ensureLBErr = nil
+		testMock.deleteLBErr = nil
+		testMock.listLBHostnamesErr = nil
+
+		// LB tracking state
+		testMock.monitors = nil
+		testMock.monitorCounter = 0
+		testMock.poolsByName = nil
+		testMock.poolConfigs = nil
+		testMock.poolCounter = 0
+		testMock.ensureLBCalls = nil
+		testMock.deleteLBCalls = nil
+		testMock.deletePoolIDs = nil
+		testMock.deleteMonitorIDs = nil
+		testMock.lbHostnames = nil
 	})
 }

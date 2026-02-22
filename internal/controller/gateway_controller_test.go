@@ -123,6 +123,13 @@ func TestGatewayReconciler_AcceptedAndProgrammed(t *testing.T) {
 	g.Expect(env[0].ValueFrom.SecretKeyRef.Name).To(Equal("cloudflared-token-" + gw.Name))
 	g.Expect(env[0].ValueFrom.SecretKeyRef.Key).To(Equal("TUNNEL_TOKEN"))
 
+	// Verify default resource limits are set on cloudflared container
+	resources := deploy.Spec.Template.Spec.Containers[0].Resources
+	g.Expect(resources.Requests.Cpu().String()).To(Equal("50m"))
+	g.Expect(resources.Requests.Memory().String()).To(Equal("64Mi"))
+	g.Expect(resources.Limits.Cpu().String()).To(Equal("500m"))
+	g.Expect(resources.Limits.Memory().String()).To(Equal("256Mi"))
+
 	// Verify GatewayClass has the finalizer
 	var gcResult gatewayv1.GatewayClass
 	g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &gcResult)).To(Succeed())
@@ -134,6 +141,34 @@ func TestGatewayReconciler_AcceptedAndProgrammed(t *testing.T) {
 		g.Expect(e).NotTo(BeNil())
 		g.Expect(e.Note).NotTo(BeEmpty())
 	}).WithTimeout(5 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
+
+	// Verify CloudflareGatewayStatus (CGS) was created for this Gateway.
+	var cgs apiv1.CloudflareGatewayStatus
+	cgsKey := client.ObjectKey{Name: gw.Name, Namespace: gw.Namespace}
+	g.Expect(testClient.Get(testCtx, cgsKey, &cgs)).To(Succeed())
+
+	// Owner reference points to the Gateway.
+	g.Expect(cgs.OwnerReferences).To(HaveLen(1))
+	g.Expect(cgs.OwnerReferences[0].Name).To(Equal(gw.Name))
+	g.Expect(cgs.OwnerReferences[0].Kind).To(Equal(apiv1.KindGateway))
+
+	// Finalizer prevents accidental deletion.
+	g.Expect(cgs.Finalizers).To(ContainElement(apiv1.Finalizer))
+
+	// Tunnel status lists one tunnel (simple mode).
+	g.Expect(cgs.Status.Tunnels).To(HaveLen(1))
+	g.Expect(cgs.Status.Tunnels[0].ID).To(Equal("test-tunnel-id"))
+	g.Expect(cgs.Status.Tunnels[0].DeploymentName).To(Equal("cloudflared-" + gw.Name))
+	g.Expect(cgs.Status.Tunnels[0].SecretName).To(Equal("cloudflared-token-" + gw.Name))
+
+	// No LB or DNS (simple mode without DNS zone).
+	g.Expect(cgs.Status.LoadBalancer).To(BeNil())
+	g.Expect(cgs.Status.DNS).To(BeNil())
+
+	// CGS conditions mirror Gateway conditions.
+	cgsReady := conditions.Find(cgs.Status.Conditions, apiv1.ConditionReady)
+	g.Expect(cgsReady).NotTo(BeNil())
+	g.Expect(cgsReady.Status).To(Equal(metav1.ConditionTrue))
 }
 
 func TestGatewayReconciler_UnsupportedProtocol(t *testing.T) {
@@ -771,820 +806,6 @@ func TestGatewayReconciler_InfrastructureParametersRef(t *testing.T) {
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
-func TestGatewayReconciler_DNSReconciliation(t *testing.T) {
-	g := NewWithT(t)
-
-	ns := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
-
-	createTestSecret(g, ns.Name)
-	gc := createTestGatewayClass(g, "test-gw-class-dns", ns.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	waitForGatewayClassReady(g, gc)
-
-	params := createTestParameters(g, "test-gw-dns-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
-		DNS: &apiv1.DNSConfig{Zone: apiv1.DNSZoneConfig{Name: "example.com"}},
-	})
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-gw-dns",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.GatewaySpec{
-			GatewayClassName: gatewayv1.ObjectName(gc.Name),
-			Infrastructure: &gatewayv1.GatewayInfrastructure{
-				ParametersRef: parametersRef(params.Name),
-			},
-			Listeners: []gatewayv1.Listener{
-				{
-					Name:     "http",
-					Protocol: gatewayv1.HTTPProtocolType,
-					Port:     80,
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-	waitForGatewayProgrammed(g, gw)
-
-	// Reset mock tracking
-	testMock.ensureDNSCalls = nil
-	testMock.deleteDNSCalls = nil
-	testMock.listDNSCNAMEsByTarget = nil
-
-	route := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-route-dns",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.HTTPRouteSpec{
-			CommonRouteSpec: gatewayv1.CommonRouteSpec{
-				ParentRefs: []gatewayv1.ParentReference{
-					{Name: gatewayv1.ObjectName(gw.Name)},
-				},
-			},
-			Hostnames: []gatewayv1.Hostname{"app.example.com"},
-			Rules: []gatewayv1.HTTPRouteRule{
-				{
-					BackendRefs: []gatewayv1.HTTPBackendRef{
-						{BackendRef: gatewayv1.BackendRef{
-							BackendObjectReference: gatewayv1.BackendObjectReference{
-								Name: "my-service", Port: new(gatewayv1.PortNumber(8080)),
-							},
-						}},
-					},
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.HTTPRoute
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	// Verify EnsureDNSCNAME was called by the Gateway controller
-	g.Eventually(func() int {
-		return len(testMock.ensureDNSCalls)
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(BeNumerically(">=", 1))
-	g.Expect(testMock.ensureDNSCalls[0].Hostname).To(Equal("app.example.com"))
-	g.Expect(testMock.ensureDNSCalls[0].Target).To(Equal(cloudflare.TunnelTarget("test-tunnel-id")))
-
-	// Verify DNSRecordsApplied and Ready conditions on HTTPRoute status.parents
-	routeKey := client.ObjectKeyFromObject(route)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.HTTPRoute
-		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
-		g.Expect(result.Status.Parents).To(HaveLen(1))
-		dns := conditions.Find(result.Status.Parents[0].Conditions, apiv1.ConditionDNSRecordsApplied)
-		g.Expect(dns).NotTo(BeNil())
-		g.Expect(dns.Status).To(Equal(metav1.ConditionTrue))
-		g.Expect(dns.Reason).To(Equal(apiv1.ReasonReconciliationSucceeded))
-
-		ready := conditions.Find(result.Status.Parents[0].Conditions, apiv1.ConditionReady)
-		g.Expect(ready).NotTo(BeNil())
-		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
-		g.Expect(ready.Reason).To(Equal(apiv1.ReasonReconciliationSucceeded))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-}
-
-func TestGatewayReconciler_DNSStaleCleanup(t *testing.T) {
-	g := NewWithT(t)
-
-	ns := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
-
-	createTestSecret(g, ns.Name)
-	gc := createTestGatewayClass(g, "test-gw-class-dns-stale", ns.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	waitForGatewayClassReady(g, gc)
-
-	// Pre-populate the mock with a stale DNS record
-	testMock.listDNSCNAMEsByTarget = []string{"stale.example.com"}
-	testMock.ensureDNSCalls = nil
-	testMock.deleteDNSCalls = nil
-
-	params := createTestParameters(g, "test-gw-dns-stale-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
-		DNS: &apiv1.DNSConfig{Zone: apiv1.DNSZoneConfig{Name: "example.com"}},
-	})
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-gw-dns-stale",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.GatewaySpec{
-			GatewayClassName: gatewayv1.ObjectName(gc.Name),
-			Infrastructure: &gatewayv1.GatewayInfrastructure{
-				ParametersRef: parametersRef(params.Name),
-			},
-			Listeners: []gatewayv1.Listener{
-				{
-					Name:     "http",
-					Protocol: gatewayv1.HTTPProtocolType,
-					Port:     80,
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
-	t.Cleanup(func() {
-		testMock.listDNSCNAMEsByTarget = nil
-		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	// Verify the stale record is deleted (no HTTPRoutes attached, so stale.example.com is stale)
-	g.Eventually(func() int {
-		return len(testMock.deleteDNSCalls)
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(BeNumerically(">=", 1))
-	g.Expect(testMock.deleteDNSCalls[0].Hostname).To(Equal("stale.example.com"))
-}
-
-func TestGatewayReconciler_DNSSkippedHostnames(t *testing.T) {
-	g := NewWithT(t)
-
-	ns := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
-
-	createTestSecret(g, ns.Name)
-	gc := createTestGatewayClass(g, "test-gw-class-dns-skip", ns.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	waitForGatewayClassReady(g, gc)
-
-	testMock.ensureDNSCalls = nil
-	testMock.deleteDNSCalls = nil
-	testMock.listDNSCNAMEsByTarget = nil
-
-	params := createTestParameters(g, "test-gw-dns-skip-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
-		DNS: &apiv1.DNSConfig{Zone: apiv1.DNSZoneConfig{Name: "example.com"}},
-	})
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-gw-dns-skip",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.GatewaySpec{
-			GatewayClassName: gatewayv1.ObjectName(gc.Name),
-			Infrastructure: &gatewayv1.GatewayInfrastructure{
-				ParametersRef: parametersRef(params.Name),
-			},
-			Listeners: []gatewayv1.Listener{
-				{
-					Name:     "http",
-					Protocol: gatewayv1.HTTPProtocolType,
-					Port:     80,
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-	waitForGatewayProgrammed(g, gw)
-
-	// Reset mock tracking after Gateway is programmed
-	testMock.ensureDNSCalls = nil
-
-	route := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-route-dns-skip",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.HTTPRouteSpec{
-			CommonRouteSpec: gatewayv1.CommonRouteSpec{
-				ParentRefs: []gatewayv1.ParentReference{
-					{Name: gatewayv1.ObjectName(gw.Name)},
-				},
-			},
-			Hostnames: []gatewayv1.Hostname{"app.other.com"},
-			Rules: []gatewayv1.HTTPRouteRule{
-				{
-					BackendRefs: []gatewayv1.HTTPBackendRef{
-						{BackendRef: gatewayv1.BackendRef{
-							BackendObjectReference: gatewayv1.BackendObjectReference{
-								Name: "my-service", Port: new(gatewayv1.PortNumber(8080)),
-							},
-						}},
-					},
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.HTTPRoute
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	// Verify DNSRecordsApplied condition on HTTPRoute status.parents shows skipped hostname
-	routeKey := client.ObjectKeyFromObject(route)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.HTTPRoute
-		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
-		g.Expect(result.Status.Parents).To(HaveLen(1))
-		dns := conditions.Find(result.Status.Parents[0].Conditions, apiv1.ConditionDNSRecordsApplied)
-		g.Expect(dns).NotTo(BeNil())
-		g.Expect(dns.Status).To(Equal(metav1.ConditionTrue))
-		g.Expect(dns.Reason).To(Equal(apiv1.ReasonReconciliationSucceeded))
-		g.Expect(dns.Message).To(ContainSubstring("Applied hostnames:\n(none)"))
-		g.Expect(dns.Message).To(ContainSubstring("Skipped hostnames (not in zone):\n- app.other.com"))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-
-	// Verify EnsureDNSCNAME was NOT called for the skipped hostname
-	g.Consistently(func() bool {
-		for _, call := range testMock.ensureDNSCalls {
-			if call.Hostname == "app.other.com" {
-				return true
-			}
-		}
-		return false
-	}).WithTimeout(2 * time.Second).WithPolling(100 * time.Millisecond).Should(BeFalse())
-}
-
-func TestGatewayReconciler_HTTPRouteAccepted(t *testing.T) {
-	g := NewWithT(t)
-
-	ns := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
-
-	createTestSecret(g, ns.Name)
-	gc := createTestGatewayClass(g, "test-gw-class-httproute-accepted", ns.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	waitForGatewayClassReady(g, gc)
-
-	gw := createTestGateway(g, "test-gw-httproute", ns.Name, gc.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-	waitForGatewayProgrammed(g, gw)
-
-	// Reset mock tracking before HTTPRoute creation
-	testMock.lastTunnelConfigID = ""
-	testMock.lastTunnelConfigIngress = nil
-
-	route := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-httproute",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.HTTPRouteSpec{
-			CommonRouteSpec: gatewayv1.CommonRouteSpec{
-				ParentRefs: []gatewayv1.ParentReference{
-					{
-						Name: gatewayv1.ObjectName(gw.Name),
-					},
-				},
-			},
-			Hostnames: []gatewayv1.Hostname{"app.example.com"},
-			Rules: []gatewayv1.HTTPRouteRule{
-				{
-					BackendRefs: []gatewayv1.HTTPBackendRef{
-						{
-							BackendRef: gatewayv1.BackendRef{
-								BackendObjectReference: gatewayv1.BackendObjectReference{
-									Name: "my-service",
-									Port: new(gatewayv1.PortNumber(8080)),
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.HTTPRoute
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	// Verify HTTPRoute becomes Accepted and Ready
-	routeKey := client.ObjectKeyFromObject(route)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.HTTPRoute
-		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
-		g.Expect(result.Status.Parents).To(HaveLen(1))
-		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
-		g.Expect(accepted).NotTo(BeNil())
-		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
-
-		resolvedRefs := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionResolvedRefs))
-		g.Expect(resolvedRefs).NotTo(BeNil())
-		g.Expect(resolvedRefs.Status).To(Equal(metav1.ConditionTrue))
-
-		ready := conditions.Find(result.Status.Parents[0].Conditions, apiv1.ConditionReady)
-		g.Expect(ready).NotTo(BeNil())
-		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
-		g.Expect(ready.Reason).To(Equal(apiv1.ReasonReconciliationSucceeded))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-
-	// Verify tunnel configuration was updated by the Gateway controller
-	// (triggered by HTTPRoute watch).
-	g.Eventually(func(g Gomega) {
-		g.Expect(testMock.lastTunnelConfigID).To(Equal("test-tunnel-id"))
-		g.Expect(testMock.lastTunnelConfigIngress).To(HaveLen(2))
-		g.Expect(testMock.lastTunnelConfigIngress[0].Hostname).To(Equal("app.example.com"))
-		g.Expect(testMock.lastTunnelConfigIngress[0].Service).To(Equal("http://my-service." + ns.Name + ".svc.cluster.local:8080"))
-		g.Expect(testMock.lastTunnelConfigIngress[1].Hostname).To(BeEmpty())
-		g.Expect(testMock.lastTunnelConfigIngress[1].Service).To(Equal("http_status:404"))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-
-	// Verify Gateway listener has AttachedRoutes=1
-	gwKey := client.ObjectKeyFromObject(gw)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.Gateway
-		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
-		g.Expect(result.Status.Listeners).To(HaveLen(1))
-		g.Expect(result.Status.Listeners[0].AttachedRoutes).To(Equal(int32(1)))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-}
-
-func TestGatewayReconciler_HTTPRouteCrossNamespaceAllowAll(t *testing.T) {
-	g := NewWithT(t)
-
-	// Namespace A: where the Gateway lives (credentials are local)
-	nsA := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, nsA) })
-
-	// Namespace B: where the HTTPRoute lives
-	nsB := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, nsB) })
-
-	createTestSecret(g, nsA.Name)
-	gc := createTestGatewayClass(g, "test-gw-class-cross-route-all", nsA.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	waitForGatewayClassReady(g, gc)
-
-	// Gateway with allowedRoutes.namespaces.from=All
-	fromAll := gatewayv1.NamespacesFromAll
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-gw-cross-route-all",
-			Namespace: nsA.Name,
-		},
-		Spec: gatewayv1.GatewaySpec{
-			GatewayClassName: gatewayv1.ObjectName(gc.Name),
-			Listeners: []gatewayv1.Listener{
-				{
-					Name:     "http",
-					Protocol: gatewayv1.HTTPProtocolType,
-					Port:     80,
-					AllowedRoutes: &gatewayv1.AllowedRoutes{
-						Namespaces: &gatewayv1.RouteNamespaces{
-							From: &fromAll,
-						},
-					},
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-	waitForGatewayProgrammed(g, gw)
-
-	// Create an HTTPRoute in namespace B referencing the Gateway in namespace A
-	nsAGW := gatewayv1.Namespace(nsA.Name)
-	route := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-cross-route",
-			Namespace: nsB.Name,
-		},
-		Spec: gatewayv1.HTTPRouteSpec{
-			CommonRouteSpec: gatewayv1.CommonRouteSpec{
-				ParentRefs: []gatewayv1.ParentReference{
-					{
-						Name:      gatewayv1.ObjectName(gw.Name),
-						Namespace: &nsAGW,
-					},
-				},
-			},
-			Hostnames: []gatewayv1.Hostname{"cross.example.com"},
-			Rules: []gatewayv1.HTTPRouteRule{
-				{
-					BackendRefs: []gatewayv1.HTTPBackendRef{
-						{
-							BackendRef: gatewayv1.BackendRef{
-								BackendObjectReference: gatewayv1.BackendObjectReference{
-									Name: "my-service",
-									Port: new(gatewayv1.PortNumber(8080)),
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.HTTPRoute
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	// Verify the cross-namespace HTTPRoute is Accepted
-	routeKey := client.ObjectKeyFromObject(route)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.HTTPRoute
-		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
-		g.Expect(result.Status.Parents).To(HaveLen(1))
-		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
-		g.Expect(accepted).NotTo(BeNil())
-		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-
-	// Verify the Gateway listener counts the cross-namespace route
-	gwKey := client.ObjectKeyFromObject(gw)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.Gateway
-		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
-		g.Expect(result.Status.Listeners).To(HaveLen(1))
-		g.Expect(result.Status.Listeners[0].AttachedRoutes).To(Equal(int32(1)))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-}
-
-func TestGatewayReconciler_HTTPRouteCrossNamespaceDenied(t *testing.T) {
-	g := NewWithT(t)
-
-	// Namespace A: where the Gateway lives (default from=Same)
-	nsA := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, nsA) })
-
-	// Namespace B: where the HTTPRoute lives
-	nsB := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, nsB) })
-
-	createTestSecret(g, nsA.Name)
-	gc := createTestGatewayClass(g, "test-gw-class-cross-route-denied", nsA.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	waitForGatewayClassReady(g, gc)
-
-	// Gateway with default listeners (from=Same)
-	gw := createTestGateway(g, "test-gw-cross-route-denied", nsA.Name, gc.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-	waitForGatewayProgrammed(g, gw)
-
-	// Create an HTTPRoute in namespace B referencing the Gateway in namespace A
-	nsAGW := gatewayv1.Namespace(nsA.Name)
-	route := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-cross-route-denied",
-			Namespace: nsB.Name,
-		},
-		Spec: gatewayv1.HTTPRouteSpec{
-			CommonRouteSpec: gatewayv1.CommonRouteSpec{
-				ParentRefs: []gatewayv1.ParentReference{
-					{
-						Name:      gatewayv1.ObjectName(gw.Name),
-						Namespace: &nsAGW,
-					},
-				},
-			},
-			Hostnames: []gatewayv1.Hostname{"denied.example.com"},
-			Rules: []gatewayv1.HTTPRouteRule{
-				{
-					BackendRefs: []gatewayv1.HTTPBackendRef{
-						{
-							BackendRef: gatewayv1.BackendRef{
-								BackendObjectReference: gatewayv1.BackendObjectReference{
-									Name: "my-service",
-									Port: new(gatewayv1.PortNumber(8080)),
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.HTTPRoute
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	// Verify the cross-namespace HTTPRoute is denied: Accepted=False/NotAllowedByListeners
-	routeKey := client.ObjectKeyFromObject(route)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.HTTPRoute
-		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
-		g.Expect(result.Status.Parents).To(HaveLen(1))
-		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
-		g.Expect(accepted).NotTo(BeNil())
-		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
-		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.RouteReasonNotAllowedByListeners)))
-		g.Expect(accepted.Message).To(ContainSubstring("not allowed by any listener"))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-
-	// Verify the denied route is NOT counted as attached
-	gwKey := client.ObjectKeyFromObject(gw)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.Gateway
-		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
-		g.Expect(result.Status.Listeners).To(HaveLen(1))
-		g.Expect(result.Status.Listeners[0].AttachedRoutes).To(Equal(int32(0)))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-}
-
-func TestGatewayReconciler_HTTPRouteCrossNamespaceSelector(t *testing.T) {
-	g := NewWithT(t)
-
-	// Namespace A: where the Gateway lives
-	nsA := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, nsA) })
-
-	// Namespace B: where the HTTPRoute lives (will have matching label)
-	nsB := &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: "test-",
-			Labels: map[string]string{
-				"gateway-access": "allowed",
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, nsB)).To(Succeed())
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, nsB) })
-
-	createTestSecret(g, nsA.Name)
-	gc := createTestGatewayClass(g, "test-gw-class-cross-route-sel", nsA.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	waitForGatewayClassReady(g, gc)
-
-	// Gateway with allowedRoutes.namespaces.from=Selector
-	fromSelector := gatewayv1.NamespacesFromSelector
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-gw-cross-route-sel",
-			Namespace: nsA.Name,
-		},
-		Spec: gatewayv1.GatewaySpec{
-			GatewayClassName: gatewayv1.ObjectName(gc.Name),
-			Listeners: []gatewayv1.Listener{
-				{
-					Name:     "http",
-					Protocol: gatewayv1.HTTPProtocolType,
-					Port:     80,
-					AllowedRoutes: &gatewayv1.AllowedRoutes{
-						Namespaces: &gatewayv1.RouteNamespaces{
-							From: &fromSelector,
-							Selector: &metav1.LabelSelector{
-								MatchLabels: map[string]string{
-									"gateway-access": "allowed",
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-	waitForGatewayProgrammed(g, gw)
-
-	// Create an HTTPRoute in namespace B (which has the matching label)
-	nsBGW := gatewayv1.Namespace(nsA.Name)
-	route := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-cross-route-sel",
-			Namespace: nsB.Name,
-		},
-		Spec: gatewayv1.HTTPRouteSpec{
-			CommonRouteSpec: gatewayv1.CommonRouteSpec{
-				ParentRefs: []gatewayv1.ParentReference{
-					{
-						Name:      gatewayv1.ObjectName(gw.Name),
-						Namespace: &nsBGW,
-					},
-				},
-			},
-			Hostnames: []gatewayv1.Hostname{"selector.example.com"},
-			Rules: []gatewayv1.HTTPRouteRule{
-				{
-					BackendRefs: []gatewayv1.HTTPBackendRef{
-						{
-							BackendRef: gatewayv1.BackendRef{
-								BackendObjectReference: gatewayv1.BackendObjectReference{
-									Name: "my-service",
-									Port: new(gatewayv1.PortNumber(8080)),
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.HTTPRoute
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	// Verify the cross-namespace HTTPRoute is Accepted (selector matches)
-	routeKey := client.ObjectKeyFromObject(route)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.HTTPRoute
-		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
-		g.Expect(result.Status.Parents).To(HaveLen(1))
-		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
-		g.Expect(accepted).NotTo(BeNil())
-		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-}
-
-func TestGatewayReconciler_HTTPRouteDeletion(t *testing.T) {
-	g := NewWithT(t)
-
-	ns := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
-
-	createTestSecret(g, ns.Name)
-	gc := createTestGatewayClass(g, "test-gw-class-httproute-delete", ns.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	waitForGatewayClassReady(g, gc)
-
-	gw := createTestGateway(g, "test-gw-httproute-delete", ns.Name, gc.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-	waitForGatewayProgrammed(g, gw)
-
-	route := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-httproute-delete",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.HTTPRouteSpec{
-			CommonRouteSpec: gatewayv1.CommonRouteSpec{
-				ParentRefs: []gatewayv1.ParentReference{
-					{
-						Name: gatewayv1.ObjectName(gw.Name),
-					},
-				},
-			},
-			Hostnames: []gatewayv1.Hostname{"delete.example.com"},
-			Rules: []gatewayv1.HTTPRouteRule{
-				{
-					BackendRefs: []gatewayv1.HTTPBackendRef{
-						{
-							BackendRef: gatewayv1.BackendRef{
-								BackendObjectReference: gatewayv1.BackendObjectReference{
-									Name: "my-service",
-									Port: new(gatewayv1.PortNumber(8080)),
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
-
-	// Wait for HTTPRoute to be Accepted
-	routeKey := client.ObjectKeyFromObject(route)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.HTTPRoute
-		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
-		g.Expect(result.Status.Parents).To(HaveLen(1))
-		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
-		g.Expect(accepted).NotTo(BeNil())
-		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-
-	// Reset mock tracking
-	testMock.lastTunnelConfigIngress = nil
-
-	// Delete the HTTPRoute
-	var latest gatewayv1.HTTPRoute
-	g.Expect(testClient.Get(testCtx, routeKey, &latest)).To(Succeed())
-	g.Expect(testClient.Delete(testCtx, &latest)).To(Succeed())
-
-	// Wait for HTTPRoute to be fully deleted
-	g.Eventually(func() error {
-		return testClient.Get(testCtx, routeKey, &latest)
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Satisfy(apierrors.IsNotFound))
-
-	// Verify tunnel config was rebuilt by the Gateway controller (only catch-all remains)
-	g.Eventually(func(g Gomega) {
-		g.Expect(testMock.lastTunnelConfigIngress).To(HaveLen(1))
-		g.Expect(testMock.lastTunnelConfigIngress[0].Service).To(Equal("http_status:404"))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-}
-
 func TestGatewayReconciler_GatewayClassNotReadyThenRecovers(t *testing.T) {
 	g := NewWithT(t)
 
@@ -2156,625 +1377,6 @@ func TestGatewayReconciler_DeletionReconcileDisabled(t *testing.T) {
 	_ = testClient.Delete(testCtx, &tokenSecret)
 }
 
-func TestGatewayReconciler_DeletionWithHTTPRoutes(t *testing.T) {
-	g := NewWithT(t)
-
-	ns := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
-
-	createTestSecret(g, ns.Name)
-	gc := createTestGatewayClass(g, "test-gw-class-del-routes", ns.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	waitForGatewayClassReady(g, gc)
-
-	params := createTestParameters(g, "test-gw-del-routes-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
-		DNS: &apiv1.DNSConfig{Zone: apiv1.DNSZoneConfig{Name: "example.com"}},
-	})
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-gw-del-routes",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.GatewaySpec{
-			GatewayClassName: gatewayv1.ObjectName(gc.Name),
-			Infrastructure: &gatewayv1.GatewayInfrastructure{
-				ParametersRef: parametersRef(params.Name),
-			},
-			Listeners: []gatewayv1.Listener{
-				{
-					Name:     "http",
-					Protocol: gatewayv1.HTTPProtocolType,
-					Port:     80,
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
-
-	waitForGatewayProgrammed(g, gw)
-	gwKey := client.ObjectKeyFromObject(gw)
-
-	// Reset mock tracking.
-	testMock.ensureDNSCalls = nil
-	testMock.deleteDNSCalls = nil
-	testMock.deleteCalled = false
-
-	// Create HTTPRoute.
-	route := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-route-del",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.HTTPRouteSpec{
-			CommonRouteSpec: gatewayv1.CommonRouteSpec{
-				ParentRefs: []gatewayv1.ParentReference{
-					{Name: gatewayv1.ObjectName(gw.Name)},
-				},
-			},
-			Hostnames: []gatewayv1.Hostname{"del.example.com"},
-			Rules: []gatewayv1.HTTPRouteRule{
-				{
-					BackendRefs: []gatewayv1.HTTPBackendRef{
-						{BackendRef: gatewayv1.BackendRef{
-							BackendObjectReference: gatewayv1.BackendObjectReference{
-								Name: "my-service", Port: new(gatewayv1.PortNumber(8080)),
-							},
-						}},
-					},
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
-
-	// Wait for DNS condition to be True on the HTTPRoute.
-	routeKey := client.ObjectKeyFromObject(route)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.HTTPRoute
-		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
-		g.Expect(result.Status.Parents).To(HaveLen(1))
-		dns := conditions.Find(result.Status.Parents[0].Conditions, apiv1.ConditionDNSRecordsApplied)
-		g.Expect(dns).NotTo(BeNil())
-		g.Expect(dns.Status).To(Equal(metav1.ConditionTrue))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-
-	// Setup for cleanup: set zone IDs and stale DNS records for finalization cleanup.
-	testMock.zoneIDs = []string{"zone-1"}
-	testMock.listDNSCNAMEsByTarget = []string{"del.example.com"}
-	testMock.deleteDNSCalls = nil
-
-	// Delete the Gateway.
-	g.Eventually(func(g Gomega) {
-		var latest gatewayv1.Gateway
-		g.Expect(testClient.Get(testCtx, gwKey, &latest)).To(Succeed())
-		g.Expect(testClient.Delete(testCtx, &latest)).To(Succeed())
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-
-	// Wait for Gateway to be fully deleted (finalization involves multiple
-	// steps: delete deployment, wait for it, cleanup DNS, delete tunnel, etc.).
-	g.Eventually(func() error {
-		var latest gatewayv1.Gateway
-		return testClient.Get(testCtx, gwKey, &latest)
-	}).WithTimeout(30 * time.Second).WithPolling(200 * time.Millisecond).Should(Satisfy(apierrors.IsNotFound))
-
-	// Tunnel should have been deleted.
-	g.Expect(testMock.deleteCalled).To(BeTrue())
-
-	// DNS cleanup should have been called.
-	g.Expect(testMock.deleteDNSCalls).NotTo(BeEmpty())
-	g.Expect(testMock.deleteDNSCalls[0].Hostname).To(Equal("del.example.com"))
-
-	// HTTPRoute status.parents should be empty (our Gateway's entry removed).
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.HTTPRoute
-		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
-		for _, s := range result.Status.Parents {
-			if s.ControllerName == apiv1.ControllerName {
-				g.Expect(s.ParentRef.Name).NotTo(Equal(gatewayv1.ObjectName(gw.Name)),
-					"Expected Gateway's status.parents entry to be removed")
-			}
-		}
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-
-	// GatewayClass finalizer should be removed.
-	g.Eventually(func() []string {
-		var gcResult gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &gcResult); err != nil {
-			return []string{err.Error()}
-		}
-		return gcResult.Finalizers
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).ShouldNot(ContainElement(apiv1.FinalizerGatewayClass(gw)))
-
-	// Verify "Gateway finalized" event.
-	g.Eventually(func(g Gomega) {
-		e := findEvent(g, ns.Name, gw.Name, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded, apiv1.EventActionFinalize, "")
-		g.Expect(e).NotTo(BeNil())
-		g.Expect(e.Note).To(HavePrefix("Gateway finalized"))
-		g.Expect(e.Note).To(ContainSubstring("deleted cloudflared Deployment"))
-		g.Expect(e.Note).To(ContainSubstring("deleted tunnel"))
-	}).WithTimeout(5 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
-
-	// Verify "Removed status entry" event on the HTTPRoute.
-	g.Eventually(func(g Gomega) {
-		e := findEvent(g, ns.Name, route.Name, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded, apiv1.EventActionReconcile, "Removed status entry")
-		g.Expect(e).NotTo(BeNil())
-	}).WithTimeout(5 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
-
-	// Cleanup.
-	testMock.zoneIDs = nil
-	testMock.listDNSCNAMEsByTarget = nil
-	_ = testClient.Delete(testCtx, route)
-}
-
-func TestGatewayReconciler_StaleRouteParentRefRemoved(t *testing.T) {
-	g := NewWithT(t)
-
-	ns := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
-
-	createTestSecret(g, ns.Name)
-	gc := createTestGatewayClass(g, "test-gw-class-stale-ref", ns.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	waitForGatewayClassReady(g, gc)
-
-	gw := createTestGateway(g, "test-gw-stale-ref", ns.Name, gc.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-	waitForGatewayProgrammed(g, gw)
-
-	route := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-route-stale",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.HTTPRouteSpec{
-			CommonRouteSpec: gatewayv1.CommonRouteSpec{
-				ParentRefs: []gatewayv1.ParentReference{
-					{Name: gatewayv1.ObjectName(gw.Name)},
-				},
-			},
-			Hostnames: []gatewayv1.Hostname{"stale.example.com"},
-			Rules: []gatewayv1.HTTPRouteRule{
-				{
-					BackendRefs: []gatewayv1.HTTPBackendRef{
-						{BackendRef: gatewayv1.BackendRef{
-							BackendObjectReference: gatewayv1.BackendObjectReference{
-								Name: "my-service", Port: new(gatewayv1.PortNumber(8080)),
-							},
-						}},
-					},
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.HTTPRoute
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	// Wait for the route to be Accepted.
-	routeKey := client.ObjectKeyFromObject(route)
-	gwKey := client.ObjectKeyFromObject(gw)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.HTTPRoute
-		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
-		g.Expect(result.Status.Parents).To(HaveLen(1))
-		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
-		g.Expect(accepted).NotTo(BeNil())
-		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-
-	// Update HTTPRoute to remove the parentRef (point to a nonexistent gateway).
-	g.Eventually(func(g Gomega) {
-		var latest gatewayv1.HTTPRoute
-		g.Expect(testClient.Get(testCtx, routeKey, &latest)).To(Succeed())
-		latest.Spec.ParentRefs = []gatewayv1.ParentReference{
-			{Name: "nonexistent-gateway"},
-		}
-		g.Expect(testClient.Update(testCtx, &latest)).To(Succeed())
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-
-	// HTTPRoute status.parents for the old Gateway should be removed.
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.HTTPRoute
-		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
-		for _, s := range result.Status.Parents {
-			if s.ControllerName == apiv1.ControllerName &&
-				s.ParentRef.Namespace != nil && string(*s.ParentRef.Namespace) == gw.Namespace &&
-				string(s.ParentRef.Name) == gw.Name {
-				g.Expect("stale entry").To(Equal("removed"), "Stale status.parents entry should be removed")
-			}
-		}
-	}).WithTimeout(30 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
-
-	// Gateway listener AttachedRoutes should drop to 0.
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.Gateway
-		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
-		g.Expect(result.Status.Listeners).To(HaveLen(1))
-		g.Expect(result.Status.Listeners[0].AttachedRoutes).To(Equal(int32(0)))
-	}).WithTimeout(30 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
-
-	// Tunnel ingress should be catch-all only.
-	g.Eventually(func(g Gomega) {
-		g.Expect(testMock.lastTunnelConfigIngress).To(HaveLen(1))
-		g.Expect(testMock.lastTunnelConfigIngress[0].Service).To(Equal("http_status:404"))
-	}).WithTimeout(30 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
-}
-
-func TestGatewayReconciler_HTTPRouteCrossNamespaceBackendDenied(t *testing.T) {
-	g := NewWithT(t)
-
-	// ns-A: where the Gateway and HTTPRoute live.
-	nsA := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, nsA) })
-
-	// ns-B: where the Service backend lives (cross-namespace backendRef).
-	nsB := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, nsB) })
-
-	createTestSecret(g, nsA.Name)
-	gc := createTestGatewayClass(g, "test-gw-class-backend-denied", nsA.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	waitForGatewayClassReady(g, gc)
-
-	gw := createTestGateway(g, "test-gw-backend-denied", nsA.Name, gc.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-	waitForGatewayProgrammed(g, gw)
-
-	// HTTPRoute in nsA references a Service in nsB (cross-namespace backendRef) with no ReferenceGrant.
-	nsBNS := gatewayv1.Namespace(nsB.Name)
-	route := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-route-backend-denied",
-			Namespace: nsA.Name,
-		},
-		Spec: gatewayv1.HTTPRouteSpec{
-			CommonRouteSpec: gatewayv1.CommonRouteSpec{
-				ParentRefs: []gatewayv1.ParentReference{
-					{Name: gatewayv1.ObjectName(gw.Name)},
-				},
-			},
-			Hostnames: []gatewayv1.Hostname{"backend-denied.example.com"},
-			Rules: []gatewayv1.HTTPRouteRule{
-				{
-					BackendRefs: []gatewayv1.HTTPBackendRef{
-						{BackendRef: gatewayv1.BackendRef{
-							BackendObjectReference: gatewayv1.BackendObjectReference{
-								Name:      "cross-service",
-								Port:      new(gatewayv1.PortNumber(8080)),
-								Namespace: &nsBNS,
-							},
-						}},
-					},
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.HTTPRoute
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	// Verify: Accepted=True, ResolvedRefs=False/RefNotPermitted.
-	routeKey := client.ObjectKeyFromObject(route)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.HTTPRoute
-		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
-		g.Expect(result.Status.Parents).To(HaveLen(1))
-
-		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
-		g.Expect(accepted).NotTo(BeNil())
-		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
-
-		resolvedRefs := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionResolvedRefs))
-		g.Expect(resolvedRefs).NotTo(BeNil())
-		g.Expect(resolvedRefs.Status).To(Equal(metav1.ConditionFalse))
-		g.Expect(resolvedRefs.Reason).To(Equal(string(gatewayv1.RouteReasonRefNotPermitted)))
-		g.Expect(resolvedRefs.Message).To(ContainSubstring("cross-service"))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-
-	// Tunnel ingress should have only catch-all (denied backend excluded).
-	g.Eventually(func(g Gomega) {
-		g.Expect(testMock.lastTunnelConfigIngress).To(HaveLen(1))
-		g.Expect(testMock.lastTunnelConfigIngress[0].Service).To(Equal("http_status:404"))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-}
-
-func TestGatewayReconciler_HTTPRouteCrossNamespaceBackendGranted(t *testing.T) {
-	g := NewWithT(t)
-
-	// ns-A: where the Gateway and HTTPRoute live.
-	nsA := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, nsA) })
-
-	// ns-B: where the Service backend lives.
-	nsB := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, nsB) })
-
-	createTestSecret(g, nsA.Name)
-	gc := createTestGatewayClass(g, "test-gw-class-backend-granted", nsA.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	waitForGatewayClassReady(g, gc)
-
-	gw := createTestGateway(g, "test-gw-backend-granted", nsA.Name, gc.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-	waitForGatewayProgrammed(g, gw)
-
-	// Create HTTPRoute with cross-namespace backendRef (no grant yet).
-	nsBNS := gatewayv1.Namespace(nsB.Name)
-	route := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-route-backend-granted",
-			Namespace: nsA.Name,
-		},
-		Spec: gatewayv1.HTTPRouteSpec{
-			CommonRouteSpec: gatewayv1.CommonRouteSpec{
-				ParentRefs: []gatewayv1.ParentReference{
-					{Name: gatewayv1.ObjectName(gw.Name)},
-				},
-			},
-			Hostnames: []gatewayv1.Hostname{"backend-granted.example.com"},
-			Rules: []gatewayv1.HTTPRouteRule{
-				{
-					BackendRefs: []gatewayv1.HTTPBackendRef{
-						{BackendRef: gatewayv1.BackendRef{
-							BackendObjectReference: gatewayv1.BackendObjectReference{
-								Name:      "cross-service",
-								Port:      new(gatewayv1.PortNumber(8080)),
-								Namespace: &nsBNS,
-							},
-						}},
-					},
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.HTTPRoute
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	// Wait for ResolvedRefs=False (no grant yet).
-	routeKey := client.ObjectKeyFromObject(route)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.HTTPRoute
-		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
-		g.Expect(result.Status.Parents).To(HaveLen(1))
-		resolvedRefs := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionResolvedRefs))
-		g.Expect(resolvedRefs).NotTo(BeNil())
-		g.Expect(resolvedRefs.Status).To(Equal(metav1.ConditionFalse))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-
-	// Create ReferenceGrant in nsB allowing HTTPRoutes from nsA to reference Services.
-	refGrant := &gatewayv1beta1.ReferenceGrant{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "allow-backend-ref",
-			Namespace: nsB.Name,
-		},
-		Spec: gatewayv1beta1.ReferenceGrantSpec{
-			From: []gatewayv1beta1.ReferenceGrantFrom{
-				{
-					Group:     gatewayv1beta1.Group(gatewayv1.GroupName),
-					Kind:      gatewayv1beta1.Kind("HTTPRoute"),
-					Namespace: gatewayv1beta1.Namespace(nsA.Name),
-				},
-			},
-			To: []gatewayv1beta1.ReferenceGrantTo{
-				{
-					Group: gatewayv1beta1.Group(""),
-					Kind:  gatewayv1beta1.Kind("Service"),
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, refGrant)).To(Succeed())
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, refGrant) })
-
-	// Trigger re-reconciliation via annotation.
-	g.Eventually(func(g Gomega) {
-		var latest gatewayv1.Gateway
-		g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest)).To(Succeed())
-		if latest.Annotations == nil {
-			latest.Annotations = make(map[string]string)
-		}
-		latest.Annotations["test"] = "trigger-grant"
-		g.Expect(testClient.Update(testCtx, &latest)).To(Succeed())
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-
-	// Wait for ResolvedRefs=True.
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.HTTPRoute
-		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
-		g.Expect(result.Status.Parents).To(HaveLen(1))
-		resolvedRefs := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionResolvedRefs))
-		g.Expect(resolvedRefs).NotTo(BeNil())
-		g.Expect(resolvedRefs.Status).To(Equal(metav1.ConditionTrue))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-
-	// Tunnel ingress should contain the cross-namespace service URL.
-	g.Eventually(func(g Gomega) {
-		g.Expect(testMock.lastTunnelConfigIngress).To(HaveLen(2))
-		g.Expect(testMock.lastTunnelConfigIngress[0].Hostname).To(Equal("backend-granted.example.com"))
-		g.Expect(testMock.lastTunnelConfigIngress[0].Service).To(Equal(
-			"http://cross-service." + nsB.Name + ".svc.cluster.local:8080"))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-}
-
-func TestGatewayReconciler_DNSZoneRemovalCleanup(t *testing.T) {
-	g := NewWithT(t)
-
-	ns := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
-
-	createTestSecret(g, ns.Name)
-	gc := createTestGatewayClass(g, "test-gw-class-dns-removal", ns.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	waitForGatewayClassReady(g, gc)
-
-	params := createTestParameters(g, "test-gw-dns-removal-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
-		DNS: &apiv1.DNSConfig{Zone: apiv1.DNSZoneConfig{Name: "example.com"}},
-	})
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-gw-dns-removal",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.GatewaySpec{
-			GatewayClassName: gatewayv1.ObjectName(gc.Name),
-			Infrastructure: &gatewayv1.GatewayInfrastructure{
-				ParametersRef: parametersRef(params.Name),
-			},
-			Listeners: []gatewayv1.Listener{
-				{
-					Name:     "http",
-					Protocol: gatewayv1.HTTPProtocolType,
-					Port:     80,
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-	waitForGatewayProgrammed(g, gw)
-
-	testMock.ensureDNSCalls = nil
-
-	route := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-route-dns-removal",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.HTTPRouteSpec{
-			CommonRouteSpec: gatewayv1.CommonRouteSpec{
-				ParentRefs: []gatewayv1.ParentReference{
-					{Name: gatewayv1.ObjectName(gw.Name)},
-				},
-			},
-			Hostnames: []gatewayv1.Hostname{"removal.example.com"},
-			Rules: []gatewayv1.HTTPRouteRule{
-				{
-					BackendRefs: []gatewayv1.HTTPBackendRef{
-						{BackendRef: gatewayv1.BackendRef{
-							BackendObjectReference: gatewayv1.BackendObjectReference{
-								Name: "my-service", Port: new(gatewayv1.PortNumber(8080)),
-							},
-						}},
-					},
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.HTTPRoute
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	// Wait for DNS condition True.
-	routeKey := client.ObjectKeyFromObject(route)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.HTTPRoute
-		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
-		g.Expect(result.Status.Parents).To(HaveLen(1))
-		dns := conditions.Find(result.Status.Parents[0].Conditions, apiv1.ConditionDNSRecordsApplied)
-		g.Expect(dns).NotTo(BeNil())
-		g.Expect(dns.Status).To(Equal(metav1.ConditionTrue))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-
-	// Setup mock for cleanup: simulate existing DNS records.
-	testMock.zoneIDs = []string{"zone-1"}
-	testMock.listDNSCNAMEsByTarget = []string{"removal.example.com"}
-	testMock.deleteDNSCalls = nil
-
-	// Remove DNS config from CloudflareGatewayParameters.
-	g.Eventually(func(g Gomega) {
-		var latestParams apiv1.CloudflareGatewayParameters
-		g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(params), &latestParams)).To(Succeed())
-		latestParams.Spec.DNS = nil
-		g.Expect(testClient.Update(testCtx, &latestParams)).To(Succeed())
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-
-	// DNS cleanup should be called.
-	g.Eventually(func() int {
-		return len(testMock.deleteDNSCalls)
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(BeNumerically(">=", 1))
-	g.Expect(testMock.deleteDNSCalls[0].Hostname).To(Equal("removal.example.com"))
-
-	// HTTPRoute DNS condition should be removed.
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.HTTPRoute
-		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
-		g.Expect(result.Status.Parents).To(HaveLen(1))
-		dns := conditions.Find(result.Status.Parents[0].Conditions, apiv1.ConditionDNSRecordsApplied)
-		g.Expect(dns).To(BeNil(), "DNSRecordsApplied condition should be removed when DNS is disabled")
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-
-	// Cleanup.
-	testMock.zoneIDs = nil
-	testMock.listDNSCNAMEsByTarget = nil
-}
-
 func TestGatewayReconciler_DeploymentProgressDeadlineExceeded(t *testing.T) {
 	g := NewWithT(t)
 
@@ -2847,580 +1449,6 @@ func TestGatewayReconciler_DeploymentProgressDeadlineExceeded(t *testing.T) {
 		programmed := conditions.Find(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
 		g.Expect(programmed).NotTo(BeNil())
 		g.Expect(programmed.Status).To(Equal(metav1.ConditionFalse))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-}
-
-func TestGatewayReconciler_HTTPRoutePathMatches(t *testing.T) {
-	g := NewWithT(t)
-
-	ns := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
-
-	createTestSecret(g, ns.Name)
-	gc := createTestGatewayClass(g, "test-gw-class-path", ns.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	waitForGatewayClassReady(g, gc)
-
-	gw := createTestGateway(g, "test-gw-path", ns.Name, gc.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-	waitForGatewayProgrammed(g, gw)
-
-	testMock.lastTunnelConfigIngress = nil
-
-	pathPrefix := gatewayv1.PathMatchPathPrefix
-	route := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-route-path",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.HTTPRouteSpec{
-			CommonRouteSpec: gatewayv1.CommonRouteSpec{
-				ParentRefs: []gatewayv1.ParentReference{
-					{Name: gatewayv1.ObjectName(gw.Name)},
-				},
-			},
-			Hostnames: []gatewayv1.Hostname{"path.example.com"},
-			Rules: []gatewayv1.HTTPRouteRule{
-				{
-					Matches: []gatewayv1.HTTPRouteMatch{
-						{
-							Path: &gatewayv1.HTTPPathMatch{
-								Type:  &pathPrefix,
-								Value: new(string),
-							},
-						},
-					},
-					BackendRefs: []gatewayv1.HTTPBackendRef{
-						{BackendRef: gatewayv1.BackendRef{
-							BackendObjectReference: gatewayv1.BackendObjectReference{
-								Name: "my-service", Port: new(gatewayv1.PortNumber(8080)),
-							},
-						}},
-					},
-				},
-			},
-		},
-	}
-	// Set path value after creation since we need a pointer.
-	*route.Spec.Rules[0].Matches[0].Path.Value = "/api/v1"
-
-	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.HTTPRoute
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	// Verify tunnel ingress rule has Path="/api/v1".
-	g.Eventually(func(g Gomega) {
-		g.Expect(testMock.lastTunnelConfigIngress).To(HaveLen(2))
-		g.Expect(testMock.lastTunnelConfigIngress[0].Hostname).To(Equal("path.example.com"))
-		g.Expect(testMock.lastTunnelConfigIngress[0].Path).To(Equal("/api/v1"))
-		g.Expect(testMock.lastTunnelConfigIngress[0].Service).To(Equal("http://my-service." + ns.Name + ".svc.cluster.local:8080"))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-}
-
-func TestGatewayReconciler_HTTPRouteMultipleRulesAndHostnames(t *testing.T) {
-	g := NewWithT(t)
-
-	ns := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
-
-	createTestSecret(g, ns.Name)
-	gc := createTestGatewayClass(g, "test-gw-class-multi-rules", ns.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	waitForGatewayClassReady(g, gc)
-
-	gw := createTestGateway(g, "test-gw-multi-rules", ns.Name, gc.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-	waitForGatewayProgrammed(g, gw)
-
-	testMock.lastTunnelConfigIngress = nil
-
-	route := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-route-multi",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.HTTPRouteSpec{
-			CommonRouteSpec: gatewayv1.CommonRouteSpec{
-				ParentRefs: []gatewayv1.ParentReference{
-					{Name: gatewayv1.ObjectName(gw.Name)},
-				},
-			},
-			Hostnames: []gatewayv1.Hostname{"app.example.com", "api.example.com"},
-			Rules: []gatewayv1.HTTPRouteRule{
-				{
-					BackendRefs: []gatewayv1.HTTPBackendRef{
-						{BackendRef: gatewayv1.BackendRef{
-							BackendObjectReference: gatewayv1.BackendObjectReference{
-								Name: "frontend", Port: new(gatewayv1.PortNumber(80)),
-							},
-						}},
-					},
-				},
-				{
-					BackendRefs: []gatewayv1.HTTPBackendRef{
-						{BackendRef: gatewayv1.BackendRef{
-							BackendObjectReference: gatewayv1.BackendObjectReference{
-								Name: "backend", Port: new(gatewayv1.PortNumber(8080)),
-							},
-						}},
-					},
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.HTTPRoute
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	// 2 rules x 2 hostnames = 4 hostname rules + 1 catch-all = 5 total.
-	g.Eventually(func(g Gomega) {
-		g.Expect(testMock.lastTunnelConfigIngress).To(HaveLen(5))
-		// Last rule is catch-all.
-		g.Expect(testMock.lastTunnelConfigIngress[4].Service).To(Equal("http_status:404"))
-		g.Expect(testMock.lastTunnelConfigIngress[4].Hostname).To(BeEmpty())
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-}
-
-func TestGatewayReconciler_HTTPRouteNoBackends(t *testing.T) {
-	g := NewWithT(t)
-
-	ns := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
-
-	createTestSecret(g, ns.Name)
-	gc := createTestGatewayClass(g, "test-gw-class-no-backends", ns.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	waitForGatewayClassReady(g, gc)
-
-	gw := createTestGateway(g, "test-gw-no-backends", ns.Name, gc.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-	waitForGatewayProgrammed(g, gw)
-
-	testMock.lastTunnelConfigIngress = nil
-
-	route := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-route-no-backends",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.HTTPRouteSpec{
-			CommonRouteSpec: gatewayv1.CommonRouteSpec{
-				ParentRefs: []gatewayv1.ParentReference{
-					{Name: gatewayv1.ObjectName(gw.Name)},
-				},
-			},
-			Hostnames: []gatewayv1.Hostname{"nobackend.example.com"},
-			Rules: []gatewayv1.HTTPRouteRule{
-				{
-					// Empty BackendRefs.
-					BackendRefs: []gatewayv1.HTTPBackendRef{},
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.HTTPRoute
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	// Route should be Accepted.
-	routeKey := client.ObjectKeyFromObject(route)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.HTTPRoute
-		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
-		g.Expect(result.Status.Parents).To(HaveLen(1))
-		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
-		g.Expect(accepted).NotTo(BeNil())
-		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-
-	// Tunnel ingress should have only catch-all 404.
-	g.Eventually(func(g Gomega) {
-		g.Expect(testMock.lastTunnelConfigIngress).To(HaveLen(1))
-		g.Expect(testMock.lastTunnelConfigIngress[0].Service).To(Equal("http_status:404"))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-}
-
-func TestGatewayReconciler_MultipleListeners(t *testing.T) {
-	g := NewWithT(t)
-
-	ns := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
-
-	createTestSecret(g, ns.Name)
-	gc := createTestGatewayClass(g, "test-gw-class-multi-listeners", ns.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	waitForGatewayClassReady(g, gc)
-
-	// Gateway with multiple listeners must be rejected.
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-gw-multi-listeners",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.GatewaySpec{
-			GatewayClassName: gatewayv1.ObjectName(gc.Name),
-			Listeners: []gatewayv1.Listener{
-				{
-					Name:     "http",
-					Protocol: gatewayv1.HTTPProtocolType,
-					Port:     80,
-				},
-				{
-					Name:     "https",
-					Protocol: gatewayv1.HTTPSProtocolType,
-					Port:     443,
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	// Verify Accepted=False with ListenersNotValid.
-	gwKey := client.ObjectKeyFromObject(gw)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.Gateway
-		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
-		accepted := conditions.Find(result.Status.Conditions, string(gatewayv1.GatewayConditionAccepted))
-		g.Expect(accepted).NotTo(BeNil())
-		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
-		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.GatewayReasonListenersNotValid)))
-		g.Expect(accepted.Message).To(ContainSubstring("exactly one listener"))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-}
-
-func TestGatewayReconciler_HTTPRouteUnsupportedFeatures(t *testing.T) {
-	g := NewWithT(t)
-
-	ns := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
-
-	createTestSecret(g, ns.Name)
-	gc := createTestGatewayClass(g, "test-gw-class-route-features", ns.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	waitForGatewayClassReady(g, gc)
-
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-gw-route-features",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.GatewaySpec{
-			GatewayClassName: gatewayv1.ObjectName(gc.Name),
-			Listeners: []gatewayv1.Listener{
-				{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-	waitForGatewayProgrammed(g, gw)
-
-	// Create route with unsupported features: filter, header match, method match.
-	method := gatewayv1.HTTPMethodGet
-	route := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-route-unsupported",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.HTTPRouteSpec{
-			CommonRouteSpec: gatewayv1.CommonRouteSpec{
-				ParentRefs: []gatewayv1.ParentReference{
-					{Name: gatewayv1.ObjectName(gw.Name)},
-				},
-			},
-			Hostnames: []gatewayv1.Hostname{"unsupported.example.com"},
-			Rules: []gatewayv1.HTTPRouteRule{
-				{
-					Filters: []gatewayv1.HTTPRouteFilter{
-						{Type: gatewayv1.HTTPRouteFilterURLRewrite, URLRewrite: &gatewayv1.HTTPURLRewriteFilter{
-							Hostname: new(gatewayv1.PreciseHostname("other.example.com")),
-						}},
-					},
-					Matches: []gatewayv1.HTTPRouteMatch{
-						{
-							Headers: []gatewayv1.HTTPHeaderMatch{
-								{Name: "X-Test", Value: "true"},
-							},
-							Method: &method,
-						},
-					},
-					BackendRefs: []gatewayv1.HTTPBackendRef{
-						{BackendRef: gatewayv1.BackendRef{
-							BackendObjectReference: gatewayv1.BackendObjectReference{
-								Name: "my-service", Port: new(gatewayv1.PortNumber(8080)),
-							},
-						}},
-					},
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.HTTPRoute
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	// Verify route gets Accepted=False/UnsupportedValue with all issues listed.
-	routeKey := client.ObjectKeyFromObject(route)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.HTTPRoute
-		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
-		g.Expect(result.Status.Parents).To(HaveLen(1))
-		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
-		g.Expect(accepted).NotTo(BeNil())
-		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
-		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.RouteReasonUnsupportedValue)))
-		g.Expect(accepted.Message).To(ContainSubstring("filters is not supported"))
-		g.Expect(accepted.Message).To(ContainSubstring("headers is not supported"))
-		g.Expect(accepted.Message).To(ContainSubstring("method is not supported"))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-}
-
-func TestGatewayReconciler_HTTPRouteMultipleBackendRefs(t *testing.T) {
-	g := NewWithT(t)
-
-	ns := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
-
-	createTestSecret(g, ns.Name)
-	gc := createTestGatewayClass(g, "test-gw-class-multi-backends", ns.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	waitForGatewayClassReady(g, gc)
-
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-gw-multi-backends",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.GatewaySpec{
-			GatewayClassName: gatewayv1.ObjectName(gc.Name),
-			Listeners: []gatewayv1.Listener{
-				{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-	waitForGatewayProgrammed(g, gw)
-
-	route := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-route-multi-backends",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.HTTPRouteSpec{
-			CommonRouteSpec: gatewayv1.CommonRouteSpec{
-				ParentRefs: []gatewayv1.ParentReference{
-					{Name: gatewayv1.ObjectName(gw.Name)},
-				},
-			},
-			Hostnames: []gatewayv1.Hostname{"backends.example.com"},
-			Rules: []gatewayv1.HTTPRouteRule{
-				{
-					BackendRefs: []gatewayv1.HTTPBackendRef{
-						{BackendRef: gatewayv1.BackendRef{
-							BackendObjectReference: gatewayv1.BackendObjectReference{
-								Name: "svc-a", Port: new(gatewayv1.PortNumber(80)),
-							},
-						}},
-						{BackendRef: gatewayv1.BackendRef{
-							BackendObjectReference: gatewayv1.BackendObjectReference{
-								Name: "svc-b", Port: new(gatewayv1.PortNumber(80)),
-							},
-						}},
-					},
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.HTTPRoute
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	routeKey := client.ObjectKeyFromObject(route)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.HTTPRoute
-		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
-		g.Expect(result.Status.Parents).To(HaveLen(1))
-		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
-		g.Expect(accepted).NotTo(BeNil())
-		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
-		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.RouteReasonUnsupportedValue)))
-		g.Expect(accepted.Message).To(ContainSubstring("traffic splitting"))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-}
-
-func TestGatewayReconciler_HTTPRouteNonServiceBackend(t *testing.T) {
-	g := NewWithT(t)
-
-	ns := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
-
-	createTestSecret(g, ns.Name)
-	gc := createTestGatewayClass(g, "test-gw-class-nonsvc", ns.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	waitForGatewayClassReady(g, gc)
-
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-gw-nonsvc",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.GatewaySpec{
-			GatewayClassName: gatewayv1.ObjectName(gc.Name),
-			Listeners: []gatewayv1.Listener{
-				{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-	waitForGatewayProgrammed(g, gw)
-
-	customKind := gatewayv1.Kind("CustomBackend")
-	customGroup := gatewayv1.Group("custom.example.com")
-	route := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-route-nonsvc",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.HTTPRouteSpec{
-			CommonRouteSpec: gatewayv1.CommonRouteSpec{
-				ParentRefs: []gatewayv1.ParentReference{
-					{Name: gatewayv1.ObjectName(gw.Name)},
-				},
-			},
-			Hostnames: []gatewayv1.Hostname{"nonsvc.example.com"},
-			Rules: []gatewayv1.HTTPRouteRule{
-				{
-					BackendRefs: []gatewayv1.HTTPBackendRef{
-						{BackendRef: gatewayv1.BackendRef{
-							BackendObjectReference: gatewayv1.BackendObjectReference{
-								Group: &customGroup,
-								Kind:  &customKind,
-								Name:  "my-custom-backend",
-							},
-						}},
-					},
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.HTTPRoute
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	routeKey := client.ObjectKeyFromObject(route)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.HTTPRoute
-		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
-		g.Expect(result.Status.Parents).To(HaveLen(1))
-		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
-		g.Expect(accepted).NotTo(BeNil())
-		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
-		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.RouteReasonUnsupportedValue)))
-		g.Expect(accepted.Message).To(ContainSubstring("only core Service backends are supported"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
@@ -3624,121 +1652,6 @@ func TestGatewayReconciler_GatewayClassSwitching(t *testing.T) {
 		g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(gcB), &gcResult)).To(Succeed())
 		g.Expect(gcResult.Finalizers).To(ContainElement(apiv1.FinalizerGatewayClass(gw)))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-}
-
-func TestGatewayReconciler_DNSMultipleHostnamesMixed(t *testing.T) {
-	g := NewWithT(t)
-
-	ns := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
-
-	createTestSecret(g, ns.Name)
-	gc := createTestGatewayClass(g, "test-gw-class-dns-mixed", ns.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	waitForGatewayClassReady(g, gc)
-
-	testMock.ensureDNSCalls = nil
-	testMock.deleteDNSCalls = nil
-	testMock.listDNSCNAMEsByTarget = nil
-
-	params := createTestParameters(g, "test-gw-dns-mixed-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
-		DNS: &apiv1.DNSConfig{Zone: apiv1.DNSZoneConfig{Name: "example.com"}},
-	})
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-gw-dns-mixed",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.GatewaySpec{
-			GatewayClassName: gatewayv1.ObjectName(gc.Name),
-			Infrastructure: &gatewayv1.GatewayInfrastructure{
-				ParametersRef: parametersRef(params.Name),
-			},
-			Listeners: []gatewayv1.Listener{
-				{
-					Name:     "http",
-					Protocol: gatewayv1.HTTPProtocolType,
-					Port:     80,
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-	waitForGatewayProgrammed(g, gw)
-
-	testMock.ensureDNSCalls = nil
-
-	route := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-route-dns-mixed",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.HTTPRouteSpec{
-			CommonRouteSpec: gatewayv1.CommonRouteSpec{
-				ParentRefs: []gatewayv1.ParentReference{
-					{Name: gatewayv1.ObjectName(gw.Name)},
-				},
-			},
-			Hostnames: []gatewayv1.Hostname{"app.example.com", "api.example.com", "app.other.com"},
-			Rules: []gatewayv1.HTTPRouteRule{
-				{
-					BackendRefs: []gatewayv1.HTTPBackendRef{
-						{BackendRef: gatewayv1.BackendRef{
-							BackendObjectReference: gatewayv1.BackendObjectReference{
-								Name: "my-service", Port: new(gatewayv1.PortNumber(8080)),
-							},
-						}},
-					},
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.HTTPRoute
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	// Wait for DNS condition with applied and skipped hostnames.
-	routeKey := client.ObjectKeyFromObject(route)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.HTTPRoute
-		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
-		g.Expect(result.Status.Parents).To(HaveLen(1))
-		dns := conditions.Find(result.Status.Parents[0].Conditions, apiv1.ConditionDNSRecordsApplied)
-		g.Expect(dns).NotTo(BeNil())
-		g.Expect(dns.Status).To(Equal(metav1.ConditionTrue))
-		g.Expect(dns.Message).To(ContainSubstring("app.example.com"))
-		g.Expect(dns.Message).To(ContainSubstring("api.example.com"))
-		g.Expect(dns.Message).To(ContainSubstring("app.other.com"))
-		g.Expect(dns.Message).To(ContainSubstring("Skipped hostnames"))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-
-	// Verify DNS calls were made for the in-zone hostnames only.
-	g.Eventually(func() int {
-		return len(testMock.ensureDNSCalls)
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(BeNumerically(">=", 2))
-	dnsHostnames := make([]string, 0, len(testMock.ensureDNSCalls))
-	for _, call := range testMock.ensureDNSCalls {
-		dnsHostnames = append(dnsHostnames, call.Hostname)
-	}
-	g.Expect(dnsHostnames).To(ContainElement("app.example.com"))
-	g.Expect(dnsHostnames).To(ContainElement("api.example.com"))
-	g.Expect(dnsHostnames).NotTo(ContainElement("app.other.com"))
 }
 
 func TestGatewayReconciler_ReconcileDisabled(t *testing.T) {
@@ -3974,7 +1887,7 @@ func TestGatewayReconciler_CloudflareUpdateConfigError(t *testing.T) {
 		g.Expect(ready).NotTo(BeNil())
 		g.Expect(ready.Status).To(Equal(metav1.ConditionUnknown))
 		g.Expect(ready.Reason).To(Equal(apiv1.ReasonProgressingWithRetry))
-		g.Expect(ready.Message).To(ContainSubstring("tunnel configuration"))
+		g.Expect(ready.Message).To(ContainSubstring("configuration: config update failed"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
@@ -4341,7 +2254,7 @@ func TestGatewayReconciler_CloudflareListZoneIDsErrorDuringFinalization(t *testi
 		g.Expect(ready).NotTo(BeNil())
 		g.Expect(ready.Status).To(Equal(metav1.ConditionUnknown))
 		g.Expect(ready.Reason).To(Equal(apiv1.ReasonProgressingWithRetry))
-		g.Expect(ready.Message).To(ContainSubstring("cleaning up DNS during finalization"))
+		g.Expect(ready.Message).To(ContainSubstring("cleaning up DNS for tunnel"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
 	// Clear error so cleanup (resetMockErrors) doesn't leave a stuck Gateway.
@@ -4467,7 +2380,7 @@ func TestGatewayReconciler_CloudflareGetTunnelConfigError(t *testing.T) {
 		g.Expect(ready).NotTo(BeNil())
 		g.Expect(ready.Status).To(Equal(metav1.ConditionUnknown))
 		g.Expect(ready.Reason).To(Equal(apiv1.ReasonProgressingWithRetry))
-		g.Expect(ready.Message).To(ContainSubstring("getting tunnel configuration"))
+		g.Expect(ready.Message).To(ContainSubstring("configuration: config fetch failed"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
@@ -4841,7 +2754,7 @@ func TestGatewayReconciler_CloudflareCleanupConnectionsErrorDuringFinalization(t
 		g.Expect(ready).NotTo(BeNil())
 		g.Expect(ready.Status).To(Equal(metav1.ConditionUnknown))
 		g.Expect(ready.Reason).To(Equal(apiv1.ReasonProgressingWithRetry))
-		g.Expect(ready.Message).To(ContainSubstring("cleaning up tunnel connections"))
+		g.Expect(ready.Message).To(ContainSubstring("cleaning up connections for tunnel"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
 	// Verify Warning/ProgressingWithRetry/Finalize event.
@@ -4849,7 +2762,7 @@ func TestGatewayReconciler_CloudflareCleanupConnectionsErrorDuringFinalization(t
 		e := findEvent(g, ns.Name, gw.Name, corev1.EventTypeWarning, apiv1.ReasonProgressingWithRetry, apiv1.EventActionFinalize, "")
 		g.Expect(e).NotTo(BeNil())
 		g.Expect(e.Note).To(ContainSubstring("Finalization failed"))
-		g.Expect(e.Note).To(ContainSubstring("cleaning up tunnel connections"))
+		g.Expect(e.Note).To(ContainSubstring("cleaning up connections for tunnel"))
 	}).WithTimeout(5 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
 
 	// Clear error so cleanup (resetMockErrors) doesn't leave a stuck Gateway.
@@ -4879,8 +2792,8 @@ func TestGatewayReconciler_CloudflareTunnelLookupErrorDuringFinalization(t *test
 	waitForGatewayProgrammed(g, gw)
 	gwKey := client.ObjectKeyFromObject(gw)
 
-	// Set getTunnelIDByName error (will hit during finalization).
-	testMock.getTunnelIDByNameErr = fmt.Errorf("tunnel lookup failed")
+	// Set listTunnels error (will hit during finalization).
+	testMock.listTunnelsErr = fmt.Errorf("tunnel listing failed")
 
 	// Delete the Gateway.
 	g.Eventually(func(g Gomega) {
@@ -4897,7 +2810,7 @@ func TestGatewayReconciler_CloudflareTunnelLookupErrorDuringFinalization(t *test
 		g.Expect(ready).NotTo(BeNil())
 		g.Expect(ready.Status).To(Equal(metav1.ConditionUnknown))
 		g.Expect(ready.Reason).To(Equal(apiv1.ReasonProgressingWithRetry))
-		g.Expect(ready.Message).To(ContainSubstring("looking up tunnel for deletion"))
+		g.Expect(ready.Message).To(ContainSubstring("listing tunnels for deletion"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
 	// Verify Warning/ProgressingWithRetry/Finalize event.
@@ -4905,9 +2818,375 @@ func TestGatewayReconciler_CloudflareTunnelLookupErrorDuringFinalization(t *test
 		e := findEvent(g, ns.Name, gw.Name, corev1.EventTypeWarning, apiv1.ReasonProgressingWithRetry, apiv1.EventActionFinalize, "")
 		g.Expect(e).NotTo(BeNil())
 		g.Expect(e.Note).To(ContainSubstring("Finalization failed"))
-		g.Expect(e.Note).To(ContainSubstring("looking up tunnel for deletion"))
+		g.Expect(e.Note).To(ContainSubstring("listing tunnels for deletion"))
 	}).WithTimeout(5 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
 
 	// Clear error so cleanup (resetMockErrors) doesn't leave a stuck Gateway.
-	testMock.getTunnelIDByNameErr = nil
+	testMock.listTunnelsErr = nil
+}
+
+func TestGatewayReconciler_DNSZoneChange(t *testing.T) {
+	g := NewWithT(t)
+	resetMockErrors(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-zone-change", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	// Set up zone ID mapping so old and new zones have distinct IDs.
+	testMock.zones = map[string]string{
+		"old.example.com": "old-zone-id",
+		"new.example.com": "new-zone-id",
+	}
+
+	params := createTestParameters(g, "test-gw-zone-change-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		DNS: &apiv1.DNSConfig{Zone: apiv1.DNSZoneConfig{Name: "old.example.com"}},
+	})
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-zone-change",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "http",
+					Protocol: gatewayv1.HTTPProtocolType,
+					Port:     80,
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		testMock.zones = nil
+		testMock.listDNSCNAMEsByTarget = nil
+		testMock.deleteDNSCalls = nil
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+	waitForGatewayProgrammed(g, gw)
+
+	// Verify CGS records the old zone.
+	cgsKey := client.ObjectKey{Name: gw.Name, Namespace: gw.Namespace}
+	g.Eventually(func(g Gomega) {
+		var cgs apiv1.CloudflareGatewayStatus
+		g.Expect(testClient.Get(testCtx, cgsKey, &cgs)).To(Succeed())
+		g.Expect(cgs.Status.DNS).NotTo(BeNil())
+		g.Expect(cgs.Status.DNS.ZoneName).To(Equal("old.example.com"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Set mock to return existing CNAMEs (as if records existed in the old zone)
+	// and clear deleteDNSCalls to get a clean slate for assertions.
+	testMock.listDNSCNAMEsByTarget = []string{"app.old.example.com"}
+	testMock.deleteDNSCalls = nil
+
+	// Change DNS zone to "new.example.com".
+	g.Eventually(func(g Gomega) {
+		var latestParams apiv1.CloudflareGatewayParameters
+		g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(params), &latestParams)).To(Succeed())
+		latestParams.Spec.DNS.Zone.Name = "new.example.com"
+		g.Expect(testClient.Update(testCtx, &latestParams)).To(Succeed())
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Verify CGS updates to the new zone.
+	g.Eventually(func(g Gomega) {
+		var cgs apiv1.CloudflareGatewayStatus
+		g.Expect(testClient.Get(testCtx, cgsKey, &cgs)).To(Succeed())
+		g.Expect(cgs.Status.DNS).NotTo(BeNil())
+		g.Expect(cgs.Status.DNS.ZoneName).To(Equal("new.example.com"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Verify DNS records were cleaned up in the old zone (zone ID = "old-zone-id").
+	var oldZoneDeletes []mockDNSCall
+	for _, c := range testMock.deleteDNSCalls {
+		if c.ZoneID == "old-zone-id" {
+			oldZoneDeletes = append(oldZoneDeletes, c)
+		}
+	}
+	g.Expect(oldZoneDeletes).NotTo(BeEmpty())
+	g.Expect(oldZoneDeletes[0].Hostname).To(Equal("app.old.example.com"))
+}
+
+func TestGatewayReconciler_MultipleListeners(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-multi-listener", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-multi-listener",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Listeners: []gatewayv1.Listener{
+				{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80},
+				{Name: "https", Protocol: gatewayv1.HTTPSProtocolType, Port: 443},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	gwKey := client.ObjectKeyFromObject(gw)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
+		accepted := conditions.Find(result.Status.Conditions, string(gatewayv1.GatewayConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.GatewayReasonListenersNotValid)))
+		g.Expect(accepted.Message).To(ContainSubstring("exactly one listener"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func TestGatewayReconciler_ParametersNotFound(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-params-not-found", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	// Reference a non-existent CloudflareGatewayParameters.
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-params-not-found",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef("nonexistent-params"),
+			},
+			Listeners: []gatewayv1.Listener{
+				{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	gwKey := client.ObjectKeyFromObject(gw)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
+		accepted := conditions.Find(result.Status.Conditions, string(gatewayv1.GatewayConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.GatewayReasonInvalidParameters)))
+		g.Expect(accepted.Message).To(ContainSubstring("not found"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func TestGatewayReconciler_CredentialsFromCGPSecretRef(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	// Create a GatewayClass without credentials (no parametersRef).
+	gc := &gatewayv1.GatewayClass{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-gw-class-cgp-secret",
+		},
+		Spec: gatewayv1.GatewayClassSpec{
+			ControllerName: apiv1.ControllerName,
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gc)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Wait for GatewayClass to be accepted (no parametersRef is fine).
+	gcKey := client.ObjectKeyFromObject(gc)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.GatewayClass
+		g.Expect(testClient.Get(testCtx, gcKey, &result)).To(Succeed())
+		accepted := conditions.Find(result.Status.Conditions, string(gatewayv1.GatewayClassConditionStatusAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Create the credentials Secret that the CGP secretRef will point to.
+	cgpSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "cgp-creds",
+			Namespace: ns.Name,
+		},
+		Data: map[string][]byte{
+			"CLOUDFLARE_API_TOKEN":  []byte("cgp-api-token"),
+			"CLOUDFLARE_ACCOUNT_ID": []byte("cgp-account-id"),
+		},
+	}
+	g.Expect(testClient.Create(testCtx, cgpSecret)).To(Succeed())
+
+	// Create CGP with secretRef.
+	params := createTestParameters(g, "test-gw-cgp-secret-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		SecretRef: &apiv1.SecretRef{Name: "cgp-creds"},
+	})
+
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-cgp-secret",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
+			Listeners: []gatewayv1.Listener{
+				{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Gateway should be Programmed using credentials from CGP secretRef.
+	waitForGatewayProgrammed(g, gw)
+
+	// Verify the Cloudflare client was created with credentials from the CGP secret.
+	g.Expect(testMock.lastClientConfig.APIToken).To(Equal("cgp-api-token"))
+	g.Expect(testMock.lastClientConfig.AccountID).To(Equal("cgp-account-id"))
+}
+
+func TestGatewayReconciler_CredentialsFromCGPSecretRefMissingKeys(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	gc := &gatewayv1.GatewayClass{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-gw-class-cgp-secret-missing",
+		},
+		Spec: gatewayv1.GatewayClassSpec{
+			ControllerName: apiv1.ControllerName,
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gc)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	gcKey := client.ObjectKeyFromObject(gc)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.GatewayClass
+		g.Expect(testClient.Get(testCtx, gcKey, &result)).To(Succeed())
+		accepted := conditions.Find(result.Status.Conditions, string(gatewayv1.GatewayClassConditionStatusAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Create Secret missing CLOUDFLARE_ACCOUNT_ID.
+	incomplete := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "cgp-creds-incomplete",
+			Namespace: ns.Name,
+		},
+		Data: map[string][]byte{
+			"CLOUDFLARE_API_TOKEN": []byte("token-only"),
+		},
+	}
+	g.Expect(testClient.Create(testCtx, incomplete)).To(Succeed())
+
+	params := createTestParameters(g, "test-gw-cgp-secret-missing-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		SecretRef: &apiv1.SecretRef{Name: "cgp-creds-incomplete"},
+	})
+
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-cgp-secret-missing",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
+			Listeners: []gatewayv1.Listener{
+				{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	gwKey := client.ObjectKeyFromObject(gw)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
+		accepted := conditions.Find(result.Status.Conditions, string(gatewayv1.GatewayConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.GatewayReasonInvalidParameters)))
+		g.Expect(accepted.Message).To(ContainSubstring("CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }

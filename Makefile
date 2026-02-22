@@ -70,8 +70,20 @@ docker-build: ## Build the controller Docker image locally.
 	docker buildx build -t $(IMG) --load .
 
 .PHONY: test-e2e
-test-e2e: build-cfgwctl ## Run end-to-end tests against a kind cluster.
+test-e2e: build-cfgwctl ## Run simple topology e2e tests against a kind cluster.
 	hack/e2e-test.sh 2>&1 | stdbuf -oL tee test-e2e.log
+
+.PHONY: test-e2e-ha
+test-e2e-ha: build-cfgwctl ## Run HighAvailability topology e2e tests.
+	hack/e2e-test-ha.sh 2>&1 | stdbuf -oL tee test-e2e-ha.log
+
+.PHONY: test-e2e-ts
+test-e2e-ts: build-cfgwctl ## Run TrafficSplitting topology e2e tests.
+	hack/e2e-test-ts.sh 2>&1 | stdbuf -oL tee test-e2e-ts.log
+
+.PHONY: test-e2e-ts-az
+test-e2e-ts-az: build-cfgwctl ## Run TrafficSplitting with AZs e2e tests.
+	hack/e2e-test-ts-az.sh 2>&1 | stdbuf -oL tee test-e2e-ts-az.log
 
 .PHONY: run
 run: fmt vet ## Run the controller locally against the current kubeconfig cluster.

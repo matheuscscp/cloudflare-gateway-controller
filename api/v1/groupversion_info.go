@@ -24,11 +24,11 @@ const (
 const Group = ShortControllerName + ".io"
 
 var (
-	// SchemeGroupVersion is the group version used to register these objects.
-	SchemeGroupVersion = schema.GroupVersion{Group: Group, Version: "v1"}
+	// GroupVersion is the group version used to register these objects.
+	GroupVersion = schema.GroupVersion{Group: Group, Version: "v1"}
 
 	// SchemeBuilder is used to add go types to the GroupVersionResource scheme.
-	SchemeBuilder = &scheme.Builder{GroupVersion: SchemeGroupVersion}
+	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion}
 
 	// Install adds the types in this group-version to the given scheme.
 	Install = SchemeBuilder.AddToScheme
@@ -37,5 +37,7 @@ var (
 func init() {
 	SchemeBuilder.Register(
 		&CloudflareGatewayParameters{},
-		&CloudflareGatewayParametersList{})
+		&CloudflareGatewayParametersList{},
+		&CloudflareGatewayStatus{},
+		&CloudflareGatewayStatusList{})
 }
