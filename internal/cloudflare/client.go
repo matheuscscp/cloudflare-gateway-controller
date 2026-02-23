@@ -12,6 +12,7 @@ import (
 
 	"github.com/cloudflare/cloudflare-go/v6"
 	"github.com/cloudflare/cloudflare-go/v6/dns"
+	"github.com/cloudflare/cloudflare-go/v6/load_balancers"
 	"github.com/cloudflare/cloudflare-go/v6/option"
 	"github.com/cloudflare/cloudflare-go/v6/zero_trust"
 	"github.com/cloudflare/cloudflare-go/v6/zones"
@@ -37,8 +38,41 @@ type Tunnel struct {
 	Name string
 }
 
+// MonitorConfig holds the configuration for a Cloudflare LB health monitor.
+type MonitorConfig struct {
+	Type          string // "http", "https", or "tcp". Default: "https".
+	Path          string // Health check endpoint. Default: "/ready".
+	Interval      int64  // Seconds between checks. Default: 60.
+	Timeout       int64  // Seconds before failure. Default: 5.
+	ExpectedCodes string // Expected HTTP response codes. Default: "200".
+}
+
+// PoolOrigin represents an origin server within a Cloudflare LB pool.
+type PoolOrigin struct {
+	Name    string  // Origin name (e.g. AZ name or service-az key).
+	Address string  // Origin address (e.g. <tunnelID>.cfargotunnel.com).
+	Enabled bool    // Whether this origin is enabled.
+	Weight  float64 // Origin-level weight (0-1). Default: 1.
+}
+
+// PoolConfig holds the configuration for a Cloudflare LB pool.
+type PoolConfig struct {
+	Name      string       // Pool name.
+	MonitorID string       // Associated monitor ID.
+	Origins   []PoolOrigin // Pool origins.
+	Weight    float64      // Pool-level weight for LB steering (0-1). Default: 1.
+	Enabled   bool         // Whether this pool is enabled.
+}
+
+// LoadBalancerPool represents a Cloudflare LB pool with its ID and name.
+type LoadBalancerPool struct {
+	ID   string
+	Name string
+}
+
 // Client abstracts Cloudflare tunnel operations.
 type Client interface {
+	// Tunnel operations.
 	CreateTunnel(ctx context.Context, name string) (tunnelID string, err error)
 	GetTunnelIDByName(ctx context.Context, name string) (tunnelID string, err error)
 	ListTunnels(ctx context.Context) ([]Tunnel, error)
@@ -47,17 +81,43 @@ type Client interface {
 	GetTunnelToken(ctx context.Context, tunnelID string) (token string, err error)
 	GetTunnelConfiguration(ctx context.Context, tunnelID string) ([]IngressRule, error)
 	UpdateTunnelConfiguration(ctx context.Context, tunnelID string, ingress []IngressRule) error
+
+	// Zone/DNS operations.
 	ListZoneIDs(ctx context.Context) ([]string, error)
 	FindZoneIDByHostname(ctx context.Context, hostname string) (string, error)
 	EnsureDNSCNAME(ctx context.Context, zoneID, hostname, target string) error
 	DeleteDNSCNAME(ctx context.Context, zoneID, hostname string) error
 	ListDNSCNAMEsByTarget(ctx context.Context, zoneID, target string) ([]string, error)
+
+	// Load Balancer Monitor operations (account-level).
+	CreateMonitor(ctx context.Context, name string, config MonitorConfig) (monitorID string, err error)
+	GetMonitorByName(ctx context.Context, name string) (monitorID string, err error)
+	UpdateMonitor(ctx context.Context, monitorID, name string, config MonitorConfig) error
+	DeleteMonitor(ctx context.Context, monitorID string) error
+
+	// Load Balancer Pool operations (account-level).
+	CreatePool(ctx context.Context, config PoolConfig) (poolID string, err error)
+	GetPoolByName(ctx context.Context, name string) (poolID string, pool *PoolConfig, err error)
+	UpdatePool(ctx context.Context, poolID string, config PoolConfig) error
+	DeletePool(ctx context.Context, poolID string) error
+	ListPoolsByPrefix(ctx context.Context, prefix string) ([]LoadBalancerPool, error)
+
+	// Load Balancer operations (zone-level).
+	EnsureLoadBalancer(ctx context.Context, zoneID, hostname string, poolIDs []string, steeringPolicy, sessionAffinity string, poolWeights map[string]float64) error
+	DeleteLoadBalancer(ctx context.Context, zoneID, hostname string) error
+	ListLoadBalancerHostnames(ctx context.Context, zoneID string) ([]string, error)
 }
 
 // IsConflict reports whether the error is a 409 Conflict from the Cloudflare API.
 func IsConflict(err error) bool {
 	var apiErr *cloudflare.Error
 	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict
+}
+
+// IsNotFound reports whether the error is a 404 Not Found from the Cloudflare API.
+func IsNotFound(err error) bool {
+	var apiErr *cloudflare.Error
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound
 }
 
 // TunnelTarget returns the CNAME target for a Cloudflare tunnel.
@@ -84,6 +144,8 @@ type client struct {
 	client    *cloudflare.Client
 	accountID string
 }
+
+// --- Tunnel operations ---
 
 func (c *client) CreateTunnel(ctx context.Context, name string) (string, error) {
 	tunnel, err := c.client.ZeroTrust.Tunnels.Cloudflared.New(ctx, zero_trust.TunnelCloudflaredNewParams{
@@ -142,8 +204,7 @@ func (c *client) DeleteTunnel(ctx context.Context, tunnelID string) error {
 	_, err := c.client.ZeroTrust.Tunnels.Cloudflared.Delete(ctx, tunnelID, zero_trust.TunnelCloudflaredDeleteParams{
 		AccountID: cloudflare.String(c.accountID),
 	})
-	var apiErr *cloudflare.Error
-	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+	if IsNotFound(err) {
 		return nil
 	}
 	return err
@@ -197,6 +258,8 @@ func (c *client) UpdateTunnelConfiguration(ctx context.Context, tunnelID string,
 	})
 	return err
 }
+
+// --- Zone/DNS operations ---
 
 func (c *client) ListZoneIDs(ctx context.Context) ([]string, error) {
 	pager := c.client.Zones.ListAutoPaging(ctx, zones.ZoneListParams{})
@@ -305,6 +368,289 @@ func (c *client) ListDNSCNAMEsByTarget(ctx context.Context, zoneID, target strin
 	}
 	if err := pager.Err(); err != nil {
 		return nil, fmt.Errorf("listing CNAME records by target %q in zone %q: %w", target, zoneID, err)
+	}
+	return hostnames, nil
+}
+
+// --- Load Balancer Monitor operations ---
+
+func (c *client) CreateMonitor(ctx context.Context, name string, config MonitorConfig) (string, error) {
+	params := load_balancers.MonitorNewParams{
+		AccountID:     cloudflare.String(c.accountID),
+		Description:   cloudflare.String(name),
+		Type:          cloudflare.F(load_balancers.MonitorNewParamsType(config.Type)),
+		Path:          cloudflare.String(config.Path),
+		ExpectedCodes: cloudflare.String(config.ExpectedCodes),
+	}
+	if config.Interval > 0 {
+		params.Interval = cloudflare.Int(config.Interval)
+	}
+	if config.Timeout > 0 {
+		params.Timeout = cloudflare.Int(config.Timeout)
+	}
+	monitor, err := c.client.LoadBalancers.Monitors.New(ctx, params)
+	if err != nil {
+		return "", fmt.Errorf("creating monitor %q: %w", name, err)
+	}
+	return monitor.ID, nil
+}
+
+func (c *client) GetMonitorByName(ctx context.Context, name string) (string, error) {
+	page, err := c.client.LoadBalancers.Monitors.List(ctx, load_balancers.MonitorListParams{
+		AccountID: cloudflare.String(c.accountID),
+	})
+	if err != nil {
+		return "", fmt.Errorf("listing monitors: %w", err)
+	}
+	for _, m := range page.Result {
+		if m.Description == name {
+			return m.ID, nil
+		}
+	}
+	return "", nil
+}
+
+func (c *client) UpdateMonitor(ctx context.Context, monitorID, name string, config MonitorConfig) error {
+	params := load_balancers.MonitorUpdateParams{
+		AccountID:     cloudflare.String(c.accountID),
+		Description:   cloudflare.String(name),
+		Type:          cloudflare.F(load_balancers.MonitorUpdateParamsType(config.Type)),
+		Path:          cloudflare.String(config.Path),
+		ExpectedCodes: cloudflare.String(config.ExpectedCodes),
+	}
+	if config.Interval > 0 {
+		params.Interval = cloudflare.Int(config.Interval)
+	}
+	if config.Timeout > 0 {
+		params.Timeout = cloudflare.Int(config.Timeout)
+	}
+	_, err := c.client.LoadBalancers.Monitors.Update(ctx, monitorID, params)
+	if err != nil {
+		return fmt.Errorf("updating monitor %q: %w", monitorID, err)
+	}
+	return nil
+}
+
+func (c *client) DeleteMonitor(ctx context.Context, monitorID string) error {
+	_, err := c.client.LoadBalancers.Monitors.Delete(ctx, monitorID, load_balancers.MonitorDeleteParams{
+		AccountID: cloudflare.String(c.accountID),
+	})
+	if IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("deleting monitor %q: %w", monitorID, err)
+	}
+	return nil
+}
+
+// --- Load Balancer Pool operations ---
+
+func (c *client) CreatePool(ctx context.Context, config PoolConfig) (string, error) {
+	origins := make([]load_balancers.OriginParam, 0, len(config.Origins))
+	for _, o := range config.Origins {
+		origins = append(origins, load_balancers.OriginParam{
+			Name:    cloudflare.String(o.Name),
+			Address: cloudflare.String(o.Address),
+			Enabled: cloudflare.Bool(o.Enabled),
+			Weight:  cloudflare.Float(o.Weight),
+		})
+	}
+	pool, err := c.client.LoadBalancers.Pools.New(ctx, load_balancers.PoolNewParams{
+		AccountID: cloudflare.String(c.accountID),
+		Name:      cloudflare.String(config.Name),
+		Origins:   cloudflare.F(origins),
+		Monitor:   cloudflare.String(config.MonitorID),
+		Enabled:   cloudflare.Bool(config.Enabled),
+	})
+	if err != nil {
+		return "", fmt.Errorf("creating pool %q: %w", config.Name, err)
+	}
+	return pool.ID, nil
+}
+
+func (c *client) GetPoolByName(ctx context.Context, name string) (string, *PoolConfig, error) {
+	page, err := c.client.LoadBalancers.Pools.List(ctx, load_balancers.PoolListParams{
+		AccountID: cloudflare.String(c.accountID),
+	})
+	if err != nil {
+		return "", nil, fmt.Errorf("listing pools: %w", err)
+	}
+	for _, p := range page.Result {
+		if p.Name == name {
+			origins := make([]PoolOrigin, 0, len(p.Origins))
+			for _, o := range p.Origins {
+				origins = append(origins, PoolOrigin{
+					Name:    o.Name,
+					Address: o.Address,
+					Enabled: o.Enabled,
+					Weight:  o.Weight,
+				})
+			}
+			return p.ID, &PoolConfig{
+				Name:      p.Name,
+				MonitorID: p.Monitor,
+				Origins:   origins,
+				Enabled:   p.Enabled,
+			}, nil
+		}
+	}
+	return "", nil, nil
+}
+
+func (c *client) UpdatePool(ctx context.Context, poolID string, config PoolConfig) error {
+	origins := make([]load_balancers.OriginParam, 0, len(config.Origins))
+	for _, o := range config.Origins {
+		origins = append(origins, load_balancers.OriginParam{
+			Name:    cloudflare.String(o.Name),
+			Address: cloudflare.String(o.Address),
+			Enabled: cloudflare.Bool(o.Enabled),
+			Weight:  cloudflare.Float(o.Weight),
+		})
+	}
+	_, err := c.client.LoadBalancers.Pools.Update(ctx, poolID, load_balancers.PoolUpdateParams{
+		AccountID: cloudflare.String(c.accountID),
+		Name:      cloudflare.String(config.Name),
+		Origins:   cloudflare.F(origins),
+		Monitor:   cloudflare.String(config.MonitorID),
+		Enabled:   cloudflare.Bool(config.Enabled),
+	})
+	if err != nil {
+		return fmt.Errorf("updating pool %q: %w", poolID, err)
+	}
+	return nil
+}
+
+func (c *client) DeletePool(ctx context.Context, poolID string) error {
+	_, err := c.client.LoadBalancers.Pools.Delete(ctx, poolID, load_balancers.PoolDeleteParams{
+		AccountID: cloudflare.String(c.accountID),
+	})
+	if IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("deleting pool %q: %w", poolID, err)
+	}
+	return nil
+}
+
+func (c *client) ListPoolsByPrefix(ctx context.Context, prefix string) ([]LoadBalancerPool, error) {
+	page, err := c.client.LoadBalancers.Pools.List(ctx, load_balancers.PoolListParams{
+		AccountID: cloudflare.String(c.accountID),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing pools: %w", err)
+	}
+	var pools []LoadBalancerPool
+	for _, p := range page.Result {
+		if strings.HasPrefix(p.Name, prefix) {
+			pools = append(pools, LoadBalancerPool{ID: p.ID, Name: p.Name})
+		}
+	}
+	return pools, nil
+}
+
+// --- Load Balancer operations ---
+
+func (c *client) EnsureLoadBalancer(ctx context.Context, zoneID, hostname string, poolIDs []string, steeringPolicy, sessionAffinity string, poolWeights map[string]float64) error {
+	// List existing LBs to find one matching the hostname.
+	page, err := c.client.LoadBalancers.List(ctx, load_balancers.LoadBalancerListParams{
+		ZoneID: cloudflare.String(zoneID),
+	})
+	if err != nil {
+		return fmt.Errorf("listing load balancers: %w", err)
+	}
+
+	// Build params shared between create and update.
+	defaultPools := make([]string, len(poolIDs))
+	copy(defaultPools, poolIDs)
+
+	var randomSteering *load_balancers.RandomSteeringParam
+	if len(poolWeights) > 0 {
+		randomSteering = &load_balancers.RandomSteeringParam{
+			DefaultWeight: cloudflare.Float(1),
+			PoolWeights:   cloudflare.F(poolWeights),
+		}
+	}
+
+	for _, lb := range page.Result {
+		if lb.Name != hostname {
+			continue
+		}
+		// Found existing LB — update it.
+		params := load_balancers.LoadBalancerUpdateParams{
+			ZoneID:          cloudflare.String(zoneID),
+			Name:            cloudflare.String(hostname),
+			DefaultPools:    cloudflare.F(defaultPools),
+			FallbackPool:    cloudflare.String(poolIDs[0]),
+			Proxied:         cloudflare.Bool(true),
+			SteeringPolicy:  cloudflare.F(load_balancers.SteeringPolicy(steeringPolicy)),
+			SessionAffinity: cloudflare.F(load_balancers.SessionAffinity(sessionAffinity)),
+		}
+		if randomSteering != nil {
+			params.RandomSteering = cloudflare.F(*randomSteering)
+		}
+		_, err := c.client.LoadBalancers.Update(ctx, lb.ID, params)
+		if err != nil {
+			return fmt.Errorf("updating load balancer %q: %w", hostname, err)
+		}
+		return nil
+	}
+
+	// No existing LB — create one.
+	params := load_balancers.LoadBalancerNewParams{
+		ZoneID:          cloudflare.String(zoneID),
+		Name:            cloudflare.String(hostname),
+		DefaultPools:    cloudflare.F(defaultPools),
+		FallbackPool:    cloudflare.String(poolIDs[0]),
+		Proxied:         cloudflare.Bool(true),
+		SteeringPolicy:  cloudflare.F(load_balancers.SteeringPolicy(steeringPolicy)),
+		SessionAffinity: cloudflare.F(load_balancers.SessionAffinity(sessionAffinity)),
+	}
+	if randomSteering != nil {
+		params.RandomSteering = cloudflare.F(*randomSteering)
+	}
+	_, err = c.client.LoadBalancers.New(ctx, params)
+	if err != nil {
+		return fmt.Errorf("creating load balancer %q: %w", hostname, err)
+	}
+	return nil
+}
+
+func (c *client) DeleteLoadBalancer(ctx context.Context, zoneID, hostname string) error {
+	page, err := c.client.LoadBalancers.List(ctx, load_balancers.LoadBalancerListParams{
+		ZoneID: cloudflare.String(zoneID),
+	})
+	if err != nil {
+		return fmt.Errorf("listing load balancers: %w", err)
+	}
+	for _, lb := range page.Result {
+		if lb.Name == hostname {
+			_, err := c.client.LoadBalancers.Delete(ctx, lb.ID, load_balancers.LoadBalancerDeleteParams{
+				ZoneID: cloudflare.String(zoneID),
+			})
+			if IsNotFound(err) {
+				return nil
+			}
+			if err != nil {
+				return fmt.Errorf("deleting load balancer %q: %w", hostname, err)
+			}
+			return nil
+		}
+	}
+	return nil
+}
+
+func (c *client) ListLoadBalancerHostnames(ctx context.Context, zoneID string) ([]string, error) {
+	page, err := c.client.LoadBalancers.List(ctx, load_balancers.LoadBalancerListParams{
+		ZoneID: cloudflare.String(zoneID),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing load balancers: %w", err)
+	}
+	hostnames := make([]string, 0, len(page.Result))
+	for _, lb := range page.Result {
+		hostnames = append(hostnames, lb.Name)
 	}
 	return hostnames, nil
 }

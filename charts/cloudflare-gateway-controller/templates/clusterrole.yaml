@@ -23,6 +23,7 @@ rules:
   - secrets
   verbs:
   - create
+  - delete
   - get
   - list
   - patch
@@ -56,6 +57,26 @@ rules:
   - get
   - list
   - watch
+- apiGroups:
+  - cloudflare-gateway-controller.io
+  resources:
+  - cloudflaregatewaystatuses
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - cloudflare-gateway-controller.io
+  resources:
+  - cloudflaregatewaystatuses/status
+  verbs:
+  - get
+  - patch
+  - update
 - apiGroups:
   - events.k8s.io
   resources:

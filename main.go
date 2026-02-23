@@ -131,11 +131,17 @@ func main() {
 	}
 
 	if err := (&controller.GatewayReconciler{
-		Client:              client,
-		EventRecorder:       eventRecorder,
-		ResourceManager:     resourceManager,
-		NewCloudflareClient: cloudflare.NewClient,
-		CloudflaredImage:    *cloudflaredImage,
+		Client:          client,
+		EventRecorder:   eventRecorder,
+		ResourceManager: resourceManager,
+		NewCloudflareClient: func(cfg cloudflare.ClientConfig) (cloudflare.Client, error) {
+			c, err := cloudflare.NewClient(cfg)
+			if err != nil {
+				return nil, err
+			}
+			return cloudflare.WithRetry(c), nil
+		},
+		CloudflaredImage: *cloudflaredImage,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Gateway")
 		os.Exit(1)
