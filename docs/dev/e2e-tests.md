@@ -27,18 +27,22 @@ minutes.
    cluster.
 4. **Target a single test with `TEST=<function_name>`.** Don't run the full
    suite while debugging one failure.
-5. **Run the test in the background and actively monitor the cluster.** Don't
-   just launch the script and wait for it to finish. While it runs, check
-   controller logs (`kubectl logs -n cfgw-system -l app.kubernetes.io/name=cloudflare-gateway-controller -f`),
-   watch object conditions (`kubectl get gateway -A`, `kubectl get httproute -A`),
-   and inspect events (`kubectl get events -n <test-ns> --sort-by=.lastTimestamp`).
-   This way you see problems as they happen instead of after a 2-minute retry
-   timeout. If you spot an error in the logs, you can kill the test, fix the
-   issue, and re-run immediately — saving the entire retry wait.
-6. **Watch controller logs immediately** (see Debugging section). Don't wait
-   for retry timeouts to discover what went wrong — the logs tell you in
-   real time.
-7. **Clean up orphaned Cloudflare resources before retrying** if a previous
+5. **NEVER block on a test run.** Always launch the test in the background and
+   actively monitor while it runs. This is the single most important rule for
+   fast iteration. A blocking test run means you can't see problems until the
+   entire retry timeout expires (up to 3 minutes). Instead:
+   - Launch the make command in the background (e.g. using `run_in_background`
+     for the Bash tool, or `&` in a terminal).
+   - Immediately start tailing the **controller log file** and the **test
+     output file** to see progress and catch failures as they happen. The test
+     framework automatically streams controller logs to a local file (e.g.
+     `test-cfgw-e2e-ha-controller.log` — see `CONTROLLER_LOG_FILE` in
+     `e2e-lib.sh`). The test output is also saved to a log file (e.g.
+     `test-e2e-ha.log`). Tail both files — there is no need to run
+     `kubectl logs` separately.
+   - If you spot an error in the logs, you can kill the test, fix the issue,
+     and re-run immediately — saving the entire retry wait.
+6. **Clean up orphaned Cloudflare resources before retrying** if a previous
    run failed mid-way. Leftover tunnels/LBs will cause confusing failures.
 
 ## Prerequisites
@@ -179,12 +183,15 @@ or takes more than a few seconds, the controller logs will tell you exactly
 what's wrong — a permission error, a validation rejection, a retry loop.
 **Do not wait for retry timeouts.** Check the logs immediately.
 
-```bash
-kubectl logs -n cfgw-system -l app.kubernetes.io/name=cloudflare-gateway-controller -f --context kind-cfgw-e2e-ha
-```
+The test framework automatically streams controller logs to a local file via
+`start_controller_log_stream` in `e2e-lib.sh`. The file path follows the
+pattern `test-<cluster-name>-controller.log` (e.g.
+`test-cfgw-e2e-ha-controller.log`). Tail this file — there is no need to run
+`kubectl logs` separately:
 
-Replace the context name with your cluster (e.g. `kind-cfgw-e2e`,
-`kind-cfgw-e2e-ts`, etc.).
+```bash
+tail -f test-cfgw-e2e-ha-controller.log
+```
 
 ### Common failure patterns
 
@@ -233,6 +240,18 @@ hack/cleanup-cloudflare.sh
 This deletes all load balancers, pools, monitors, DNS CNAME records, and
 tunnels associated with the credentials. Run this before starting a fresh test
 suite if you suspect orphaned resources.
+
+## Test Case Documentation
+
+Every e2e test case is documented in `docs/tests/`. When adding or modifying
+tests, update the corresponding file:
+
+| File | Suite |
+|------|-------|
+| `docs/tests/simple.md` | Simple (no LB) |
+| `docs/tests/high-availability.md` | HighAvailability |
+| `docs/tests/traffic-splitting.md` | TrafficSplitting |
+| `docs/tests/traffic-splitting-with-azs.md` | TrafficSplitting + AZs |
 
 ## Architecture Notes
 

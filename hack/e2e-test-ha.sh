@@ -354,6 +354,240 @@ test_ha_gateway_deletion() {
     kubectl delete service ha-backend-a ha-backend-b -n "$TEST_NS" --ignore-not-found
 }
 
+test_simple_gw_lb_coexistence() {
+    local ha_hostname="coex-ha-${TS: -6}.${TEST_ZONE_NAME}"
+    local simple_hostname="coex-s-${TS: -6}.${TEST_ZONE_NAME}"
+
+    # --- Set up the HA gateway (creates LB) ---
+
+    log "Creating HA params for coexistence test..."
+    kubectl apply -f - <<EOF
+apiVersion: cloudflare-gateway-controller.io/v1
+kind: CloudflareGatewayParameters
+metadata:
+  name: coex-ha-params
+  namespace: $TEST_NS
+spec:
+  secretRef:
+    name: cloudflare-creds
+  dns:
+    zone:
+      name: "$TEST_ZONE_NAME"
+  tunnels:
+    availabilityZones:
+    - name: az-a
+      zone: az-a
+    - name: az-b
+      zone: az-b
+  loadBalancer:
+    topology: HighAvailability
+    steeringPolicy: Geographic
+    monitor:
+      type: HTTPS
+      path: /healthz
+EOF
+
+    log "Creating HA Gateway 'coex-ha-gw'..."
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: coex-ha-gw
+  namespace: $TEST_NS
+spec:
+  gatewayClassName: cloudflare
+  infrastructure:
+    parametersRef:
+      group: cloudflare-gateway-controller.io
+      kind: CloudflareGatewayParameters
+      name: coex-ha-params
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+EOF
+
+    retry 120 2 kubectl wait gateway/coex-ha-gw -n "$TEST_NS" \
+        --for=condition=Programmed --timeout=5s \
+        || fail "coex-ha-gw did not become Programmed"
+    pass "coex-ha-gw is Programmed"
+
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: coex-ha-backend
+  namespace: $TEST_NS
+spec:
+  ports:
+  - port: 80
+    protocol: TCP
+EOF
+
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: coex-ha-route
+  namespace: $TEST_NS
+spec:
+  parentRefs:
+  - name: coex-ha-gw
+  hostnames:
+  - "$ha_hostname"
+  rules:
+  - backendRefs:
+    - name: coex-ha-backend
+      port: 80
+EOF
+
+    local coex_zone_id
+    coex_zone_id=$(cfgwctl dns find-zone --hostname "$ha_hostname" | jq -r '.zoneId')
+    [ -n "$coex_zone_id" ] && [ "$coex_zone_id" != "null" ] || fail "zone ID not found"
+
+    log "Waiting for HA LB hostname '$ha_hostname'..."
+    retry 60 3 bash -c "cfgwctl lb list-hostnames --zone-id '$coex_zone_id' | jq -e '.hostnames[] | select(. == \"$ha_hostname\")' >/dev/null" \
+        || fail "HA LB for $ha_hostname not found"
+    pass "HA LB exists for $ha_hostname"
+
+    # --- Set up the simple gateway (same zone) ---
+
+    log "Creating simple params for coexistence test..."
+    kubectl apply -f - <<EOF
+apiVersion: cloudflare-gateway-controller.io/v1
+kind: CloudflareGatewayParameters
+metadata:
+  name: coex-simple-params
+  namespace: $TEST_NS
+spec:
+  secretRef:
+    name: cloudflare-creds
+  dns:
+    zone:
+      name: "$TEST_ZONE_NAME"
+EOF
+
+    log "Creating simple Gateway 'coex-simple-gw'..."
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: coex-simple-gw
+  namespace: $TEST_NS
+spec:
+  gatewayClassName: cloudflare
+  infrastructure:
+    parametersRef:
+      group: cloudflare-gateway-controller.io
+      kind: CloudflareGatewayParameters
+      name: coex-simple-params
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+EOF
+
+    retry 60 2 kubectl wait gateway/coex-simple-gw -n "$TEST_NS" \
+        --for=condition=Programmed --timeout=5s \
+        || fail "coex-simple-gw did not become Programmed"
+    pass "coex-simple-gw is Programmed"
+
+    local simple_gw_uid simple_tunnel_name simple_tunnel_id simple_tunnel_target
+    simple_gw_uid=$(kubectl get gateway coex-simple-gw -n "$TEST_NS" -o jsonpath='{.metadata.uid}')
+    simple_tunnel_name="gateway-${simple_gw_uid}"
+    simple_tunnel_id=$(cfgwctl tunnel get-id --name "$simple_tunnel_name" | jq -r '.tunnelId')
+    [ -n "$simple_tunnel_id" ] && [ "$simple_tunnel_id" != "null" ] || fail "simple tunnel not found"
+    simple_tunnel_target="${simple_tunnel_id}.cfargotunnel.com"
+
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: coex-simple-backend
+  namespace: $TEST_NS
+spec:
+  ports:
+  - port: 80
+    protocol: TCP
+EOF
+
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: coex-simple-route
+  namespace: $TEST_NS
+spec:
+  parentRefs:
+  - name: coex-simple-gw
+  hostnames:
+  - "$simple_hostname"
+  rules:
+  - backendRefs:
+    - name: coex-simple-backend
+      port: 80
+EOF
+
+    # --- Verify coexistence: both DNS CNAME and LB hostname exist ---
+
+    log "Verifying simple gateway DNS CNAME exists..."
+    retry 60 3 bash -c "cfgwctl dns list-cnames --zone-id '$coex_zone_id' --target '$simple_tunnel_target' | jq -e '.hostnames[] | select(. == \"$simple_hostname\")' >/dev/null" \
+        || fail "DNS CNAME for $simple_hostname not found"
+    pass "Simple gateway DNS CNAME exists"
+
+    log "Verifying HA LB hostname still exists..."
+    cfgwctl lb list-hostnames --zone-id "$coex_zone_id" | jq -e ".hostnames[] | select(. == \"$ha_hostname\")" >/dev/null \
+        || fail "HA LB for $ha_hostname disappeared after simple gateway creation"
+    pass "HA LB still exists after simple gateway creation"
+
+    # --- Delete simple HTTPRoute and verify HA LB unaffected ---
+
+    log "Deleting simple HTTPRoute..."
+    kubectl delete httproute coex-simple-route -n "$TEST_NS"
+
+    log "Verifying simple DNS CNAME removed..."
+    retry 60 3 bash -c "! cfgwctl dns list-cnames --zone-id '$coex_zone_id' --target '$simple_tunnel_target' | jq -e '.hostnames[] | select(. == \"$simple_hostname\")' >/dev/null 2>&1" \
+        || fail "DNS CNAME for $simple_hostname still exists"
+    pass "Simple DNS CNAME removed"
+
+    log "Verifying HA LB hostname still exists after simple route deletion..."
+    cfgwctl lb list-hostnames --zone-id "$coex_zone_id" | jq -e ".hostnames[] | select(. == \"$ha_hostname\")" >/dev/null \
+        || fail "HA LB for $ha_hostname disappeared after simple route deletion"
+    pass "HA LB still exists after simple route deletion"
+
+    # --- Delete simple Gateway (finalization) and verify HA LB unaffected ---
+
+    log "Deleting simple Gateway 'coex-simple-gw'..."
+    kubectl delete gateway coex-simple-gw -n "$TEST_NS"
+
+    log "Waiting for simple Gateway to be fully deleted..."
+    retry 60 3 bash -c "! kubectl get gateway coex-simple-gw -n '$TEST_NS' 2>/dev/null" \
+        || fail "coex-simple-gw still exists"
+    pass "Simple gateway deleted"
+
+    log "Verifying simple tunnel deleted..."
+    retry 60 3 bash -c "
+        id=\$(cfgwctl tunnel get-id --name '$simple_tunnel_name' | jq -r '.tunnelId')
+        [ -z \"\$id\" ] || [ \"\$id\" = 'null' ]
+    " || fail "simple tunnel still exists"
+    pass "Simple tunnel deleted"
+
+    log "Verifying HA LB hostname still exists after simple gateway deletion..."
+    cfgwctl lb list-hostnames --zone-id "$coex_zone_id" | jq -e ".hostnames[] | select(. == \"$ha_hostname\")" >/dev/null \
+        || fail "HA LB for $ha_hostname disappeared after simple gateway deletion"
+    pass "HA LB still exists after simple gateway deletion (finalization did not interfere)"
+
+    # --- Cleanup ---
+
+    log "Cleaning up coexistence test..."
+    kubectl delete httproute coex-ha-route -n "$TEST_NS" --ignore-not-found
+    kubectl delete gateway coex-ha-gw -n "$TEST_NS"
+    retry 60 3 bash -c "! kubectl get gateway coex-ha-gw -n '$TEST_NS' 2>/dev/null" \
+        || fail "coex-ha-gw still exists"
+    kubectl delete cloudflaregatewayparameters coex-ha-params coex-simple-params -n "$TEST_NS" --ignore-not-found
+    kubectl delete service coex-ha-backend coex-simple-backend -n "$TEST_NS" --ignore-not-found
+}
+
 # ─── Run ──────────────────────────────────────────────────────────────────────
 
 run_tests \
@@ -361,4 +595,5 @@ run_tests \
     test_ha_httproute \
     test_ha_multi_hostname \
     test_ha_route_deletion \
-    test_ha_gateway_deletion
+    test_ha_gateway_deletion \
+    test_simple_gw_lb_coexistence

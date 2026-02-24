@@ -863,27 +863,27 @@ func (r *GatewayReconciler) finalizeEnabled(ctx context.Context, gw *gatewayv1.G
 		changes = append(changes, fmt.Sprintf("deleted cloudflared Deployment %s", deployList.Items[i].Name))
 	}
 
-	// Resolve zone info for LB cleanup. Prefer CGS (persisted from previous
-	// reconciliation), fall back to current params.
-	cleanupZoneName, cleanupZoneID := cgsZoneInfo(cgs)
-	if cleanupZoneName == "" && params != nil && params.Spec.DNS != nil {
-		cleanupZoneName = params.Spec.DNS.Zone.Name
-		// zoneID not available here; cleanupAllLBResources will resolve it.
-	}
-	if cleanupZoneName != "" && cleanupZoneID == "" {
-		cleanupZoneID, err = tc.FindZoneIDByHostname(ctx, cleanupZoneName)
-		if err != nil {
-			return changes, fmt.Errorf("finding zone ID for LB cleanup: %w", err)
-		}
-	}
-
 	// Clean up LB resources before tunnels (LBs reference pools, pools reference monitor).
-	// Always attempt cleanup regardless of current topology — the topology may have changed
-	// and stale LB resources from a previous config must be removed.
-	lbCleanupChanges, lbCleanupErrs := r.cleanupAllLBResources(ctx, tc, gw, cleanupZoneName, cleanupZoneID)
-	changes = append(changes, lbCleanupChanges...)
-	if len(lbCleanupErrs) > 0 {
-		return changes, fmt.Errorf("cleaning up LB resources: %s", strings.Join(lbCleanupErrs, "; "))
+	// Only attempt cleanup if the gateway was in LB mode (CGS has LB state). This
+	// prevents a simple-topology gateway from deleting external LBs in its zone.
+	// When switching from LB to simple mode, the regular reconciliation loop already
+	// cleans up LB resources and sets CGS.LoadBalancer = nil, so finalization can skip.
+	if cgs != nil && cgs.Status.LoadBalancer != nil {
+		cleanupZoneName, cleanupZoneID := cgsZoneInfo(cgs)
+		if cleanupZoneName == "" && params != nil && params.Spec.DNS != nil {
+			cleanupZoneName = params.Spec.DNS.Zone.Name
+		}
+		if cleanupZoneName != "" && cleanupZoneID == "" {
+			cleanupZoneID, err = tc.FindZoneIDByHostname(ctx, cleanupZoneName)
+			if err != nil {
+				return changes, fmt.Errorf("finding zone ID for LB cleanup: %w", err)
+			}
+		}
+		lbCleanupChanges, lbCleanupErrs := r.cleanupAllLBResources(ctx, tc, gw, cleanupZoneName, cleanupZoneID)
+		changes = append(changes, lbCleanupChanges...)
+		if len(lbCleanupErrs) > 0 {
+			return changes, fmt.Errorf("cleaning up LB resources: %s", strings.Join(lbCleanupErrs, "; "))
+		}
 	}
 
 	// Delete all tunnels owned by this Gateway (matching "gateway-{UID}" prefix).

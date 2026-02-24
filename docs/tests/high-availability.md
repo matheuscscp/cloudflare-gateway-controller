@@ -104,3 +104,37 @@ resources.
 8. Verify Deployment `az-a` deleted.
 9. Verify Deployment `az-b` deleted.
 10. Clean up `CloudflareGatewayParameters` and Services.
+
+## test_simple_gw_lb_coexistence
+
+Creates an HA gateway with a load balancer alongside a simple topology gateway in the
+same DNS zone. Verifies that the simple gateway's full lifecycle (creation, route
+deletion, gateway deletion/finalization) does not interfere with the HA gateway's
+load balancer DNS.
+
+**Resources created:**
+- HA: `CloudflareGatewayParameters` (HA topology, 2 AZs), `Gateway`, `Service`,
+  `HTTPRoute` with HA hostname
+- Simple: `CloudflareGatewayParameters` (no LB), `Gateway`, `Service`, `HTTPRoute`
+  with simple hostname
+
+**Cloudflare resources:** HA tunnels, monitor, pools, load balancer; simple tunnel,
+DNS CNAME.
+
+**Steps:**
+
+1. Create HA `CloudflareGatewayParameters`, `Gateway`, `Service`, and `HTTPRoute`;
+   wait for Programmed.
+2. Verify HA load balancer exists for HA hostname.
+3. Create simple `CloudflareGatewayParameters`, `Gateway`, `Service`, and `HTTPRoute`
+   in the same zone; wait for Programmed.
+4. Verify simple DNS CNAME exists.
+5. Verify HA LB hostname still exists after simple gateway creation.
+6. Delete simple `HTTPRoute`.
+7. Verify simple DNS CNAME removed.
+8. Verify HA LB hostname still exists after simple route deletion.
+9. Delete simple `Gateway` (triggers finalization).
+10. Verify simple `Gateway` fully deleted.
+11. Verify simple tunnel deleted.
+12. Verify HA LB hostname still exists after simple gateway finalization.
+13. Clean up HA gateway and all resources.
