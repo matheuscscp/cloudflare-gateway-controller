@@ -35,8 +35,10 @@ ensure_gatewayclass
 
 # ─── Shared state across tests ───────────────────────────────────────────────
 # These are populated by test_ha_basic and used by subsequent tests.
-GW_UID=""
-TUNNEL_PREFIX=""
+GW_NAME=""
+TUNNEL_NAME_AZ_A=""
+TUNNEL_NAME_AZ_B=""
+MONITOR_NAME=""
 ZONE_ID=""
 HOSTNAME_A=""
 HOSTNAME_B=""
@@ -97,18 +99,20 @@ EOF
         || fail "ha-gw did not become Programmed"
     pass "ha-gw is Programmed"
 
-    GW_UID=$(kubectl get gateway ha-gw -n "$TEST_NS" -o jsonpath='{.metadata.uid}')
-    TUNNEL_PREFIX="gateway-${GW_UID}"
+    GW_NAME="ha-gw"
+    TUNNEL_NAME_AZ_A=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "$GW_NAME" "az-a")
+    TUNNEL_NAME_AZ_B=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "$GW_NAME" "az-b")
+    MONITOR_NAME=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "$GW_NAME" "monitor")
 
     # Verify 2 tunnels (one per AZ).
     local tunnel_id_a tunnel_id_b
     log "Verifying tunnel for az-a..."
-    tunnel_id_a=$(cfgwctl tunnel get-id --name "${TUNNEL_PREFIX}-az-a" | jq -r '.tunnelId')
+    tunnel_id_a=$(cfgwctl tunnel get-id --name "$TUNNEL_NAME_AZ_A" | jq -r '.tunnelId')
     [ -n "$tunnel_id_a" ] && [ "$tunnel_id_a" != "null" ] || fail "tunnel az-a not found"
     pass "Tunnel az-a exists: $tunnel_id_a"
 
     log "Verifying tunnel for az-b..."
-    tunnel_id_b=$(cfgwctl tunnel get-id --name "${TUNNEL_PREFIX}-az-b" | jq -r '.tunnelId')
+    tunnel_id_b=$(cfgwctl tunnel get-id --name "$TUNNEL_NAME_AZ_B" | jq -r '.tunnelId')
     [ -n "$tunnel_id_b" ] && [ "$tunnel_id_b" != "null" ] || fail "tunnel az-b not found"
     pass "Tunnel az-b exists: $tunnel_id_b"
 
@@ -128,30 +132,30 @@ EOF
     # Verify monitor exists.
     log "Verifying monitor exists..."
     retry 60 3 bash -c "
-        id=\$(cfgwctl lb get-monitor --name '$TUNNEL_PREFIX' | jq -r '.monitorId')
+        id=\$(cfgwctl lb get-monitor --name '$MONITOR_NAME' | jq -r '.monitorId')
         [ -n \"\$id\" ] && [ \"\$id\" != '' ]
     " || fail "monitor not found"
     local monitor_id
-    monitor_id=$(cfgwctl lb get-monitor --name "$TUNNEL_PREFIX" | jq -r '.monitorId')
+    monitor_id=$(cfgwctl lb get-monitor --name "$MONITOR_NAME" | jq -r '.monitorId')
     pass "Monitor exists: $monitor_id"
 
     # Verify 2 pools.
     log "Verifying pools exist..."
-    retry 60 3 bash -c "[ \$(cfgwctl lb list-pools --prefix '$TUNNEL_PREFIX' | jq 'length') -eq 2 ]" \
+    retry 60 3 bash -c "[ \$(cfgwctl lb list-pools --prefix 'gw-' | jq 'length') -eq 2 ]" \
         || fail "expected 2 pools"
     pass "2 pools exist"
 
     # Verify pool origins point to correct tunnels.
     log "Verifying pool az-a origin..."
     retry 60 3 bash -c "
-        origin=\$(cfgwctl lb get-pool --name '${TUNNEL_PREFIX}-az-a' | jq -r '.origins[0].address')
+        origin=\$(cfgwctl lb get-pool --name '$TUNNEL_NAME_AZ_A' | jq -r '.origins[0].address')
         [ \"\$origin\" = '${tunnel_id_a}.cfargotunnel.com' ]
     " || fail "pool az-a origin mismatch"
     pass "Pool az-a origin correct"
 
     log "Verifying pool az-b origin..."
     retry 60 3 bash -c "
-        origin=\$(cfgwctl lb get-pool --name '${TUNNEL_PREFIX}-az-b' | jq -r '.origins[0].address')
+        origin=\$(cfgwctl lb get-pool --name '$TUNNEL_NAME_AZ_B' | jq -r '.origins[0].address')
         [ \"\$origin\" = '${tunnel_id_b}.cfargotunnel.com' ]
     " || fail "pool az-b origin mismatch"
     pass "Pool az-b origin correct"
@@ -196,8 +200,8 @@ EOF
 
     # Verify both tunnel configs have the hostname (HA: full ingress on every tunnel).
     local tunnel_id_a tunnel_id_b
-    tunnel_id_a=$(cfgwctl tunnel get-id --name "${TUNNEL_PREFIX}-az-a" | jq -r '.tunnelId')
-    tunnel_id_b=$(cfgwctl tunnel get-id --name "${TUNNEL_PREFIX}-az-b" | jq -r '.tunnelId')
+    tunnel_id_a=$(cfgwctl tunnel get-id --name "$TUNNEL_NAME_AZ_A" | jq -r '.tunnelId')
+    tunnel_id_b=$(cfgwctl tunnel get-id --name "$TUNNEL_NAME_AZ_B" | jq -r '.tunnelId')
 
     log "Verifying tunnel az-a has hostname..."
     retry 60 3 bash -c "cfgwctl tunnel get-config --tunnel-id '$tunnel_id_a' | jq -e '.[] | select(.hostname == \"$HOSTNAME_A\")' >/dev/null" \
@@ -251,8 +255,8 @@ EOF
 
     # Verify both tunnels have both hostnames.
     local tunnel_id_a tunnel_id_b
-    tunnel_id_a=$(cfgwctl tunnel get-id --name "${TUNNEL_PREFIX}-az-a" | jq -r '.tunnelId')
-    tunnel_id_b=$(cfgwctl tunnel get-id --name "${TUNNEL_PREFIX}-az-b" | jq -r '.tunnelId')
+    tunnel_id_a=$(cfgwctl tunnel get-id --name "$TUNNEL_NAME_AZ_A" | jq -r '.tunnelId')
+    tunnel_id_b=$(cfgwctl tunnel get-id --name "$TUNNEL_NAME_AZ_B" | jq -r '.tunnelId')
 
     log "Verifying tunnels have both hostnames..."
     retry 60 3 bash -c "cfgwctl tunnel get-config --tunnel-id '$tunnel_id_a' | jq -e '.[] | select(.hostname == \"$HOSTNAME_B\")' >/dev/null" \
@@ -275,8 +279,8 @@ test_ha_route_deletion() {
     kubectl delete httproute ha-route-a -n "$TEST_NS"
 
     local tunnel_id_a tunnel_id_b
-    tunnel_id_a=$(cfgwctl tunnel get-id --name "${TUNNEL_PREFIX}-az-a" | jq -r '.tunnelId')
-    tunnel_id_b=$(cfgwctl tunnel get-id --name "${TUNNEL_PREFIX}-az-b" | jq -r '.tunnelId')
+    tunnel_id_a=$(cfgwctl tunnel get-id --name "$TUNNEL_NAME_AZ_A" | jq -r '.tunnelId')
+    tunnel_id_b=$(cfgwctl tunnel get-id --name "$TUNNEL_NAME_AZ_B" | jq -r '.tunnelId')
 
     log "Verifying hostname A removed from tunnel configs..."
     retry 60 3 bash -c "! cfgwctl tunnel get-config --tunnel-id '$tunnel_id_a' | jq -e '.[] | select(.hostname == \"$HOSTNAME_A\")' >/dev/null 2>&1" \
@@ -321,22 +325,22 @@ test_ha_gateway_deletion() {
     # Verify all pools deleted.
     log "Verifying all pools deleted..."
     local pool_count
-    pool_count=$(cfgwctl lb list-pools --prefix "$TUNNEL_PREFIX" | jq 'length')
+    pool_count=$(cfgwctl lb list-pools --prefix 'gw-' | jq 'length')
     [ "$pool_count" -eq 0 ] || fail "expected 0 pools, got $pool_count"
     pass "All pools deleted"
 
     # Verify monitor deleted.
     log "Verifying monitor deleted..."
     local monitor_id
-    monitor_id=$(cfgwctl lb get-monitor --name "$TUNNEL_PREFIX" | jq -r '.monitorId')
+    monitor_id=$(cfgwctl lb get-monitor --name "$MONITOR_NAME" | jq -r '.monitorId')
     [ -z "$monitor_id" ] || [ "$monitor_id" = "" ] || fail "monitor still exists: $monitor_id"
     pass "Monitor deleted"
 
     # Verify all tunnels deleted.
     log "Verifying all tunnels deleted..."
     local tunnel_a tunnel_b
-    tunnel_a=$(cfgwctl tunnel get-id --name "${TUNNEL_PREFIX}-az-a" | jq -r '.tunnelId')
-    tunnel_b=$(cfgwctl tunnel get-id --name "${TUNNEL_PREFIX}-az-b" | jq -r '.tunnelId')
+    tunnel_a=$(cfgwctl tunnel get-id --name "$TUNNEL_NAME_AZ_A" | jq -r '.tunnelId')
+    tunnel_b=$(cfgwctl tunnel get-id --name "$TUNNEL_NAME_AZ_B" | jq -r '.tunnelId')
     { [ -z "$tunnel_a" ] || [ "$tunnel_a" = "null" ]; } || fail "tunnel az-a still exists"
     { [ -z "$tunnel_b" ] || [ "$tunnel_b" = "null" ]; } || fail "tunnel az-b still exists"
     pass "All tunnels deleted"
@@ -492,9 +496,8 @@ EOF
         || fail "coex-simple-gw did not become Programmed"
     pass "coex-simple-gw is Programmed"
 
-    local simple_gw_uid simple_tunnel_name simple_tunnel_id simple_tunnel_target
-    simple_gw_uid=$(kubectl get gateway coex-simple-gw -n "$TEST_NS" -o jsonpath='{.metadata.uid}')
-    simple_tunnel_name="gateway-${simple_gw_uid}"
+    local simple_tunnel_name simple_tunnel_id simple_tunnel_target
+    simple_tunnel_name=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "coex-simple-gw")
     simple_tunnel_id=$(cfgwctl tunnel get-id --name "$simple_tunnel_name" | jq -r '.tunnelId')
     [ -n "$simple_tunnel_id" ] && [ "$simple_tunnel_id" != "null" ] || fail "simple tunnel not found"
     simple_tunnel_target="${simple_tunnel_id}.cfargotunnel.com"

@@ -273,7 +273,7 @@ func removeOwnerRef(obj client.Object, ownerUID types.UID) bool {
 // cleanupStaleTunnelResources deletes Deployments, Secrets, and Cloudflare tunnels
 // that are no longer part of the desired tunnel entries. This handles AZ
 // addition/removal, service changes, and mode switches.
-func (r *GatewayReconciler) cleanupStaleTunnelResources(ctx context.Context, tc cloudflare.Client, gw *gatewayv1.Gateway, entries []tunnelEntry) ([]string, []string) {
+func (r *GatewayReconciler) cleanupStaleTunnelResources(ctx context.Context, tc cloudflare.Client, gw *gatewayv1.Gateway, entries []tunnelEntry, previousTunnels []apiv1.TunnelStatus) ([]string, []string) {
 	l := log.FromContext(ctx)
 
 	// Build set of desired Deployment names.
@@ -345,35 +345,30 @@ func (r *GatewayReconciler) cleanupStaleTunnelResources(ctx context.Context, tc 
 		l.V(1).Info("Deleted stale tunnel token Secret", "secret", secret.Name)
 	}
 
-	// Delete stale Cloudflare tunnels. List tunnels by prefix "gateway-{UID}"
-	// and delete any not in the desired set.
-	prefix := "gateway-" + string(gw.UID)
-	tunnels, err := tc.ListTunnels(ctx)
-	if err != nil {
-		errs = append(errs, fmt.Sprintf("failed to list tunnels for cleanup: %v", err))
-		return changes, errs
-	}
+	// Delete stale Cloudflare tunnels using CGS-tracked names (previous tunnels
+	// from CGS.Status.Tunnels). Compare against desired set and delete any
+	// that are no longer needed.
 	desiredTunnels := make(map[string]struct{}, len(entries))
 	for _, e := range entries {
 		desiredTunnels[e.tunnelName] = struct{}{}
 	}
-	for _, t := range tunnels {
-		if !strings.HasPrefix(t.Name, prefix) {
+	for _, prev := range previousTunnels {
+		if _, ok := desiredTunnels[prev.Name]; ok {
 			continue
 		}
-		if _, ok := desiredTunnels[t.Name]; ok {
+		if prev.ID == "" {
 			continue
 		}
-		if err := tc.CleanupTunnelConnections(ctx, t.ID); err != nil {
-			errs = append(errs, fmt.Sprintf("failed to cleanup connections for stale tunnel %s: %v", t.Name, err))
+		if err := tc.CleanupTunnelConnections(ctx, prev.ID); err != nil {
+			errs = append(errs, fmt.Sprintf("failed to cleanup connections for stale tunnel %s: %v", prev.Name, err))
 			continue
 		}
-		if err := tc.DeleteTunnel(ctx, t.ID); err != nil {
-			errs = append(errs, fmt.Sprintf("failed to delete stale tunnel %s: %v", t.Name, err))
+		if err := tc.DeleteTunnel(ctx, prev.ID); err != nil {
+			errs = append(errs, fmt.Sprintf("failed to delete stale tunnel %s: %v", prev.Name, err))
 			continue
 		}
-		changes = append(changes, fmt.Sprintf("deleted stale tunnel %s", t.Name))
-		l.V(1).Info("Deleted stale tunnel", "tunnelName", t.Name, "tunnelID", t.ID)
+		changes = append(changes, fmt.Sprintf("deleted stale tunnel %s", prev.Name))
+		l.V(1).Info("Deleted stale tunnel", "tunnelName", prev.Name, "tunnelID", prev.ID)
 	}
 
 	return changes, errs

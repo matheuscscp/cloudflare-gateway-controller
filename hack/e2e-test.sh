@@ -84,10 +84,9 @@ EOF
         || fail "Gateway did not become Programmed"
     pass "Gateway is Programmed"
 
-    # Get tunnel name from Gateway UID.
-    local gw_uid tunnel_name tunnel_id
-    gw_uid=$(kubectl get gateway test-gateway -n "$TEST_NS" -o jsonpath='{.metadata.uid}')
-    tunnel_name="gateway-${gw_uid}"
+    # Get deterministic tunnel name.
+    local tunnel_name tunnel_id
+    tunnel_name=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "test-gateway")
 
     log "Verifying tunnel '$tunnel_name' exists..."
     tunnel_id=$(cfgwctl tunnel get-id --name "$tunnel_name" | jq -r '.tunnelId')
@@ -235,9 +234,8 @@ EOF
         || fail "multi-route-gw did not become Programmed"
     pass "multi-route-gw is Programmed"
 
-    local mr_gw_uid mr_tunnel_name mr_tunnel_id mr_tunnel_target
-    mr_gw_uid=$(kubectl get gateway multi-route-gw -n "$TEST_NS" -o jsonpath='{.metadata.uid}')
-    mr_tunnel_name="gateway-${mr_gw_uid}"
+    local mr_tunnel_name mr_tunnel_id mr_tunnel_target
+    mr_tunnel_name=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "multi-route-gw")
     mr_tunnel_id=$(cfgwctl tunnel get-id --name "$mr_tunnel_name" | jq -r '.tunnelId')
     [ -n "$mr_tunnel_id" ] && [ "$mr_tunnel_id" != "null" ] || fail "multi-route tunnel not found"
     mr_tunnel_target="${mr_tunnel_id}.cfargotunnel.com"
@@ -368,9 +366,8 @@ EOF
         || fail "path-gw did not become Programmed"
     pass "path-gw is Programmed"
 
-    local path_gw_uid path_tunnel_name path_tunnel_id
-    path_gw_uid=$(kubectl get gateway path-gw -n "$TEST_NS" -o jsonpath='{.metadata.uid}')
-    path_tunnel_name="gateway-${path_gw_uid}"
+    local path_tunnel_name path_tunnel_id
+    path_tunnel_name=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "path-gw")
     path_tunnel_id=$(cfgwctl tunnel get-id --name "$path_tunnel_name" | jq -r '.tunnelId')
     [ -n "$path_tunnel_id" ] && [ "$path_tunnel_id" != "null" ] || fail "path tunnel not found"
 
@@ -460,9 +457,8 @@ EOF
         || fail "no-dns-gw did not become Programmed"
     pass "no-dns-gw is Programmed"
 
-    local nd_gw_uid nd_tunnel_name nd_tunnel_id
-    nd_gw_uid=$(kubectl get gateway no-dns-gw -n "$TEST_NS" -o jsonpath='{.metadata.uid}')
-    nd_tunnel_name="gateway-${nd_gw_uid}"
+    local nd_tunnel_name nd_tunnel_id
+    nd_tunnel_name=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "no-dns-gw")
     nd_tunnel_id=$(cfgwctl tunnel get-id --name "$nd_tunnel_name" | jq -r '.tunnelId')
     [ -n "$nd_tunnel_id" ] && [ "$nd_tunnel_id" != "null" ] || fail "no-dns tunnel not found"
 
@@ -622,9 +618,8 @@ EOF
         || fail "disabled-gw did not become Programmed"
     pass "disabled-gw is Programmed"
 
-    local dis_gw_uid dis_tunnel_name dis_tunnel_id dis_tunnel_target
-    dis_gw_uid=$(kubectl get gateway disabled-gw -n "$TEST_NS" -o jsonpath='{.metadata.uid}')
-    dis_tunnel_name="gateway-${dis_gw_uid}"
+    local dis_tunnel_name dis_tunnel_id dis_tunnel_target
+    dis_tunnel_name=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "disabled-gw")
     dis_tunnel_id=$(cfgwctl tunnel get-id --name "$dis_tunnel_name" | jq -r '.tunnelId')
     [ -n "$dis_tunnel_id" ] && [ "$dis_tunnel_id" != "null" ] || fail "disabled tunnel not found"
     dis_tunnel_target="${dis_tunnel_id}.cfargotunnel.com"
@@ -747,9 +742,8 @@ EOF
         || fail "zone-rm-gw did not become Programmed"
     pass "zone-rm-gw is Programmed"
 
-    local zr_gw_uid zr_tunnel_name zr_tunnel_id zr_tunnel_target
-    zr_gw_uid=$(kubectl get gateway zone-rm-gw -n "$TEST_NS" -o jsonpath='{.metadata.uid}')
-    zr_tunnel_name="gateway-${zr_gw_uid}"
+    local zr_tunnel_name zr_tunnel_id zr_tunnel_target
+    zr_tunnel_name=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "zone-rm-gw")
     zr_tunnel_id=$(cfgwctl tunnel get-id --name "$zr_tunnel_name" | jq -r '.tunnelId')
     [ -n "$zr_tunnel_id" ] && [ "$zr_tunnel_id" != "null" ] || fail "zone-rm tunnel not found"
     zr_tunnel_target="${zr_tunnel_id}.cfargotunnel.com"
@@ -822,6 +816,247 @@ EOF
     kubectl delete service zone-rm-backend -n "$TEST_NS" --ignore-not-found
 }
 
+test_cluster_recreation() {
+    local test_hostname="rec-${TS: -6}.${TEST_ZONE_NAME}"
+
+    log "Phase 1: Create Gateway + HTTPRoute in current cluster..."
+
+    log "Creating CloudflareGatewayParameters 'recreate-params'..."
+    kubectl apply -f - <<EOF
+apiVersion: cloudflare-gateway-controller.io/v1
+kind: CloudflareGatewayParameters
+metadata:
+  name: recreate-params
+  namespace: $TEST_NS
+spec:
+  secretRef:
+    name: cloudflare-creds
+  dns:
+    zone:
+      name: "$TEST_ZONE_NAME"
+EOF
+
+    log "Creating Gateway 'recreate-gw'..."
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: recreate-gw
+  namespace: $TEST_NS
+spec:
+  gatewayClassName: cloudflare
+  infrastructure:
+    parametersRef:
+      group: cloudflare-gateway-controller.io
+      kind: CloudflareGatewayParameters
+      name: recreate-params
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+EOF
+
+    retry 60 2 kubectl wait gateway/recreate-gw -n "$TEST_NS" \
+        --for=condition=Programmed --timeout=5s \
+        || fail "recreate-gw did not become Programmed"
+    pass "recreate-gw is Programmed"
+
+    local tunnel_name tunnel_id_before
+    tunnel_name=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "recreate-gw")
+
+    log "Verifying tunnel '$tunnel_name' exists..."
+    tunnel_id_before=$(cfgwctl tunnel get-id --name "$tunnel_name" | jq -r '.tunnelId')
+    [ -n "$tunnel_id_before" ] && [ "$tunnel_id_before" != "null" ] || fail "tunnel not found"
+    pass "Tunnel exists: $tunnel_id_before"
+
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: recreate-backend
+  namespace: $TEST_NS
+spec:
+  ports:
+  - port: 80
+    protocol: TCP
+EOF
+
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: recreate-route
+  namespace: $TEST_NS
+spec:
+  parentRefs:
+  - name: recreate-gw
+  hostnames:
+  - "$test_hostname"
+  rules:
+  - backendRefs:
+    - name: recreate-backend
+      port: 80
+EOF
+
+    log "Waiting for DNS CNAME for '$test_hostname'..."
+    local zone_id tunnel_target
+    zone_id=$(cfgwctl dns find-zone --hostname "$test_hostname" | jq -r '.zoneId')
+    [ -n "$zone_id" ] && [ "$zone_id" != "null" ] || fail "zone ID not found"
+    tunnel_target="${tunnel_id_before}.cfargotunnel.com"
+
+    retry 60 3 bash -c "cfgwctl dns list-cnames --zone-id '$zone_id' --target '$tunnel_target' | jq -e '.hostnames[] | select(. == \"$test_hostname\")' >/dev/null" \
+        || fail "DNS CNAME not found"
+    pass "DNS CNAME exists before cluster recreation"
+
+    log "Phase 2: Delete and recreate kind cluster..."
+
+    # Stop log stream before cluster deletion.
+    if [ -n "$_LOG_STREAM_PID" ]; then
+        kill "$_LOG_STREAM_PID" 2>/dev/null || true
+        wait "$_LOG_STREAM_PID" 2>/dev/null || true
+        _LOG_STREAM_PID=""
+    fi
+
+    kind delete cluster --name "$KIND_CLUSTER_NAME"
+    _CREATED_CLUSTER=0
+
+    # Force fresh cluster and controller install regardless of env vars.
+    local saved_reuse_cluster="${REUSE_CLUSTER:-}"
+    local saved_reuse_controller="${REUSE_CONTROLLER:-}"
+    local saved_reload_controller="${RELOAD_CONTROLLER:-}"
+    REUSE_CLUSTER=""
+    REUSE_CONTROLLER=""
+    RELOAD_CONTROLLER=""
+
+    setup_cluster
+    install_controller
+    start_controller_log_stream
+    create_test_namespace
+    ensure_gatewayclass
+
+    # Restore env vars.
+    REUSE_CLUSTER="$saved_reuse_cluster"
+    REUSE_CONTROLLER="$saved_reuse_controller"
+    RELOAD_CONTROLLER="$saved_reload_controller"
+
+    log "Phase 3: Recreate same Gateway + HTTPRoute..."
+
+    kubectl apply -f - <<EOF
+apiVersion: cloudflare-gateway-controller.io/v1
+kind: CloudflareGatewayParameters
+metadata:
+  name: recreate-params
+  namespace: $TEST_NS
+spec:
+  secretRef:
+    name: cloudflare-creds
+  dns:
+    zone:
+      name: "$TEST_ZONE_NAME"
+EOF
+
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: recreate-gw
+  namespace: $TEST_NS
+spec:
+  gatewayClassName: cloudflare
+  infrastructure:
+    parametersRef:
+      group: cloudflare-gateway-controller.io
+      kind: CloudflareGatewayParameters
+      name: recreate-params
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+EOF
+
+    retry 60 2 kubectl wait gateway/recreate-gw -n "$TEST_NS" \
+        --for=condition=Programmed --timeout=5s \
+        || fail "recreate-gw did not become Programmed after cluster recreation"
+    pass "recreate-gw is Programmed after cluster recreation"
+
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: recreate-backend
+  namespace: $TEST_NS
+spec:
+  ports:
+  - port: 80
+    protocol: TCP
+EOF
+
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: recreate-route
+  namespace: $TEST_NS
+spec:
+  parentRefs:
+  - name: recreate-gw
+  hostnames:
+  - "$test_hostname"
+  rules:
+  - backendRefs:
+    - name: recreate-backend
+      port: 80
+EOF
+
+    log "Phase 4: Verify tunnel adoption..."
+
+    local tunnel_id_after
+    tunnel_id_after=$(cfgwctl tunnel get-id --name "$tunnel_name" | jq -r '.tunnelId')
+    [ -n "$tunnel_id_after" ] && [ "$tunnel_id_after" != "null" ] || fail "tunnel not found after recreation"
+    [ "$tunnel_id_before" = "$tunnel_id_after" ] \
+        || fail "tunnel ID changed: before=$tunnel_id_before after=$tunnel_id_after (resource leaked!)"
+    pass "Tunnel adopted: same ID $tunnel_id_before"
+
+    log "Verifying tunnel config has hostname after adoption..."
+    retry 60 3 bash -c "cfgwctl tunnel get-config --tunnel-id '$tunnel_id_after' | jq -e '.[] | select(.hostname == \"$test_hostname\")' >/dev/null" \
+        || fail "tunnel config missing hostname after adoption"
+    pass "Tunnel config has hostname after adoption"
+
+    log "Verifying DNS CNAME still exists after adoption..."
+    retry 60 3 bash -c "cfgwctl dns list-cnames --zone-id '$zone_id' --target '$tunnel_target' | jq -e '.hostnames[] | select(. == \"$test_hostname\")' >/dev/null" \
+        || fail "DNS CNAME not found after adoption"
+    pass "DNS CNAME exists after adoption"
+
+    log "Phase 5: Clean up via normal Gateway finalization..."
+
+    kubectl delete httproute recreate-route -n "$TEST_NS"
+    kubectl delete gateway recreate-gw -n "$TEST_NS"
+
+    retry 60 3 bash -c "! kubectl get gateway recreate-gw -n '$TEST_NS' 2>/dev/null" \
+        || fail "recreate-gw still exists"
+    pass "Gateway deleted"
+
+    log "Verifying tunnel deleted by finalizer..."
+    check_tunnel_deleted() {
+        local id
+        id=$(cfgwctl tunnel get-id --name "$tunnel_name" | jq -r '.tunnelId')
+        [ -z "$id" ] || [ "$id" = "null" ]
+    }
+    retry 60 3 check_tunnel_deleted || fail "tunnel still exists after finalization"
+    pass "Tunnel deleted by finalizer"
+
+    log "Verifying DNS CNAME deleted..."
+    check_cname_deleted() {
+        ! cfgwctl dns list-cnames --zone-id "$zone_id" --target "$tunnel_target" \
+            | jq -e ".hostnames[] | select(. == \"$test_hostname\")" >/dev/null 2>&1
+    }
+    retry 60 3 check_cname_deleted || fail "DNS CNAME still exists after finalization"
+    pass "DNS CNAME deleted by finalizer"
+
+    kubectl delete cloudflaregatewayparameters recreate-params -n "$TEST_NS" --ignore-not-found
+    kubectl delete service recreate-backend -n "$TEST_NS" --ignore-not-found
+}
+
 test_multiple_listeners_rejected() {
     log "Creating Gateway 'multi-listen-gw' with two listeners..."
     kubectl apply -f - <<EOF
@@ -870,4 +1105,5 @@ run_tests \
     test_deployment_patches \
     test_disabled_reconciliation \
     test_dns_config_removal \
-    test_multiple_listeners_rejected
+    test_multiple_listeners_rejected \
+    test_cluster_recreation

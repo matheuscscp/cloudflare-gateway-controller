@@ -45,7 +45,7 @@ func (r *GatewayReconciler) reconcileAllTunnelIngress(ctx context.Context, tc cl
 		switch {
 		case mode == lbModePerBackendRef && e.serviceName != "":
 			// Per-backendRef: route all hostnames to this tunnel's single service.
-			ingress = buildIngressRulesForService(routes, e.serviceName)
+			ingress = buildIngressRulesForService(routes, e.serviceNamespace, e.serviceName)
 		default:
 			// Simple / per-AZ: full ingress on every tunnel.
 			ingress = fullIngress
@@ -69,17 +69,17 @@ func (r *GatewayReconciler) reconcileAllTunnelIngress(ctx context.Context, tc cl
 // buildIngressRulesForService builds ingress rules that route all hostnames
 // referencing a given Service to that service, with a catch-all 404. Used in
 // per-backendRef (TrafficSplitting) mode where each tunnel handles one service.
-func buildIngressRulesForService(routes []*gatewayv1.HTTPRoute, serviceName string) []cloudflare.IngressRule {
+func buildIngressRulesForService(routes []*gatewayv1.HTTPRoute, serviceNamespace, serviceName string) []cloudflare.IngressRule {
 	var rules []cloudflare.IngressRule
 	for _, route := range routes {
 		for _, rule := range route.Spec.Rules {
 			for _, ref := range rule.BackendRefs {
-				if string(ref.Name) != serviceName {
-					continue
-				}
 				ns := route.Namespace
 				if ref.Namespace != nil {
 					ns = string(*ref.Namespace)
+				}
+				if string(ref.Name) != serviceName || ns != serviceNamespace {
+					continue
 				}
 				port := int32(80)
 				if ref.Port != nil {

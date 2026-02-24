@@ -2792,8 +2792,9 @@ func TestGatewayReconciler_CloudflareTunnelLookupErrorDuringFinalization(t *test
 	waitForGatewayProgrammed(g, gw)
 	gwKey := client.ObjectKeyFromObject(gw)
 
-	// Set listTunnels error (will hit during finalization).
-	testMock.listTunnelsErr = fmt.Errorf("tunnel listing failed")
+	// Set deleteTunnel error (will hit during finalization when deleting
+	// CGS-tracked tunnels).
+	testMock.deleteTunnelErr = fmt.Errorf("tunnel deletion failed")
 
 	// Delete the Gateway.
 	g.Eventually(func(g Gomega) {
@@ -2810,7 +2811,7 @@ func TestGatewayReconciler_CloudflareTunnelLookupErrorDuringFinalization(t *test
 		g.Expect(ready).NotTo(BeNil())
 		g.Expect(ready.Status).To(Equal(metav1.ConditionUnknown))
 		g.Expect(ready.Reason).To(Equal(apiv1.ReasonProgressingWithRetry))
-		g.Expect(ready.Message).To(ContainSubstring("listing tunnels for deletion"))
+		g.Expect(ready.Message).To(ContainSubstring("deleting tunnel"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
 	// Verify Warning/ProgressingWithRetry/Finalize event.
@@ -2818,11 +2819,11 @@ func TestGatewayReconciler_CloudflareTunnelLookupErrorDuringFinalization(t *test
 		e := findEvent(g, ns.Name, gw.Name, corev1.EventTypeWarning, apiv1.ReasonProgressingWithRetry, apiv1.EventActionFinalize, "")
 		g.Expect(e).NotTo(BeNil())
 		g.Expect(e.Note).To(ContainSubstring("Finalization failed"))
-		g.Expect(e.Note).To(ContainSubstring("listing tunnels for deletion"))
+		g.Expect(e.Note).To(ContainSubstring("deleting tunnel"))
 	}).WithTimeout(5 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
 
 	// Clear error so cleanup (resetMockErrors) doesn't leave a stuck Gateway.
-	testMock.listTunnelsErr = nil
+	testMock.deleteTunnelErr = nil
 }
 
 func TestGatewayReconciler_DNSZoneChange(t *testing.T) {

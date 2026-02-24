@@ -626,7 +626,7 @@ func TestEnsureDNSCNAME(t *testing.T) {
 		})
 		c := newTestClient(t, mux)
 
-		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "tunnel.cfargotunnel.com")).To(Succeed())
+		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "tunnel.cfargotunnel.com", "test comment")).To(Succeed())
 		g.Expect(createdBody["name"]).To(Equal("app.example.com"))
 		g.Expect(createdBody["content"]).To(Equal("tunnel.cfargotunnel.com"))
 	})
@@ -657,7 +657,7 @@ func TestEnsureDNSCNAME(t *testing.T) {
 		})
 		c := newTestClient(t, mux)
 
-		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "new-target.cfargotunnel.com")).To(Succeed())
+		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "new-target.cfargotunnel.com", "test comment")).To(Succeed())
 		g.Expect(updatedBody["content"]).To(Equal("new-target.cfargotunnel.com"))
 	})
 
@@ -669,7 +669,7 @@ func TestEnsureDNSCNAME(t *testing.T) {
 		})
 		c := newTestClient(t, mux)
 
-		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "tunnel.cfargotunnel.com")).To(HaveOccurred())
+		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "tunnel.cfargotunnel.com", "test comment")).To(HaveOccurred())
 	})
 
 	t.Run("update error", func(t *testing.T) {
@@ -690,7 +690,7 @@ func TestEnsureDNSCNAME(t *testing.T) {
 		})
 		c := newTestClient(t, mux)
 
-		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "new-target.cfargotunnel.com")).To(HaveOccurred())
+		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "new-target.cfargotunnel.com", "test comment")).To(HaveOccurred())
 	})
 
 	t.Run("create error", func(t *testing.T) {
@@ -704,7 +704,7 @@ func TestEnsureDNSCNAME(t *testing.T) {
 		})
 		c := newTestClient(t, mux)
 
-		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "tunnel.cfargotunnel.com")).To(HaveOccurred())
+		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "tunnel.cfargotunnel.com", "test comment")).To(HaveOccurred())
 	})
 
 	t.Run("no-op when target matches", func(t *testing.T) {
@@ -730,7 +730,7 @@ func TestEnsureDNSCNAME(t *testing.T) {
 		})
 		c := newTestClient(t, mux)
 
-		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "tunnel.cfargotunnel.com")).To(Succeed())
+		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "tunnel.cfargotunnel.com", "test comment")).To(Succeed())
 		g.Expect(updateCalled).To(BeFalse())
 		g.Expect(createCalled).To(BeFalse())
 	})
@@ -875,17 +875,17 @@ func TestCreateMonitor(t *testing.T) {
 			body, _ := io.ReadAll(r.Body)
 			var params map[string]any
 			g.Expect(json.Unmarshal(body, &params)).To(Succeed())
-			g.Expect(params["description"]).To(Equal("gateway-uid-1"))
+			g.Expect(params["description"]).To(Equal("gateway-uid-1 | test description"))
 			g.Expect(params["type"]).To(Equal("https"))
 			g.Expect(params["path"]).To(Equal("/ready"))
 			writeJSON(w, http.StatusOK, envelope(map[string]any{
 				"id":          "mon-123",
-				"description": "gateway-uid-1",
+				"description": "gateway-uid-1 | test description",
 			}))
 		})
 		c := newTestClient(t, mux)
 
-		id, err := c.CreateMonitor(context.Background(), "gateway-uid-1", cloudflare.MonitorConfig{
+		id, err := c.CreateMonitor(context.Background(), "gateway-uid-1", "test description", cloudflare.MonitorConfig{
 			Type: "https", Path: "/ready", Interval: 60, Timeout: 5, ExpectedCodes: "200",
 		})
 		g.Expect(err).NotTo(HaveOccurred())
@@ -900,7 +900,7 @@ func TestCreateMonitor(t *testing.T) {
 		})
 		c := newTestClient(t, mux)
 
-		_, err := c.CreateMonitor(context.Background(), "gateway-uid-1", cloudflare.MonitorConfig{})
+		_, err := c.CreateMonitor(context.Background(), "gateway-uid-1", "test description", cloudflare.MonitorConfig{})
 		g.Expect(err).To(HaveOccurred())
 	})
 }
@@ -957,7 +957,7 @@ func TestUpdateMonitor(t *testing.T) {
 		})
 		c := newTestClient(t, mux)
 
-		err := c.UpdateMonitor(context.Background(), "mon-123", "gateway-uid-1", cloudflare.MonitorConfig{
+		err := c.UpdateMonitor(context.Background(), "mon-123", "gateway-uid-1", "test description", cloudflare.MonitorConfig{
 			Type: "https", Path: "/ready", Interval: 60, Timeout: 5, ExpectedCodes: "200",
 		})
 		g.Expect(err).NotTo(HaveOccurred())
@@ -971,7 +971,7 @@ func TestUpdateMonitor(t *testing.T) {
 		})
 		c := newTestClient(t, mux)
 
-		err := c.UpdateMonitor(context.Background(), "mon-123", "name", cloudflare.MonitorConfig{})
+		err := c.UpdateMonitor(context.Background(), "mon-123", "name", "test description", cloudflare.MonitorConfig{})
 		g.Expect(err).To(HaveOccurred())
 	})
 }
@@ -1257,7 +1257,7 @@ func TestEnsureLoadBalancer(t *testing.T) {
 		c := newTestClient(t, mux)
 
 		err := c.EnsureLoadBalancer(context.Background(), "zone-1", "app.example.com",
-			[]string{"pool-1", "pool-2"}, "geo", "none", nil)
+			[]string{"pool-1", "pool-2"}, "geo", "none", "test desc", nil)
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(createCalled).To(BeTrue())
 	})
@@ -1283,7 +1283,7 @@ func TestEnsureLoadBalancer(t *testing.T) {
 		c := newTestClient(t, mux)
 
 		err := c.EnsureLoadBalancer(context.Background(), "zone-1", "app.example.com",
-			[]string{"pool-1"}, "geo", "none", nil)
+			[]string{"pool-1"}, "geo", "none", "test desc", nil)
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(updateCalled).To(BeTrue())
 	})
@@ -1297,7 +1297,7 @@ func TestEnsureLoadBalancer(t *testing.T) {
 		c := newTestClient(t, mux)
 
 		err := c.EnsureLoadBalancer(context.Background(), "zone-1", "app.example.com",
-			[]string{"pool-1"}, "geo", "none", nil)
+			[]string{"pool-1"}, "geo", "none", "test desc", nil)
 		g.Expect(err).To(HaveOccurred())
 	})
 
@@ -1315,7 +1315,7 @@ func TestEnsureLoadBalancer(t *testing.T) {
 		c := newTestClient(t, mux)
 
 		err := c.EnsureLoadBalancer(context.Background(), "zone-1", "app.example.com",
-			[]string{"pool-1"}, "geo", "none", nil)
+			[]string{"pool-1"}, "geo", "none", "test desc", nil)
 		g.Expect(err).To(HaveOccurred())
 	})
 
@@ -1331,7 +1331,7 @@ func TestEnsureLoadBalancer(t *testing.T) {
 		c := newTestClient(t, mux)
 
 		err := c.EnsureLoadBalancer(context.Background(), "zone-1", "app.example.com",
-			[]string{"pool-1"}, "geo", "none", nil)
+			[]string{"pool-1"}, "geo", "none", "test desc", nil)
 		g.Expect(err).To(HaveOccurred())
 	})
 
@@ -1358,7 +1358,7 @@ func TestEnsureLoadBalancer(t *testing.T) {
 		c := newTestClient(t, mux)
 
 		err := c.EnsureLoadBalancer(context.Background(), "zone-1", "app.example.com",
-			[]string{"pool-1", "pool-2"}, "random", "none",
+			[]string{"pool-1", "pool-2"}, "random", "none", "test desc",
 			map[string]float64{"pool-1": 0.7, "pool-2": 0.3})
 		g.Expect(err).NotTo(HaveOccurred())
 	})
@@ -1384,7 +1384,7 @@ func TestEnsureLoadBalancer(t *testing.T) {
 		c := newTestClient(t, mux)
 
 		err := c.EnsureLoadBalancer(context.Background(), "zone-1", "app.example.com",
-			[]string{"pool-1", "pool-2"}, "random", "none",
+			[]string{"pool-1", "pool-2"}, "random", "none", "test desc",
 			map[string]float64{"pool-1": 0.9, "pool-2": 0.1})
 		g.Expect(err).NotTo(HaveOccurred())
 	})

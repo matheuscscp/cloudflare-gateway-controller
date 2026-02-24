@@ -57,11 +57,12 @@ type PoolOrigin struct {
 
 // PoolConfig holds the configuration for a Cloudflare LB pool.
 type PoolConfig struct {
-	Name      string       // Pool name.
-	MonitorID string       // Associated monitor ID.
-	Origins   []PoolOrigin // Pool origins.
-	Weight    float64      // Pool-level weight for LB steering (0-1). Default: 1.
-	Enabled   bool         // Whether this pool is enabled.
+	Name        string       // Pool name.
+	Description string       // Pool description (ownership metadata).
+	MonitorID   string       // Associated monitor ID.
+	Origins     []PoolOrigin // Pool origins.
+	Weight      float64      // Pool-level weight for LB steering (0-1). Default: 1.
+	Enabled     bool         // Whether this pool is enabled.
 }
 
 // LoadBalancerPool represents a Cloudflare LB pool with its ID and name.
@@ -85,14 +86,14 @@ type Client interface {
 	// Zone/DNS operations.
 	ListZoneIDs(ctx context.Context) ([]string, error)
 	FindZoneIDByHostname(ctx context.Context, hostname string) (string, error)
-	EnsureDNSCNAME(ctx context.Context, zoneID, hostname, target string) error
+	EnsureDNSCNAME(ctx context.Context, zoneID, hostname, target, comment string) error
 	DeleteDNSCNAME(ctx context.Context, zoneID, hostname string) error
 	ListDNSCNAMEsByTarget(ctx context.Context, zoneID, target string) ([]string, error)
 
 	// Load Balancer Monitor operations (account-level).
-	CreateMonitor(ctx context.Context, name string, config MonitorConfig) (monitorID string, err error)
+	CreateMonitor(ctx context.Context, name, description string, config MonitorConfig) (monitorID string, err error)
 	GetMonitorByName(ctx context.Context, name string) (monitorID string, err error)
-	UpdateMonitor(ctx context.Context, monitorID, name string, config MonitorConfig) error
+	UpdateMonitor(ctx context.Context, monitorID, name, description string, config MonitorConfig) error
 	DeleteMonitor(ctx context.Context, monitorID string) error
 
 	// Load Balancer Pool operations (account-level).
@@ -103,7 +104,7 @@ type Client interface {
 	ListPoolsByPrefix(ctx context.Context, prefix string) ([]LoadBalancerPool, error)
 
 	// Load Balancer operations (zone-level).
-	EnsureLoadBalancer(ctx context.Context, zoneID, hostname string, poolIDs []string, steeringPolicy, sessionAffinity string, poolWeights map[string]float64) error
+	EnsureLoadBalancer(ctx context.Context, zoneID, hostname string, poolIDs []string, steeringPolicy, sessionAffinity, description string, poolWeights map[string]float64) error
 	DeleteLoadBalancer(ctx context.Context, zoneID, hostname string) error
 	ListLoadBalancerHostnames(ctx context.Context, zoneID string) ([]string, error)
 }
@@ -294,7 +295,7 @@ func (c *client) FindZoneIDByHostname(ctx context.Context, hostname string) (str
 	return "", fmt.Errorf("no zone found for hostname %q", hostname)
 }
 
-func (c *client) EnsureDNSCNAME(ctx context.Context, zoneID, hostname, target string) error {
+func (c *client) EnsureDNSCNAME(ctx context.Context, zoneID, hostname, target, comment string) error {
 	pager := c.client.DNS.Records.ListAutoPaging(ctx, dns.RecordListParams{
 		ZoneID: cloudflare.F(zoneID),
 		Name:   cloudflare.F(dns.RecordListParamsName{Exact: cloudflare.F(hostname)}),
@@ -314,6 +315,7 @@ func (c *client) EnsureDNSCNAME(ctx context.Context, zoneID, hostname, target st
 					Type:    cloudflare.F(dns.CNAMERecordTypeCNAME),
 					TTL:     cloudflare.F(dns.TTL1),
 					Proxied: cloudflare.F(true),
+					Comment: cloudflare.String(comment),
 				},
 			})
 			return err
@@ -330,6 +332,7 @@ func (c *client) EnsureDNSCNAME(ctx context.Context, zoneID, hostname, target st
 			Type:    cloudflare.F(dns.CNAMERecordTypeCNAME),
 			TTL:     cloudflare.F(dns.TTL1),
 			Proxied: cloudflare.F(true),
+			Comment: cloudflare.String(comment),
 		},
 	})
 	return err
@@ -374,10 +377,11 @@ func (c *client) ListDNSCNAMEsByTarget(ctx context.Context, zoneID, target strin
 
 // --- Load Balancer Monitor operations ---
 
-func (c *client) CreateMonitor(ctx context.Context, name string, config MonitorConfig) (string, error) {
+func (c *client) CreateMonitor(ctx context.Context, name, description string, config MonitorConfig) (string, error) {
+	desc := monitorDescription(name, description)
 	params := load_balancers.MonitorNewParams{
 		AccountID:     cloudflare.String(c.accountID),
-		Description:   cloudflare.String(name),
+		Description:   cloudflare.String(desc),
 		Type:          cloudflare.F(load_balancers.MonitorNewParamsType(config.Type)),
 		Path:          cloudflare.String(config.Path),
 		ExpectedCodes: cloudflare.String(config.ExpectedCodes),
@@ -396,6 +400,7 @@ func (c *client) CreateMonitor(ctx context.Context, name string, config MonitorC
 }
 
 func (c *client) GetMonitorByName(ctx context.Context, name string) (string, error) {
+	prefix := name + " | "
 	page, err := c.client.LoadBalancers.Monitors.List(ctx, load_balancers.MonitorListParams{
 		AccountID: cloudflare.String(c.accountID),
 	})
@@ -403,17 +408,18 @@ func (c *client) GetMonitorByName(ctx context.Context, name string) (string, err
 		return "", fmt.Errorf("listing monitors: %w", err)
 	}
 	for _, m := range page.Result {
-		if m.Description == name {
+		if strings.HasPrefix(m.Description, prefix) || m.Description == name {
 			return m.ID, nil
 		}
 	}
 	return "", nil
 }
 
-func (c *client) UpdateMonitor(ctx context.Context, monitorID, name string, config MonitorConfig) error {
+func (c *client) UpdateMonitor(ctx context.Context, monitorID, name, description string, config MonitorConfig) error {
+	desc := monitorDescription(name, description)
 	params := load_balancers.MonitorUpdateParams{
 		AccountID:     cloudflare.String(c.accountID),
-		Description:   cloudflare.String(name),
+		Description:   cloudflare.String(desc),
 		Type:          cloudflare.F(load_balancers.MonitorUpdateParamsType(config.Type)),
 		Path:          cloudflare.String(config.Path),
 		ExpectedCodes: cloudflare.String(config.ExpectedCodes),
@@ -429,6 +435,12 @@ func (c *client) UpdateMonitor(ctx context.Context, monitorID, name string, conf
 		return fmt.Errorf("updating monitor %q: %w", monitorID, err)
 	}
 	return nil
+}
+
+// monitorDescription builds the Description field for a monitor, encoding both
+// the hash name (used for lookup) and the ownership metadata.
+func monitorDescription(name, description string) string {
+	return name + " | " + description
 }
 
 func (c *client) DeleteMonitor(ctx context.Context, monitorID string) error {
@@ -457,11 +469,12 @@ func (c *client) CreatePool(ctx context.Context, config PoolConfig) (string, err
 		})
 	}
 	pool, err := c.client.LoadBalancers.Pools.New(ctx, load_balancers.PoolNewParams{
-		AccountID: cloudflare.String(c.accountID),
-		Name:      cloudflare.String(config.Name),
-		Origins:   cloudflare.F(origins),
-		Monitor:   cloudflare.String(config.MonitorID),
-		Enabled:   cloudflare.Bool(config.Enabled),
+		AccountID:   cloudflare.String(c.accountID),
+		Name:        cloudflare.String(config.Name),
+		Description: cloudflare.String(config.Description),
+		Origins:     cloudflare.F(origins),
+		Monitor:     cloudflare.String(config.MonitorID),
+		Enabled:     cloudflare.Bool(config.Enabled),
 	})
 	if err != nil {
 		return "", fmt.Errorf("creating pool %q: %w", config.Name, err)
@@ -509,11 +522,12 @@ func (c *client) UpdatePool(ctx context.Context, poolID string, config PoolConfi
 		})
 	}
 	_, err := c.client.LoadBalancers.Pools.Update(ctx, poolID, load_balancers.PoolUpdateParams{
-		AccountID: cloudflare.String(c.accountID),
-		Name:      cloudflare.String(config.Name),
-		Origins:   cloudflare.F(origins),
-		Monitor:   cloudflare.String(config.MonitorID),
-		Enabled:   cloudflare.Bool(config.Enabled),
+		AccountID:   cloudflare.String(c.accountID),
+		Name:        cloudflare.String(config.Name),
+		Description: cloudflare.String(config.Description),
+		Origins:     cloudflare.F(origins),
+		Monitor:     cloudflare.String(config.MonitorID),
+		Enabled:     cloudflare.Bool(config.Enabled),
 	})
 	if err != nil {
 		return fmt.Errorf("updating pool %q: %w", poolID, err)
@@ -552,7 +566,7 @@ func (c *client) ListPoolsByPrefix(ctx context.Context, prefix string) ([]LoadBa
 
 // --- Load Balancer operations ---
 
-func (c *client) EnsureLoadBalancer(ctx context.Context, zoneID, hostname string, poolIDs []string, steeringPolicy, sessionAffinity string, poolWeights map[string]float64) error {
+func (c *client) EnsureLoadBalancer(ctx context.Context, zoneID, hostname string, poolIDs []string, steeringPolicy, sessionAffinity, description string, poolWeights map[string]float64) error {
 	// List existing LBs to find one matching the hostname.
 	page, err := c.client.LoadBalancers.List(ctx, load_balancers.LoadBalancerListParams{
 		ZoneID: cloudflare.String(zoneID),
@@ -581,6 +595,7 @@ func (c *client) EnsureLoadBalancer(ctx context.Context, zoneID, hostname string
 		params := load_balancers.LoadBalancerUpdateParams{
 			ZoneID:          cloudflare.String(zoneID),
 			Name:            cloudflare.String(hostname),
+			Description:     cloudflare.String(description),
 			DefaultPools:    cloudflare.F(defaultPools),
 			FallbackPool:    cloudflare.String(poolIDs[0]),
 			Proxied:         cloudflare.Bool(true),
@@ -601,6 +616,7 @@ func (c *client) EnsureLoadBalancer(ctx context.Context, zoneID, hostname string
 	params := load_balancers.LoadBalancerNewParams{
 		ZoneID:          cloudflare.String(zoneID),
 		Name:            cloudflare.String(hostname),
+		Description:     cloudflare.String(description),
 		DefaultPools:    cloudflare.F(defaultPools),
 		FallbackPool:    cloudflare.String(poolIDs[0]),
 		Proxied:         cloudflare.Bool(true),

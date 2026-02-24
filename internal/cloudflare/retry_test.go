@@ -254,7 +254,7 @@ func TestWithRetry_DelegatesAllMethods(t *testing.T) {
 	g.Expect(zoneID).To(Equal("zone-1"))
 	g.Expect(inner.calls["FindZoneIDByHostname"]).To(Equal(1))
 
-	err = c.EnsureDNSCNAME(ctx, "zone-1", "app.example.com", "target.example.com")
+	err = c.EnsureDNSCNAME(ctx, "zone-1", "app.example.com", "target.example.com", "test comment")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(inner.calls["EnsureDNSCNAME"]).To(Equal(1))
 
@@ -268,7 +268,7 @@ func TestWithRetry_DelegatesAllMethods(t *testing.T) {
 	g.Expect(inner.calls["ListDNSCNAMEsByTarget"]).To(Equal(1))
 
 	// Monitor operations.
-	monitorID, err := c.CreateMonitor(ctx, "my-monitor", cloudflare.MonitorConfig{Type: "https"})
+	monitorID, err := c.CreateMonitor(ctx, "my-monitor", "test desc", cloudflare.MonitorConfig{Type: "https"})
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(monitorID).To(Equal("monitor-id"))
 	g.Expect(inner.calls["CreateMonitor"]).To(Equal(1))
@@ -278,7 +278,7 @@ func TestWithRetry_DelegatesAllMethods(t *testing.T) {
 	g.Expect(monitorID).To(Equal("monitor-id"))
 	g.Expect(inner.calls["GetMonitorByName"]).To(Equal(1))
 
-	err = c.UpdateMonitor(ctx, "monitor-id", "my-monitor", cloudflare.MonitorConfig{Type: "https"})
+	err = c.UpdateMonitor(ctx, "monitor-id", "my-monitor", "test desc", cloudflare.MonitorConfig{Type: "https"})
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(inner.calls["UpdateMonitor"]).To(Equal(1))
 
@@ -312,7 +312,7 @@ func TestWithRetry_DelegatesAllMethods(t *testing.T) {
 	g.Expect(inner.calls["ListPoolsByPrefix"]).To(Equal(1))
 
 	// Load Balancer operations.
-	err = c.EnsureLoadBalancer(ctx, "zone-1", "app.example.com", []string{"pool-1"}, "random", "none", map[string]float64{"pool-1": 1.0})
+	err = c.EnsureLoadBalancer(ctx, "zone-1", "app.example.com", []string{"pool-1"}, "random", "none", "test desc", map[string]float64{"pool-1": 1.0})
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(inner.calls["EnsureLoadBalancer"]).To(Equal(1))
 
@@ -397,7 +397,7 @@ func (m *mockRetryClient) FindZoneIDByHostname(_ context.Context, _ string) (str
 	return "zone-1", nil
 }
 
-func (m *mockRetryClient) EnsureDNSCNAME(_ context.Context, _, _, _ string) error {
+func (m *mockRetryClient) EnsureDNSCNAME(_ context.Context, _, _, _, _ string) error {
 	m.calls["EnsureDNSCNAME"]++
 	return nil
 }
@@ -412,7 +412,7 @@ func (m *mockRetryClient) ListDNSCNAMEsByTarget(_ context.Context, _, _ string) 
 	return []string{"app.example.com"}, nil
 }
 
-func (m *mockRetryClient) CreateMonitor(_ context.Context, _ string, _ cloudflare.MonitorConfig) (string, error) {
+func (m *mockRetryClient) CreateMonitor(_ context.Context, _, _ string, _ cloudflare.MonitorConfig) (string, error) {
 	m.calls["CreateMonitor"]++
 	return "monitor-id", nil
 }
@@ -422,7 +422,7 @@ func (m *mockRetryClient) GetMonitorByName(_ context.Context, _ string) (string,
 	return "monitor-id", nil
 }
 
-func (m *mockRetryClient) UpdateMonitor(_ context.Context, _, _ string, _ cloudflare.MonitorConfig) error {
+func (m *mockRetryClient) UpdateMonitor(_ context.Context, _, _, _ string, _ cloudflare.MonitorConfig) error {
 	m.calls["UpdateMonitor"]++
 	return nil
 }
@@ -460,7 +460,7 @@ func (m *mockRetryClient) ListPoolsByPrefix(_ context.Context, _ string) ([]clou
 	return []cloudflare.LoadBalancerPool{{ID: "p1", Name: "pool-1"}}, nil
 }
 
-func (m *mockRetryClient) EnsureLoadBalancer(_ context.Context, _, _ string, _ []string, _, _ string, _ map[string]float64) error {
+func (m *mockRetryClient) EnsureLoadBalancer(_ context.Context, _, _ string, _ []string, _, _, _ string, _ map[string]float64) error {
 	m.calls["EnsureLoadBalancer"]++
 	return nil
 }

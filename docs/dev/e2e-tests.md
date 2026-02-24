@@ -40,8 +40,16 @@ minutes.
      `e2e-lib.sh`). The test output is also saved to a log file (e.g.
      `test-e2e-ha.log`). Tail both files — there is no need to run
      `kubectl logs` separately.
+   - **Never sleep more than 30 seconds** between checks. You must wake up
+     frequently so the user can interact with you. Use `sleep 30` between
+     tail checks, never longer than 30 seconds.
    - If you spot an error in the logs, you can kill the test, fix the issue,
      and re-run immediately — saving the entire retry wait.
+   - **Do NOT wrap the make command with another `tee`.** The Makefile already
+     pipes output through `tee` to a log file (e.g. `test-e2e-ha.log`). Adding
+     a second `tee` to the same file causes garbled, duplicated output that is
+     unreadable. Just launch the make command directly and tail the log file
+     separately.
 6. **Clean up orphaned Cloudflare resources before retrying** if a previous
    run failed mid-way. Leftover tunnels/LBs will cause confusing failures.
 

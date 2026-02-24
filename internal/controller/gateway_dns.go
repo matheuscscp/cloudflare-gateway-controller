@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
 )
 
@@ -19,7 +20,7 @@ import (
 // account zones are deleted. Returns a non-nil *string on failure (using
 // new(fmt.Sprintf(...)) to allocate the error message inline), which is
 // reported on each HTTPRoute's DNSRecordsApplied condition.
-func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cloudflare.Client, tunnelID, zoneName string, routes []*gatewayv1.HTTPRoute) ([]string, *string) {
+func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cloudflare.Client, gw *gatewayv1.Gateway, tunnelID, zoneName string, routes []*gatewayv1.HTTPRoute) ([]string, *string) {
 	l := log.FromContext(ctx)
 
 	if zoneName == "" {
@@ -58,10 +59,11 @@ func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cloudflare.Clie
 	}
 
 	// Create missing records.
+	dnsComment := apiv1.ResourceDescription(gw)
 	var dnsChanges []string
 	for h := range desired {
 		if _, ok := actualSet[h]; !ok {
-			if err := tc.EnsureDNSCNAME(ctx, zoneID, h, tunnelTarget); err != nil {
+			if err := tc.EnsureDNSCNAME(ctx, zoneID, h, tunnelTarget, dnsComment); err != nil {
 				return dnsChanges, new(fmt.Sprintf("Failed to ensure DNS CNAME for %q: %v", h, err))
 			}
 			dnsChanges = append(dnsChanges, fmt.Sprintf("created DNS CNAME for %s", h))

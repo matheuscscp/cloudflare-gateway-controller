@@ -103,12 +103,13 @@ const (
 
 // tunnelEntry represents one desired tunnel and its associated Kubernetes resources.
 type tunnelEntry struct {
-	tunnelName     string // Cloudflare tunnel name (globally unique via Gateway UID)
-	deploymentName string // cloudflared Deployment name
-	secretName     string // tunnel token Secret name
-	azName         string // AZ name ("" if no AZ)
-	serviceName    string // Service name ("" if not per-backendRef)
-	tunnelID       string // filled after ensureTunnels
+	tunnelName       string // Cloudflare tunnel name (deterministic hash)
+	deploymentName   string // cloudflared Deployment name
+	secretName       string // tunnel token Secret name
+	azName           string // AZ name ("" if no AZ)
+	serviceNamespace string // Service namespace ("" if not per-backendRef)
+	serviceName      string // Service name ("" if not per-backendRef)
+	tunnelID         string // filled after ensureTunnels
 }
 
 // +kubebuilder:rbac:groups=cloudflare-gateway-controller.io,resources=cloudflaregatewayparameters,verbs=get;list;watch
@@ -319,8 +320,15 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	}
 	changes = append(changes, deployChanges...)
 
+	// Read existing CGS for previous state (needed for stale cleanup of tunnels,
+	// pools, and zone changes).
+	cgs, cgsErr := r.getCGS(ctx, gw)
+	if cgsErr != nil {
+		return r.reconcileError(ctx, gw, fmt.Errorf("getting CloudflareGatewayStatus: %w", cgsErr))
+	}
+
 	// Clean up stale tunnel resources (from removed AZs, services, or mode switches).
-	cleanupChanges, cleanupErrs := r.cleanupStaleTunnelResources(ctx, tc, gw, entries)
+	cleanupChanges, cleanupErrs := r.cleanupStaleTunnelResources(ctx, tc, gw, entries, cgsTunnels(cgs))
 	changes = append(changes, cleanupChanges...)
 	errs = append(errs, cleanupErrs...)
 
@@ -333,12 +341,6 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		return r.reconcileError(ctx, gw, err)
 	}
 	changes = append(changes, configChanges...)
-
-	// Read existing CGS for previous zone info (needed for cleanup on mode/zone changes).
-	cgs, cgsErr := r.getCGS(ctx, gw)
-	if cgsErr != nil {
-		return r.reconcileError(ctx, gw, fmt.Errorf("getting CloudflareGatewayStatus: %w", cgsErr))
-	}
 
 	// Reconcile DNS or Load Balancer depending on mode, handling zone changes.
 	var zoneName string
@@ -410,25 +412,26 @@ func (r *GatewayReconciler) reconcileDNSOrLB(
 		if len(entries) > 0 {
 			tunnelID = entries[0].tunnelID
 		}
-		dnsChanges, dnsErr := r.reconcileDNS(ctx, tc, tunnelID, zoneName, validRoutes)
+		dnsChanges, dnsErr := r.reconcileDNS(ctx, tc, gw, tunnelID, zoneName, validRoutes)
 		res.changes = append(res.changes, dnsChanges...)
 		res.dnsErr = dnsErr
 		if dnsErr != nil {
 			res.errs = append(res.errs, *dnsErr)
 		}
 		// Clean up stale LB resources if switching FROM LB mode.
-		// Use CGS zone info (from previous reconciliation) since the current
-		// params may reference a different zone or no zone at all.
-		cleanupZoneName := cgsZoneName
-		cleanupZoneID := cgsZoneID
-		if cleanupZoneName == "" && zoneName != "" {
-			// Fallback to current params if CGS has no zone info (first reconcile
-			// or CGS not yet populated).
-			cleanupZoneName = zoneName
+		// Only attempt cleanup if CGS indicates the gateway was in LB mode.
+		if cgs != nil && cgs.Status.LoadBalancer != nil {
+			cleanupZoneName := cgsZoneName
+			cleanupZoneID := cgsZoneID
+			if cleanupZoneName == "" && zoneName != "" {
+				// Fallback to current params if CGS has no zone info (first reconcile
+				// or CGS not yet populated).
+				cleanupZoneName = zoneName
+			}
+			lbCleanupChanges, lbCleanupErrs := r.cleanupAllLBResources(ctx, tc, gw, cleanupZoneName, cleanupZoneID, cgs.Status.LoadBalancer.Hostnames, cgs.Status.LoadBalancer.Pools)
+			res.changes = append(res.changes, lbCleanupChanges...)
+			res.errs = append(res.errs, lbCleanupErrs...)
 		}
-		lbCleanupChanges, lbCleanupErrs := r.cleanupAllLBResources(ctx, tc, gw, cleanupZoneName, cleanupZoneID)
-		res.changes = append(res.changes, lbCleanupChanges...)
-		res.errs = append(res.errs, lbCleanupErrs...)
 	} else {
 		// If zone changed, clean up LB resources in the old zone before
 		// reconciling in the new zone.
@@ -442,13 +445,13 @@ func (r *GatewayReconciler) reconcileDNSOrLB(
 				}
 			}
 			if oldZoneID != "" {
-				oldLBChanges, oldLBErrs := r.cleanupAllLBResources(ctx, tc, gw, cgsZoneName, oldZoneID)
+				oldLBChanges, oldLBErrs := r.cleanupAllLBResources(ctx, tc, gw, cgsZoneName, oldZoneID, cgsLBHostnames(cgs), cgsLBPools(cgs))
 				res.changes = append(res.changes, oldLBChanges...)
 				res.errs = append(res.errs, oldLBErrs...)
 			}
 		}
 		var lbChanges, lbErrs []string
-		res.lbState, lbChanges, lbErrs = r.reconcileLoadBalancer(ctx, tc, gw, params, mode, entries, validRoutes)
+		res.lbState, lbChanges, lbErrs = r.reconcileLoadBalancer(ctx, tc, gw, params, mode, entries, validRoutes, cgsLBHostnames(cgs), cgsLBPools(cgs))
 		res.changes = append(res.changes, lbChanges...)
 		res.errs = append(res.errs, lbErrs...)
 		// Clean up stale DNS if switching FROM simple mode.
@@ -879,22 +882,16 @@ func (r *GatewayReconciler) finalizeEnabled(ctx context.Context, gw *gatewayv1.G
 				return changes, fmt.Errorf("finding zone ID for LB cleanup: %w", err)
 			}
 		}
-		lbCleanupChanges, lbCleanupErrs := r.cleanupAllLBResources(ctx, tc, gw, cleanupZoneName, cleanupZoneID)
+		lbCleanupChanges, lbCleanupErrs := r.cleanupAllLBResources(ctx, tc, gw, cleanupZoneName, cleanupZoneID, cgs.Status.LoadBalancer.Hostnames, cgs.Status.LoadBalancer.Pools)
 		changes = append(changes, lbCleanupChanges...)
 		if len(lbCleanupErrs) > 0 {
 			return changes, fmt.Errorf("cleaning up LB resources: %s", strings.Join(lbCleanupErrs, "; "))
 		}
 	}
 
-	// Delete all tunnels owned by this Gateway (matching "gateway-{UID}" prefix).
-	prefix := "gateway-" + string(gw.UID)
-	tunnels, err := tc.ListTunnels(ctx)
-	if err != nil {
-		return changes, fmt.Errorf("listing tunnels for deletion: %w", err)
-	}
-
-	for _, t := range tunnels {
-		if !strings.HasPrefix(t.Name, prefix) {
+	// Delete all tunnels owned by this Gateway using CGS-tracked tunnel state.
+	for _, t := range cgsTunnels(cgs) {
+		if t.ID == "" {
 			continue
 		}
 

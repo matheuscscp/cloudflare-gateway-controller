@@ -87,6 +87,18 @@ cfgwctl() { "$CFGWCTL" --credentials-file "$CREDENTIALS_FILE" "$@"; }
 export -f cfgwctl
 export CFGWCTL CREDENTIALS_FILE
 
+# cf_resource_name computes a deterministic Cloudflare resource name from the
+# given parts, matching the Go ResourceName() function: "gw-" + hex(sha256(part1/part2/...)).
+cf_resource_name() {
+    local input=""
+    for part in "$@"; do
+        [ -n "$input" ] && input+="/"
+        input+="$part"
+    done
+    echo -n "gw-$(printf '%s' "$input" | sha256sum | cut -d' ' -f1)"
+}
+export -f cf_resource_name
+
 # ─── Prerequisites ────────────────────────────────────────────────────────────
 
 validate_prerequisites() {
@@ -181,6 +193,7 @@ install_controller() {
         --set image.repository="$IMAGE_REPO" \
         --set image.tag="$IMAGE_TAG" \
         --set image.pullPolicy=Never \
+        --set config.clusterName="$KIND_CLUSTER_NAME" \
         --set 'podArgs[0]=--log-level=debug' \
         --wait --timeout 120s
 

@@ -36,8 +36,8 @@ create_test_namespace
 ensure_gatewayclass
 
 # ─── Shared state across tests ───────────────────────────────────────────────
-GW_UID=""
-TUNNEL_PREFIX=""
+GW_NAME="tsaz-gw"
+MONITOR_NAME=""
 ZONE_ID=""
 HOSTNAME_A=""
 HOSTNAME_B=""
@@ -98,8 +98,7 @@ EOF
         || fail "tsaz-gw did not become Programmed"
     pass "tsaz-gw is Programmed"
 
-    GW_UID=$(kubectl get gateway tsaz-gw -n "$TEST_NS" -o jsonpath='{.metadata.uid}')
-    TUNNEL_PREFIX="gateway-${GW_UID}"
+    MONITOR_NAME=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "$GW_NAME" "monitor")
 
     HOSTNAME_A="tsaz-a-${TS: -6}.${TEST_ZONE_NAME}"
 
@@ -144,7 +143,8 @@ EOF
     local tunnel_ids=()
     for svc in svc-alpha svc-beta; do
         for az in az-a az-b; do
-            local tunnel_name="${TUNNEL_PREFIX}-${svc}-${az}"
+            local tunnel_name
+            tunnel_name=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "$GW_NAME" "$TEST_NS" "$svc" "$az")
             log "Verifying tunnel '${svc}-${az}'..."
             retry 60 3 bash -c "
                 id=\$(cfgwctl tunnel get-id --name '$tunnel_name' | jq -r '.tunnelId')
@@ -175,9 +175,12 @@ EOF
 
     # Verify each tunnel config routes to its own service only.
     log "Verifying tunnel ingress rules are service-specific..."
+    local tn_alpha_a tn_beta_a
+    tn_alpha_a=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "$GW_NAME" "$TEST_NS" "svc-alpha" "az-a")
+    tn_beta_a=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "$GW_NAME" "$TEST_NS" "svc-beta" "az-a")
     local tunnel_id_alpha_a tunnel_id_beta_a
-    tunnel_id_alpha_a=$(cfgwctl tunnel get-id --name "${TUNNEL_PREFIX}-svc-alpha-az-a" | jq -r '.tunnelId')
-    tunnel_id_beta_a=$(cfgwctl tunnel get-id --name "${TUNNEL_PREFIX}-svc-beta-az-a" | jq -r '.tunnelId')
+    tunnel_id_alpha_a=$(cfgwctl tunnel get-id --name "$tn_alpha_a" | jq -r '.tunnelId')
+    tunnel_id_beta_a=$(cfgwctl tunnel get-id --name "$tn_beta_a" | jq -r '.tunnelId')
 
     retry 60 3 bash -c "cfgwctl tunnel get-config --tunnel-id '$tunnel_id_alpha_a' | jq -e '.[] | select(.hostname == \"$HOSTNAME_A\")' >/dev/null" \
         || fail "tunnel svc-alpha-az-a missing hostname $HOSTNAME_A"
@@ -196,41 +199,46 @@ EOF
     # Verify monitor exists.
     log "Verifying monitor exists..."
     retry 60 3 bash -c "
-        id=\$(cfgwctl lb get-monitor --name '$TUNNEL_PREFIX' | jq -r '.monitorId')
+        id=\$(cfgwctl lb get-monitor --name '$MONITOR_NAME' | jq -r '.monitorId')
         [ -n \"\$id\" ] && [ \"\$id\" != '' ]
     " || fail "monitor not found"
     local monitor_id
-    monitor_id=$(cfgwctl lb get-monitor --name "$TUNNEL_PREFIX" | jq -r '.monitorId')
+    monitor_id=$(cfgwctl lb get-monitor --name "$MONITOR_NAME" | jq -r '.monitorId')
     pass "Monitor exists: $monitor_id"
 
     # Verify 2 pools (one per service), each with 2 origins (one per AZ).
     log "Verifying pools exist..."
-    retry 60 3 bash -c "[ \$(cfgwctl lb list-pools --prefix '$TUNNEL_PREFIX' | jq 'length') -eq 2 ]" \
+    retry 60 3 bash -c "[ \$(cfgwctl lb list-pools --prefix 'gw-' | jq 'length') -eq 2 ]" \
         || fail "expected 2 pools"
     pass "2 pools exist"
 
     # Verify pool svc-alpha has 2 origins.
+    local pn_alpha pn_beta
+    pn_alpha=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "$GW_NAME" "$TEST_NS" "svc-alpha")
+    pn_beta=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "$GW_NAME" "$TEST_NS" "svc-beta")
     log "Verifying pool svc-alpha has 2 origins..."
-    retry 60 3 bash -c "[ \$(cfgwctl lb get-pool --name '${TUNNEL_PREFIX}-svc-alpha' | jq '.origins | length') -eq 2 ]" \
+    retry 60 3 bash -c "[ \$(cfgwctl lb get-pool --name '$pn_alpha' | jq '.origins | length') -eq 2 ]" \
         || fail "expected 2 origins in pool svc-alpha"
     pass "Pool svc-alpha has 2 origins"
 
     # Verify pool svc-beta has 2 origins.
     log "Verifying pool svc-beta has 2 origins..."
-    retry 60 3 bash -c "[ \$(cfgwctl lb get-pool --name '${TUNNEL_PREFIX}-svc-beta' | jq '.origins | length') -eq 2 ]" \
+    retry 60 3 bash -c "[ \$(cfgwctl lb get-pool --name '$pn_beta' | jq '.origins | length') -eq 2 ]" \
         || fail "expected 2 origins in pool svc-beta"
     pass "Pool svc-beta has 2 origins"
 
     # Verify pool origins reference the correct tunnels.
     log "Verifying pool svc-alpha origins reference correct tunnels..."
     local alpha_az_a_tid alpha_az_b_tid
-    alpha_az_a_tid=$(cfgwctl tunnel get-id --name "${TUNNEL_PREFIX}-svc-alpha-az-a" | jq -r '.tunnelId')
-    alpha_az_b_tid=$(cfgwctl tunnel get-id --name "${TUNNEL_PREFIX}-svc-alpha-az-b" | jq -r '.tunnelId')
+    alpha_az_a_tid=$(cfgwctl tunnel get-id --name "$tn_alpha_a" | jq -r '.tunnelId')
+    local tn_alpha_b
+    tn_alpha_b=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "$GW_NAME" "$TEST_NS" "svc-alpha" "az-b")
+    alpha_az_b_tid=$(cfgwctl tunnel get-id --name "$tn_alpha_b" | jq -r '.tunnelId')
 
-    retry 60 3 bash -c "cfgwctl lb get-pool --name '${TUNNEL_PREFIX}-svc-alpha' \
+    retry 60 3 bash -c "cfgwctl lb get-pool --name '$pn_alpha' \
         | jq -e '.origins[] | select(.address == \"${alpha_az_a_tid}.cfargotunnel.com\")' >/dev/null" \
         || fail "pool svc-alpha missing origin for az-a"
-    retry 60 3 bash -c "cfgwctl lb get-pool --name '${TUNNEL_PREFIX}-svc-alpha' \
+    retry 60 3 bash -c "cfgwctl lb get-pool --name '$pn_alpha' \
         | jq -e '.origins[] | select(.address == \"${alpha_az_b_tid}.cfargotunnel.com\")' >/dev/null" \
         || fail "pool svc-alpha missing origin for az-b"
     pass "Pool svc-alpha origins correct"
@@ -269,8 +277,10 @@ EOF
 
     # No new tunnels/pools needed — svc-alpha already has tunnels and a pool.
     # Verify svc-alpha tunnel az-a has both hostnames.
+    local tn_alpha_a
+    tn_alpha_a=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "$GW_NAME" "$TEST_NS" "svc-alpha" "az-a")
     local tunnel_id_alpha_a
-    tunnel_id_alpha_a=$(cfgwctl tunnel get-id --name "${TUNNEL_PREFIX}-svc-alpha-az-a" | jq -r '.tunnelId')
+    tunnel_id_alpha_a=$(cfgwctl tunnel get-id --name "$tn_alpha_a" | jq -r '.tunnelId')
     log "Verifying svc-alpha-az-a tunnel has both hostnames..."
     retry 60 3 bash -c "cfgwctl tunnel get-config --tunnel-id '$tunnel_id_alpha_a' | jq -e '.[] | select(.hostname == \"$HOSTNAME_B\")' >/dev/null" \
         || fail "tunnel svc-alpha-az-a missing hostname $HOSTNAME_B"
@@ -281,7 +291,7 @@ EOF
     # Still 2 pools (no new service was added).
     log "Verifying still 2 pools..."
     local pool_count
-    pool_count=$(cfgwctl lb list-pools --prefix "$TUNNEL_PREFIX" | jq 'length')
+    pool_count=$(cfgwctl lb list-pools --prefix 'gw-' | jq 'length')
     [ "$pool_count" -eq 2 ] || fail "expected 2 pools, got $pool_count"
     pass "2 pools still exist"
 
@@ -301,8 +311,10 @@ test_tsaz_route_deletion() {
     # svc-beta is no longer referenced → all its tunnels + Deployments should be deleted.
     log "Verifying svc-beta tunnels deleted..."
     for az in az-a az-b; do
+        local tn_beta_az
+        tn_beta_az=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "$GW_NAME" "$TEST_NS" "svc-beta" "$az")
         retry 60 3 bash -c "
-            id=\$(cfgwctl tunnel get-id --name '${TUNNEL_PREFIX}-svc-beta-${az}' | jq -r '.tunnelId')
+            id=\$(cfgwctl tunnel get-id --name '$tn_beta_az' | jq -r '.tunnelId')
             [ -z \"\$id\" ] || [ \"\$id\" = 'null' ]
         " || fail "tunnel svc-beta-${az} still exists"
         pass "Tunnel svc-beta-${az} deleted"
@@ -318,15 +330,19 @@ test_tsaz_route_deletion() {
     # svc-alpha tunnels should still exist (still referenced by route-b).
     log "Verifying svc-alpha tunnels still exist..."
     for az in az-a az-b; do
+        local tn_alpha_az
+        tn_alpha_az=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "$GW_NAME" "$TEST_NS" "svc-alpha" "$az")
         local tid
-        tid=$(cfgwctl tunnel get-id --name "${TUNNEL_PREFIX}-svc-alpha-${az}" | jq -r '.tunnelId')
+        tid=$(cfgwctl tunnel get-id --name "$tn_alpha_az" | jq -r '.tunnelId')
         [ -n "$tid" ] && [ "$tid" != "null" ] || fail "tunnel svc-alpha-${az} disappeared"
     done
     pass "All svc-alpha tunnels still exist"
 
     # Verify svc-alpha tunnel only has hostname B now.
+    local tn_alpha_a
+    tn_alpha_a=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "$GW_NAME" "$TEST_NS" "svc-alpha" "az-a")
     local tunnel_id_alpha_a
-    tunnel_id_alpha_a=$(cfgwctl tunnel get-id --name "${TUNNEL_PREFIX}-svc-alpha-az-a" | jq -r '.tunnelId')
+    tunnel_id_alpha_a=$(cfgwctl tunnel get-id --name "$tn_alpha_a" | jq -r '.tunnelId')
     log "Verifying svc-alpha-az-a tunnel has only hostname B..."
     retry 60 3 bash -c "! cfgwctl tunnel get-config --tunnel-id '$tunnel_id_alpha_a' | jq -e '.[] | select(.hostname == \"$HOSTNAME_A\")' >/dev/null 2>&1" \
         || fail "tunnel svc-alpha-az-a still has hostname $HOSTNAME_A"
@@ -347,8 +363,10 @@ test_tsaz_route_deletion() {
 
     # Verify pool svc-beta deleted, pool svc-alpha still exists.
     log "Verifying pool svc-beta deleted..."
+    local pn_beta
+    pn_beta=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "$GW_NAME" "$TEST_NS" "svc-beta")
     local pool_beta_id
-    pool_beta_id=$(cfgwctl lb get-pool --name "${TUNNEL_PREFIX}-svc-beta" | jq -r '.poolId')
+    pool_beta_id=$(cfgwctl lb get-pool --name "$pn_beta" | jq -r '.poolId')
     { [ -z "$pool_beta_id" ] || [ "$pool_beta_id" = "" ]; } || fail "pool svc-beta still exists"
     pass "Pool svc-beta deleted"
 
@@ -378,14 +396,14 @@ test_tsaz_gateway_deletion() {
     # Verify all pools deleted.
     log "Verifying all pools deleted..."
     local pool_count
-    pool_count=$(cfgwctl lb list-pools --prefix "$TUNNEL_PREFIX" | jq 'length')
+    pool_count=$(cfgwctl lb list-pools --prefix 'gw-' | jq 'length')
     [ "$pool_count" -eq 0 ] || fail "expected 0 pools, got $pool_count"
     pass "All pools deleted"
 
     # Verify monitor deleted.
     log "Verifying monitor deleted..."
     local monitor_id
-    monitor_id=$(cfgwctl lb get-monitor --name "$TUNNEL_PREFIX" | jq -r '.monitorId')
+    monitor_id=$(cfgwctl lb get-monitor --name "$MONITOR_NAME" | jq -r '.monitorId')
     [ -z "$monitor_id" ] || [ "$monitor_id" = "" ] || fail "monitor still exists: $monitor_id"
     pass "Monitor deleted"
 
@@ -393,8 +411,10 @@ test_tsaz_gateway_deletion() {
     log "Verifying all tunnels deleted..."
     for svc in svc-alpha; do
         for az in az-a az-b; do
+            local tn
+            tn=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "$GW_NAME" "$TEST_NS" "$svc" "$az")
             local tid
-            tid=$(cfgwctl tunnel get-id --name "${TUNNEL_PREFIX}-${svc}-${az}" | jq -r '.tunnelId')
+            tid=$(cfgwctl tunnel get-id --name "$tn" | jq -r '.tunnelId')
             { [ -z "$tid" ] || [ "$tid" = "null" ]; } || fail "tunnel ${svc}-${az} still exists"
         done
     done

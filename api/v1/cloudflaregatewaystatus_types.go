@@ -64,6 +64,10 @@ type TunnelStatus struct {
 	// +optional
 	AZName string `json:"azName,omitempty"`
 
+	// ServiceNamespace is the backend service namespace (empty if not per-service).
+	// +optional
+	ServiceNamespace string `json:"serviceNamespace,omitempty"`
+
 	// ServiceName is the backend service name (empty if not per-service).
 	// +optional
 	ServiceName string `json:"serviceName,omitempty"`

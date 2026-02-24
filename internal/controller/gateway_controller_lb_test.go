@@ -299,8 +299,8 @@ func TestGatewayReconciler_TrafficSplitting(t *testing.T) {
 	g.Expect(testMock.monitors).To(HaveKey(monitorName))
 
 	// Verify pools were created (one per service) for this Gateway.
-	g.Expect(testMock.poolsByName).To(HaveKey(apiv1.PoolNameForService(&gwResult, "svc-a")))
-	g.Expect(testMock.poolsByName).To(HaveKey(apiv1.PoolNameForService(&gwResult, "svc-b")))
+	g.Expect(testMock.poolsByName).To(HaveKey(apiv1.PoolNameForService(&gwResult, gwResult.Namespace, "svc-a")))
+	g.Expect(testMock.poolsByName).To(HaveKey(apiv1.PoolNameForService(&gwResult, gwResult.Namespace, "svc-b")))
 
 	// Find the EnsureLoadBalancer call for our hostname.
 	var lbCall mockEnsureLBCall
@@ -387,6 +387,42 @@ func TestGatewayReconciler_LBDeletion(t *testing.T) {
 		g.Expect(programmed.Status).To(Equal(metav1.ConditionTrue))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
+	// Create an HTTPRoute so CGS tracks the LB hostname for cleanup.
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-route-lb-del",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{Name: gatewayv1.ObjectName(gw.Name)},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"del.example.com"},
+			Rules: []gatewayv1.HTTPRouteRule{{
+				BackendRefs: []gatewayv1.HTTPBackendRef{{
+					BackendRef: gatewayv1.BackendRef{
+						BackendObjectReference: gatewayv1.BackendObjectReference{
+							Name: "my-service", Port: new(gatewayv1.PortNumber(8080)),
+						},
+					},
+				}},
+			}},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
+
+	// Wait for EnsureLoadBalancer to confirm CGS tracks the hostname.
+	g.Eventually(func() bool {
+		for _, c := range testMock.ensureLBCalls {
+			if c.Hostname == "del.example.com" {
+				return true
+			}
+		}
+		return false
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(BeTrue())
+
 	// Look up the Gateway to get UID for asserting on monitor/pool names.
 	var gwResult gatewayv1.Gateway
 	g.Expect(testClient.Get(testCtx, gwKey, &gwResult)).To(Succeed())
@@ -395,9 +431,6 @@ func TestGatewayReconciler_LBDeletion(t *testing.T) {
 	monitorName := apiv1.MonitorName(&gwResult)
 	g.Expect(testMock.monitors).To(HaveKey(monitorName))
 	g.Expect(testMock.poolsByName).To(HaveKey(apiv1.PoolNameForAZ(&gwResult, "az1")))
-
-	// Set up mock to return existing LB hostnames and pools for cleanup.
-	testMock.lbHostnames = []string{"del.example.com"}
 
 	// Delete the Gateway.
 	g.Eventually(func(g Gomega) {
@@ -475,7 +508,6 @@ func TestGatewayReconciler_LBStaleLBCleanup(t *testing.T) {
 	}
 	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
 	t.Cleanup(func() {
-		testMock.lbHostnames = nil
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
 			_ = testClient.Delete(testCtx, &latest)
@@ -492,11 +524,8 @@ func TestGatewayReconciler_LBStaleLBCleanup(t *testing.T) {
 		g.Expect(programmed.Status).To(Equal(metav1.ConditionTrue))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
-	// Simulate a stale LB hostname (no route references it).
-	testMock.lbHostnames = []string{"stale.example.com"}
-	testMock.deleteLBCalls = nil
-
-	// Create a route for a DIFFERENT hostname to trigger re-reconcile.
+	// Create a route for the hostname that will become stale. This causes
+	// CGS to track "stale.example.com" in LoadBalancer.Hostnames.
 	route := &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-route-lb-stale",
@@ -508,7 +537,7 @@ func TestGatewayReconciler_LBStaleLBCleanup(t *testing.T) {
 					{Name: gatewayv1.ObjectName(gw.Name)},
 				},
 			},
-			Hostnames: []gatewayv1.Hostname{"active.example.com"},
+			Hostnames: []gatewayv1.Hostname{"stale.example.com"},
 			Rules: []gatewayv1.HTTPRouteRule{{
 				BackendRefs: []gatewayv1.HTTPBackendRef{{
 					BackendRef: gatewayv1.BackendRef{
@@ -521,12 +550,24 @@ func TestGatewayReconciler_LBStaleLBCleanup(t *testing.T) {
 		},
 	}
 	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.HTTPRoute
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
+
+	// Wait for EnsureLoadBalancer to confirm CGS tracks the hostname.
+	g.Eventually(func() bool {
+		for _, c := range testMock.ensureLBCalls {
+			if c.Hostname == "stale.example.com" {
+				return true
+			}
 		}
-	})
+		return false
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(BeTrue())
+
+	// Clear deleteLBCalls to track only subsequent deletions.
+	testMock.deleteLBCalls = nil
+
+	// Delete the route to make "stale.example.com" no longer desired.
+	// The next reconciliation will see it in CGS previousHostnames but not
+	// in the desired set, and delete it.
+	g.Expect(testClient.Delete(testCtx, route)).To(Succeed())
 
 	// Verify the stale LB hostname is deleted.
 	g.Eventually(func() bool {
