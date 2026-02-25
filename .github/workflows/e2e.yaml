@@ -5,7 +5,6 @@ name: e2e
 
 on:
   pull_request:
-    types: [labeled, synchronize]
   schedule:
     - cron: "0 4 * * *" # nightly at 4 AM UTC
   workflow_dispatch:
@@ -23,11 +22,6 @@ env:
 jobs:
   # Build and push the controller image to GHCR for use by e2e jobs.
   docker-build:
-    if: >-
-      github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'e2e') ||
-      (github.event_name == 'pull_request' && github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'e2e'))
     runs-on: ubuntu-latest
     permissions:
       packages: write
@@ -57,11 +51,6 @@ jobs:
   # Clean up orphaned Cloudflare resources from previous failed runs.
   # Runs in parallel with docker-build so it doesn't add latency.
   cleanup:
-    if: >-
-      github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'e2e') ||
-      (github.event_name == 'pull_request' && github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'e2e'))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

@@ -13,7 +13,6 @@ func newDNSCmd(credentialsFile *string) *cobra.Command {
 	cmd.AddCommand(
 		newDNSListZonesCmd(credentialsFile),
 		newDNSFindZoneCmd(credentialsFile),
-		newDNSEnsureCNAMECmd(credentialsFile),
 		newDNSDeleteCNAMECmd(credentialsFile),
 		newDNSListCNAMEsCmd(credentialsFile),
 	)
@@ -57,29 +56,6 @@ func newDNSFindZoneCmd(credentialsFile *string) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&hostname, "hostname", "", "hostname to look up")
 	cobra.CheckErr(cmd.MarkFlagRequired("hostname"))
-	return cmd
-}
-
-func newDNSEnsureCNAMECmd(credentialsFile *string) *cobra.Command {
-	var zoneID, hostname, target, comment string
-	cmd := &cobra.Command{
-		Use:   "ensure-cname",
-		Short: "Ensure a DNS CNAME record exists",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := newClient(*credentialsFile)
-			if err != nil {
-				return err
-			}
-			return c.EnsureDNSCNAME(cmd.Context(), zoneID, hostname, target, comment)
-		},
-	}
-	cmd.Flags().StringVar(&zoneID, "zone-id", "", "zone ID")
-	cmd.Flags().StringVar(&hostname, "hostname", "", "CNAME hostname")
-	cmd.Flags().StringVar(&target, "target", "", "CNAME target")
-	cmd.Flags().StringVar(&comment, "comment", "", "DNS record comment")
-	cobra.CheckErr(cmd.MarkFlagRequired("zone-id"))
-	cobra.CheckErr(cmd.MarkFlagRequired("hostname"))
-	cobra.CheckErr(cmd.MarkFlagRequired("target"))
 	return cmd
 }
 
