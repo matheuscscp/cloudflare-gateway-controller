@@ -189,3 +189,36 @@ rejects it with `Accepted=False` and reason `ListenersNotValid`.
 2. Verify `Accepted` condition is `False`.
 3. Verify `Accepted` reason is `ListenersNotValid`.
 4. Delete `Gateway`; verify deleted.
+
+## test_cluster_recreation
+
+Proves that deterministic Cloudflare resource naming enables cluster recreation
+without leaking resources. A reborn cluster with the same `clusterName` adopts
+existing Cloudflare resources (tunnel, DNS CNAME) instead of creating duplicates.
+
+**Must run last** because it destroys and recreates the kind cluster.
+
+**Resources created:**
+- `CloudflareGatewayParameters` with DNS zone config
+- `Gateway`, `Service`, and `HTTPRoute`
+
+**Cloudflare resources:** 1 tunnel, 1 DNS CNAME (adopted after recreation).
+
+**Steps:**
+
+1. Create `CloudflareGatewayParameters`, `Gateway`, `Service`, and `HTTPRoute`;
+   wait for Programmed.
+2. Record the Cloudflare tunnel ID.
+3. Verify DNS CNAME exists.
+4. Delete the kind cluster.
+5. Recreate the kind cluster with the same name.
+6. Reinstall controller, recreate namespace and GatewayClass.
+7. Recreate the same `Gateway`, `Service`, and `HTTPRoute`.
+8. Wait for Programmed.
+9. Verify tunnel ID is **unchanged** (same as before — adopted, not recreated).
+10. Verify tunnel config includes the hostname.
+11. Verify DNS CNAME still exists.
+12. Delete `HTTPRoute` and `Gateway`.
+13. Verify tunnel deleted by finalizer.
+14. Verify DNS CNAME deleted.
+15. Clean up `CloudflareGatewayParameters` and `Service`.

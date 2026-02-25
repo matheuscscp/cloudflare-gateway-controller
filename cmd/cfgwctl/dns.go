@@ -61,7 +61,7 @@ func newDNSFindZoneCmd(credentialsFile *string) *cobra.Command {
 }
 
 func newDNSEnsureCNAMECmd(credentialsFile *string) *cobra.Command {
-	var zoneID, hostname, target string
+	var zoneID, hostname, target, comment string
 	cmd := &cobra.Command{
 		Use:   "ensure-cname",
 		Short: "Ensure a DNS CNAME record exists",
@@ -70,12 +70,13 @@ func newDNSEnsureCNAMECmd(credentialsFile *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return c.EnsureDNSCNAME(cmd.Context(), zoneID, hostname, target)
+			return c.EnsureDNSCNAME(cmd.Context(), zoneID, hostname, target, comment)
 		},
 	}
 	cmd.Flags().StringVar(&zoneID, "zone-id", "", "zone ID")
 	cmd.Flags().StringVar(&hostname, "hostname", "", "CNAME hostname")
 	cmd.Flags().StringVar(&target, "target", "", "CNAME target")
+	cmd.Flags().StringVar(&comment, "comment", "", "DNS record comment")
 	cobra.CheckErr(cmd.MarkFlagRequired("zone-id"))
 	cobra.CheckErr(cmd.MarkFlagRequired("hostname"))
 	cobra.CheckErr(cmd.MarkFlagRequired("target"))

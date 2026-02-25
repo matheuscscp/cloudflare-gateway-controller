@@ -179,9 +179,9 @@ func (r *retryClient) FindZoneIDByHostname(ctx context.Context, hostname string)
 	})
 }
 
-func (r *retryClient) EnsureDNSCNAME(ctx context.Context, zoneID, hostname, target string) error {
+func (r *retryClient) EnsureDNSCNAME(ctx context.Context, zoneID, hostname, target, comment string) error {
 	return retry0(ctx, r.maxRetries, func() error {
-		return r.inner.EnsureDNSCNAME(ctx, zoneID, hostname, target)
+		return r.inner.EnsureDNSCNAME(ctx, zoneID, hostname, target, comment)
 	})
 }
 
@@ -199,9 +199,9 @@ func (r *retryClient) ListDNSCNAMEsByTarget(ctx context.Context, zoneID, target 
 
 // --- Load Balancer Monitor operations ---
 
-func (r *retryClient) CreateMonitor(ctx context.Context, name string, config MonitorConfig) (string, error) {
+func (r *retryClient) CreateMonitor(ctx context.Context, name, description string, config MonitorConfig) (string, error) {
 	return retry1(ctx, r.maxRetries, func() (string, error) {
-		return r.inner.CreateMonitor(ctx, name, config)
+		return r.inner.CreateMonitor(ctx, name, description, config)
 	})
 }
 
@@ -211,9 +211,9 @@ func (r *retryClient) GetMonitorByName(ctx context.Context, name string) (string
 	})
 }
 
-func (r *retryClient) UpdateMonitor(ctx context.Context, monitorID, name string, config MonitorConfig) error {
+func (r *retryClient) UpdateMonitor(ctx context.Context, monitorID, name, description string, config MonitorConfig) error {
 	return retry0(ctx, r.maxRetries, func() error {
-		return r.inner.UpdateMonitor(ctx, monitorID, name, config)
+		return r.inner.UpdateMonitor(ctx, monitorID, name, description, config)
 	})
 }
 
@@ -257,9 +257,9 @@ func (r *retryClient) ListPoolsByPrefix(ctx context.Context, prefix string) ([]L
 
 // --- Load Balancer operations ---
 
-func (r *retryClient) EnsureLoadBalancer(ctx context.Context, zoneID, hostname string, poolIDs []string, steeringPolicy, sessionAffinity string, poolWeights map[string]float64) error {
+func (r *retryClient) EnsureLoadBalancer(ctx context.Context, zoneID, hostname string, poolIDs []string, steeringPolicy, sessionAffinity, description string, poolWeights map[string]float64) error {
 	return retry0(ctx, r.maxRetries, func() error {
-		return r.inner.EnsureLoadBalancer(ctx, zoneID, hostname, poolIDs, steeringPolicy, sessionAffinity, poolWeights)
+		return r.inner.EnsureLoadBalancer(ctx, zoneID, hostname, poolIDs, steeringPolicy, sessionAffinity, description, poolWeights)
 	})
 }
 

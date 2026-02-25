@@ -2,9 +2,11 @@
 # Copyright 2026 Matheus Pimenta.
 # SPDX-License-Identifier: AGPL-3.0
 #
-# Cleanup script for removing leftover Cloudflare resources (load balancers,
-# pools, monitors, tunnels, and DNS CNAME records) created by the controller
-# or e2e tests.
+# Cleanup script for removing ALL Cloudflare resources in the test account:
+# load balancers, pools, monitors, tunnels, and DNS CNAME records.
+#
+# This account is dedicated to this project's e2e tests, so we clean
+# everything without worrying about naming conventions.
 #
 # Optional environment variables:
 #   CREDENTIALS_FILE   — path to credentials file (default: ./api.token)
@@ -30,8 +32,8 @@ ZONE_IDS=$(cfgwctl dns list-zones | jq -r '.zoneIds[]')
 # ─── Load Balancer cleanup ────────────────────────────────────────────────────
 # Order matters: delete LBs first (they reference pools), then pools, then monitors.
 
-echo "==> Listing all managed pools (prefix 'gateway-')..."
-POOLS=$(cfgwctl lb list-pools --prefix "gateway-")
+echo "==> Listing all pools..."
+POOLS=$(cfgwctl lb list-pools --prefix "")
 POOL_COUNT=$(echo "$POOLS" | jq 'length')
 echo "==> Found $POOL_COUNT pool(s)"
 

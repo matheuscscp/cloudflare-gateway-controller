@@ -62,6 +62,8 @@ func getGatewayAPIVersion() (*semver.Version, error) {
 func main() {
 	ctx := ctrl.SetupSignalHandler()
 
+	clusterName := pflag.String("cluster-name", "",
+		"unique cluster identifier for deterministic Cloudflare resource naming (required)")
 	cloudflaredImage := pflag.String("cloudflared-image",
 		controller.DefaultCloudflaredImage, "cloudflared container image")
 
@@ -70,6 +72,12 @@ func main() {
 	leaderElectionOptions := leaderelection.Options{}
 	leaderElectionOptions.BindFlags(pflag.CommandLine)
 	pflag.Parse()
+
+	if *clusterName == "" {
+		fmt.Fprintln(os.Stderr, "--cluster-name is required")
+		os.Exit(1)
+	}
+	apiv1.SetClusterName(*clusterName)
 
 	// Enable leader election by default.
 	if !pflag.CommandLine.Changed("enable-leader-election") {

@@ -145,6 +145,7 @@ func setupRBAC(cfg *rest.Config, s *runtime.Scheme) *rest.Config {
 }
 
 func TestMain(m *testing.M) {
+	apiv1.SetClusterName("test-cluster")
 	testCtx, testCancel = context.WithCancel(context.Background())
 
 	scheme := newTestScheme()
@@ -483,7 +484,7 @@ func (m *mockCloudflareClient) FindZoneIDByHostname(_ context.Context, hostname 
 	return "test-zone-id", nil
 }
 
-func (m *mockCloudflareClient) EnsureDNSCNAME(_ context.Context, zoneID, hostname, target string) error {
+func (m *mockCloudflareClient) EnsureDNSCNAME(_ context.Context, zoneID, hostname, target, _ string) error {
 	if m.ensureDNSErr != nil {
 		return m.ensureDNSErr
 	}
@@ -508,7 +509,7 @@ func (m *mockCloudflareClient) ListDNSCNAMEsByTarget(_ context.Context, _, _ str
 
 // --- Load Balancer mock methods ---
 
-func (m *mockCloudflareClient) CreateMonitor(_ context.Context, name string, _ cloudflare.MonitorConfig) (string, error) {
+func (m *mockCloudflareClient) CreateMonitor(_ context.Context, name, _ string, _ cloudflare.MonitorConfig) (string, error) {
 	if m.createMonitorErr != nil {
 		return "", m.createMonitorErr
 	}
@@ -531,7 +532,7 @@ func (m *mockCloudflareClient) GetMonitorByName(_ context.Context, name string) 
 	return "", nil
 }
 
-func (m *mockCloudflareClient) UpdateMonitor(_ context.Context, _, _ string, _ cloudflare.MonitorConfig) error {
+func (m *mockCloudflareClient) UpdateMonitor(_ context.Context, _, _, _ string, _ cloudflare.MonitorConfig) error {
 	if m.updateMonitorErr != nil {
 		return m.updateMonitorErr
 	}
@@ -606,7 +607,7 @@ func (m *mockCloudflareClient) ListPoolsByPrefix(_ context.Context, prefix strin
 	return result, nil
 }
 
-func (m *mockCloudflareClient) EnsureLoadBalancer(_ context.Context, zoneID, hostname string, poolIDs []string, steeringPolicy, sessionAffinity string, poolWeights map[string]float64) error {
+func (m *mockCloudflareClient) EnsureLoadBalancer(_ context.Context, zoneID, hostname string, poolIDs []string, steeringPolicy, sessionAffinity, _ string, poolWeights map[string]float64) error {
 	if m.ensureLBErr != nil {
 		return m.ensureLBErr
 	}

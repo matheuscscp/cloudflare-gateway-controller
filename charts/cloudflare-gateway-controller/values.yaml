@@ -15,6 +15,7 @@ image:
 replicas: 1
 
 config:
+  clusterName: "" # Required. Unique cluster identifier for deterministic Cloudflare resource naming.
   cloudflaredImage: "" # Defaults to the built-in DefaultCloudflaredImage.
 
 resources:

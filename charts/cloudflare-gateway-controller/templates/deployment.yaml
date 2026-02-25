@@ -36,6 +36,7 @@ spec:
           {{- toYaml . | nindent 10 }}
         {{- end }}
         args:
+        - --cluster-name={{ required "config.clusterName is required" .Values.config.clusterName }}
         {{- if .Values.config.cloudflaredImage }}
         - --cloudflared-image={{ .Values.config.cloudflaredImage }}
         {{- end }}

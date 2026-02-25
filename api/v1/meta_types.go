@@ -4,11 +4,50 @@
 package v1
 
 import (
+	"crypto/sha256"
 	"fmt"
+	"strings"
 	"time"
 
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
+
+var cfClusterName string
+
+// SetClusterName sets the cluster name for deterministic resource naming.
+// Must be called before any naming functions are used.
+func SetClusterName(name string) { cfClusterName = name }
+
+// ClusterName returns the configured cluster name.
+func ClusterName() string { return cfClusterName }
+
+// ResourceName returns a deterministic resource name by hashing the
+// fully-qualified ownership fields with SHA256. The result is "gw-" +
+// the full 64 hex-char SHA256 digest (67 chars total).
+func ResourceName(parts ...string) string {
+	h := sha256.New()
+	for i, p := range parts {
+		if i > 0 {
+			h.Write([]byte("/"))
+		}
+		h.Write([]byte(p))
+	}
+	return fmt.Sprintf("gw-%x", h.Sum(nil))
+}
+
+// ResourceDescription returns a compact ownership description for Cloudflare
+// resource metadata (Description on pools/monitors/LBs, Comment on DNS records).
+// The format is kept short to fit within the 100-char DNS comment limit on free plans.
+func ResourceDescription(gw *gatewayv1.Gateway, extra ...string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "cfgw cluster:%s ns:%s gw:%s",
+		cfClusterName, gw.Namespace, gw.Name)
+	for _, e := range extra {
+		b.WriteString(" ")
+		b.WriteString(e)
+	}
+	return b.String()
+}
 
 // CRD names.
 const (
@@ -77,26 +116,25 @@ const (
 )
 
 // TunnelName returns the deterministic Cloudflare tunnel name for a Gateway.
-// The name is globally unique because it includes the Gateway's UID.
 func TunnelName(gw *gatewayv1.Gateway) string {
-	return "gateway-" + string(gw.UID)
+	return ResourceName(cfClusterName, gw.Namespace, gw.Name)
 }
 
 // TunnelNameForAZ returns the Cloudflare tunnel name for a Gateway in a specific AZ.
 func TunnelNameForAZ(gw *gatewayv1.Gateway, azName string) string {
-	return fmt.Sprintf("gateway-%s-%s", gw.UID, azName)
+	return ResourceName(cfClusterName, gw.Namespace, gw.Name, azName)
 }
 
 // TunnelNameForService returns the Cloudflare tunnel name for a Gateway
 // dedicated to a specific Service (traffic splitting mode, no AZs).
-func TunnelNameForService(gw *gatewayv1.Gateway, serviceName string) string {
-	return fmt.Sprintf("gateway-%s-%s", gw.UID, serviceName)
+func TunnelNameForService(gw *gatewayv1.Gateway, svcNamespace, svcName string) string {
+	return ResourceName(cfClusterName, gw.Namespace, gw.Name, svcNamespace, svcName)
 }
 
 // TunnelNameForServiceAZ returns the Cloudflare tunnel name for a Gateway
 // dedicated to a specific Service in a specific AZ (traffic splitting + AZs).
-func TunnelNameForServiceAZ(gw *gatewayv1.Gateway, serviceName, azName string) string {
-	return fmt.Sprintf("gateway-%s-%s-%s", gw.UID, serviceName, azName)
+func TunnelNameForServiceAZ(gw *gatewayv1.Gateway, svcNamespace, svcName, azName string) string {
+	return ResourceName(cfClusterName, gw.Namespace, gw.Name, svcNamespace, svcName, azName)
 }
 
 // CloudflaredDeploymentName returns the name of the cloudflared Deployment for a Gateway.
@@ -147,19 +185,19 @@ func TunnelTokenSecretNameForServiceAZ(gw *gatewayv1.Gateway, serviceName, azNam
 
 // MonitorName returns the Cloudflare LB monitor name for a Gateway.
 func MonitorName(gw *gatewayv1.Gateway) string {
-	return "gateway-" + string(gw.UID)
+	return ResourceName(cfClusterName, gw.Namespace, gw.Name, "monitor")
 }
 
 // PoolNameForAZ returns the Cloudflare LB pool name for a Gateway AZ
 // (geographic steering mode).
 func PoolNameForAZ(gw *gatewayv1.Gateway, azName string) string {
-	return fmt.Sprintf("gateway-%s-%s", gw.UID, azName)
+	return ResourceName(cfClusterName, gw.Namespace, gw.Name, azName)
 }
 
 // PoolNameForService returns the Cloudflare LB pool name for a Gateway Service
 // (traffic splitting mode).
-func PoolNameForService(gw *gatewayv1.Gateway, serviceName string) string {
-	return fmt.Sprintf("gateway-%s-%s", gw.UID, serviceName)
+func PoolNameForService(gw *gatewayv1.Gateway, svcNamespace, svcName string) string {
+	return ResourceName(cfClusterName, gw.Namespace, gw.Name, svcNamespace, svcName)
 }
 
 // ReconcileInterval returns the reconciliation interval for an object

@@ -9,141 +9,167 @@ import (
 
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 )
 
-func TestTunnelName(t *testing.T) {
-	g := NewWithT(t)
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{UID: types.UID("abc-123")},
-	}
-	g.Expect(apiv1.TunnelName(gw)).To(Equal("gateway-abc-123"))
+func init() {
+	apiv1.SetClusterName("test-cluster")
 }
 
-func TestCloudflaredDeploymentName(t *testing.T) {
-	g := NewWithT(t)
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Name: "my-gw"},
-	}
-	g.Expect(apiv1.CloudflaredDeploymentName(gw)).To(Equal("cloudflared-my-gw"))
-}
-
-func TestTunnelTokenSecretName(t *testing.T) {
-	g := NewWithT(t)
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Name: "my-gw"},
-	}
-	g.Expect(apiv1.TunnelTokenSecretName(gw)).To(Equal("cloudflared-token-my-gw"))
-}
-
-func TestFinalizerGatewayClass(t *testing.T) {
-	g := NewWithT(t)
-	gw := &gatewayv1.Gateway{
+func testGateway() *gatewayv1.Gateway {
+	return &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "my-gw",
 			Namespace: "my-ns",
 		},
 	}
-	g.Expect(apiv1.FinalizerGatewayClass(gw)).To(Equal("gateway-exists-finalizer.gateway.networking.k8s.io/my-gw.my-ns"))
+}
+
+func TestResourceName(t *testing.T) {
+	g := NewWithT(t)
+	name := apiv1.ResourceName("a", "b", "c")
+	g.Expect(name).To(HavePrefix("gw-"))
+	// Full SHA256 = 64 hex chars, "gw-" prefix = 67 chars total.
+	g.Expect(name).To(HaveLen(67))
+	// Same inputs produce same output.
+	g.Expect(apiv1.ResourceName("a", "b", "c")).To(Equal(name))
+	// Different inputs produce different output.
+	g.Expect(apiv1.ResourceName("a", "b", "d")).NotTo(Equal(name))
+}
+
+func TestResourceDescription(t *testing.T) {
+	g := NewWithT(t)
+	gw := testGateway()
+	desc := apiv1.ResourceDescription(gw)
+	g.Expect(desc).To(Equal("cfgw cluster:test-cluster ns:my-ns gw:my-gw"))
+	descWithExtra := apiv1.ResourceDescription(gw, "az:us-east-1a", "svc:default/web")
+	g.Expect(descWithExtra).To(Equal("cfgw cluster:test-cluster ns:my-ns gw:my-gw az:us-east-1a svc:default/web"))
+}
+
+func TestTunnelName(t *testing.T) {
+	g := NewWithT(t)
+	gw := testGateway()
+	name := apiv1.TunnelName(gw)
+	g.Expect(name).To(HavePrefix("gw-"))
+	g.Expect(name).To(HaveLen(67))
+	// Deterministic: same cluster/ns/gw always produces the same name.
+	g.Expect(apiv1.TunnelName(gw)).To(Equal(name))
 }
 
 func TestTunnelNameForAZ(t *testing.T) {
 	g := NewWithT(t)
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{UID: types.UID("abc-123")},
-	}
-	g.Expect(apiv1.TunnelNameForAZ(gw, "us-east-1a")).To(Equal("gateway-abc-123-us-east-1a"))
+	gw := testGateway()
+	name := apiv1.TunnelNameForAZ(gw, "us-east-1a")
+	g.Expect(name).To(HavePrefix("gw-"))
+	g.Expect(name).To(HaveLen(67))
+	// Different AZ produces different name.
+	g.Expect(apiv1.TunnelNameForAZ(gw, "us-west-2b")).NotTo(Equal(name))
 }
 
 func TestTunnelNameForService(t *testing.T) {
 	g := NewWithT(t)
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{UID: types.UID("abc-123")},
-	}
-	g.Expect(apiv1.TunnelNameForService(gw, "web")).To(Equal("gateway-abc-123-web"))
+	gw := testGateway()
+	name := apiv1.TunnelNameForService(gw, "default", "web")
+	g.Expect(name).To(HavePrefix("gw-"))
+	g.Expect(name).To(HaveLen(67))
+	// Different service namespace produces different name.
+	g.Expect(apiv1.TunnelNameForService(gw, "other-ns", "web")).NotTo(Equal(name))
+	// Different service name produces different name.
+	g.Expect(apiv1.TunnelNameForService(gw, "default", "api")).NotTo(Equal(name))
 }
 
 func TestTunnelNameForServiceAZ(t *testing.T) {
 	g := NewWithT(t)
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{UID: types.UID("abc-123")},
-	}
-	g.Expect(apiv1.TunnelNameForServiceAZ(gw, "web", "us-east-1a")).To(Equal("gateway-abc-123-web-us-east-1a"))
+	gw := testGateway()
+	name := apiv1.TunnelNameForServiceAZ(gw, "default", "web", "us-east-1a")
+	g.Expect(name).To(HavePrefix("gw-"))
+	g.Expect(name).To(HaveLen(67))
+	// Different AZ produces different name.
+	g.Expect(apiv1.TunnelNameForServiceAZ(gw, "default", "web", "us-west-2b")).NotTo(Equal(name))
+}
+
+func TestCloudflaredDeploymentName(t *testing.T) {
+	g := NewWithT(t)
+	gw := testGateway()
+	g.Expect(apiv1.CloudflaredDeploymentName(gw)).To(Equal("cloudflared-my-gw"))
+}
+
+func TestTunnelTokenSecretName(t *testing.T) {
+	g := NewWithT(t)
+	gw := testGateway()
+	g.Expect(apiv1.TunnelTokenSecretName(gw)).To(Equal("cloudflared-token-my-gw"))
+}
+
+func TestFinalizerGatewayClass(t *testing.T) {
+	g := NewWithT(t)
+	gw := testGateway()
+	g.Expect(apiv1.FinalizerGatewayClass(gw)).To(Equal("gateway-exists-finalizer.gateway.networking.k8s.io/my-gw.my-ns"))
 }
 
 func TestCloudflaredDeploymentNameForAZ(t *testing.T) {
 	g := NewWithT(t)
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Name: "my-gw"},
-	}
+	gw := testGateway()
 	g.Expect(apiv1.CloudflaredDeploymentNameForAZ(gw, "us-east-1a")).To(Equal("cloudflared-my-gw-us-east-1a"))
 }
 
 func TestCloudflaredDeploymentNameForService(t *testing.T) {
 	g := NewWithT(t)
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Name: "my-gw"},
-	}
+	gw := testGateway()
 	g.Expect(apiv1.CloudflaredDeploymentNameForService(gw, "web")).To(Equal("cloudflared-my-gw-web"))
 }
 
 func TestCloudflaredDeploymentNameForServiceAZ(t *testing.T) {
 	g := NewWithT(t)
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Name: "my-gw"},
-	}
+	gw := testGateway()
 	g.Expect(apiv1.CloudflaredDeploymentNameForServiceAZ(gw, "web", "us-east-1a")).To(Equal("cloudflared-my-gw-web-us-east-1a"))
 }
 
 func TestTunnelTokenSecretNameForAZ(t *testing.T) {
 	g := NewWithT(t)
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Name: "my-gw"},
-	}
+	gw := testGateway()
 	g.Expect(apiv1.TunnelTokenSecretNameForAZ(gw, "us-east-1a")).To(Equal("cloudflared-token-my-gw-us-east-1a"))
 }
 
 func TestTunnelTokenSecretNameForService(t *testing.T) {
 	g := NewWithT(t)
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Name: "my-gw"},
-	}
+	gw := testGateway()
 	g.Expect(apiv1.TunnelTokenSecretNameForService(gw, "web")).To(Equal("cloudflared-token-my-gw-web"))
 }
 
 func TestTunnelTokenSecretNameForServiceAZ(t *testing.T) {
 	g := NewWithT(t)
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Name: "my-gw"},
-	}
+	gw := testGateway()
 	g.Expect(apiv1.TunnelTokenSecretNameForServiceAZ(gw, "web", "us-east-1a")).To(Equal("cloudflared-token-my-gw-web-us-east-1a"))
 }
 
 func TestMonitorName(t *testing.T) {
 	g := NewWithT(t)
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{UID: types.UID("abc-123")},
-	}
-	g.Expect(apiv1.MonitorName(gw)).To(Equal("gateway-abc-123"))
+	gw := testGateway()
+	name := apiv1.MonitorName(gw)
+	g.Expect(name).To(HavePrefix("gw-"))
+	g.Expect(name).To(HaveLen(67))
 }
 
 func TestPoolNameForAZ(t *testing.T) {
 	g := NewWithT(t)
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{UID: types.UID("abc-123")},
-	}
-	g.Expect(apiv1.PoolNameForAZ(gw, "us-east-1a")).To(Equal("gateway-abc-123-us-east-1a"))
+	gw := testGateway()
+	name := apiv1.PoolNameForAZ(gw, "us-east-1a")
+	g.Expect(name).To(HavePrefix("gw-"))
+	g.Expect(name).To(HaveLen(67))
+	// Different AZ produces different name.
+	g.Expect(apiv1.PoolNameForAZ(gw, "us-west-2b")).NotTo(Equal(name))
 }
 
 func TestPoolNameForService(t *testing.T) {
 	g := NewWithT(t)
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{UID: types.UID("abc-123")},
-	}
-	g.Expect(apiv1.PoolNameForService(gw, "web")).To(Equal("gateway-abc-123-web"))
+	gw := testGateway()
+	name := apiv1.PoolNameForService(gw, "default", "web")
+	g.Expect(name).To(HavePrefix("gw-"))
+	g.Expect(name).To(HaveLen(67))
+	// Different service namespace produces different name.
+	g.Expect(apiv1.PoolNameForService(gw, "other-ns", "web")).NotTo(Equal(name))
 }
 
 func TestReconcileInterval(t *testing.T) {
