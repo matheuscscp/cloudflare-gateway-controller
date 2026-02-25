@@ -134,4 +134,3 @@ func newTunnelGetConfigCmd(credentialsFile *string) *cobra.Command {
 	cobra.CheckErr(cmd.MarkFlagRequired("tunnel-id"))
 	return cmd
 }
-
