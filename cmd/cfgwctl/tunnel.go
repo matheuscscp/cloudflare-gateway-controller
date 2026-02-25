@@ -3,14 +3,7 @@
 
 package main
 
-import (
-	"encoding/json"
-	"fmt"
-
-	"github.com/spf13/cobra"
-
-	"github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
-)
+import "github.com/spf13/cobra"
 
 func newTunnelCmd(credentialsFile *string) *cobra.Command {
 	cmd := &cobra.Command{
@@ -18,37 +11,12 @@ func newTunnelCmd(credentialsFile *string) *cobra.Command {
 		Short: "Manage Cloudflare tunnels",
 	}
 	cmd.AddCommand(
-		newTunnelCreateCmd(credentialsFile),
 		newTunnelListCmd(credentialsFile),
 		newTunnelGetIDCmd(credentialsFile),
 		newTunnelDeleteCmd(credentialsFile),
 		newTunnelCleanupConnectionsCmd(credentialsFile),
-		newTunnelGetTokenCmd(credentialsFile),
 		newTunnelGetConfigCmd(credentialsFile),
-		newTunnelUpdateConfigCmd(credentialsFile),
 	)
-	return cmd
-}
-
-func newTunnelCreateCmd(credentialsFile *string) *cobra.Command {
-	var name string
-	cmd := &cobra.Command{
-		Use:   "create",
-		Short: "Create a new Cloudflare tunnel",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := newClient(*credentialsFile)
-			if err != nil {
-				return err
-			}
-			tunnelID, err := c.CreateTunnel(cmd.Context(), name)
-			if err != nil {
-				return err
-			}
-			return printJSON(map[string]string{"tunnelId": tunnelID})
-		},
-	}
-	cmd.Flags().StringVar(&name, "name", "", "tunnel name")
-	cobra.CheckErr(cmd.MarkFlagRequired("name"))
 	return cmd
 }
 
@@ -137,28 +105,6 @@ func newTunnelCleanupConnectionsCmd(credentialsFile *string) *cobra.Command {
 	return cmd
 }
 
-func newTunnelGetTokenCmd(credentialsFile *string) *cobra.Command {
-	var tunnelID string
-	cmd := &cobra.Command{
-		Use:   "get-token",
-		Short: "Get a tunnel's connection token",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := newClient(*credentialsFile)
-			if err != nil {
-				return err
-			}
-			token, err := c.GetTunnelToken(cmd.Context(), tunnelID)
-			if err != nil {
-				return err
-			}
-			return printJSON(map[string]string{"token": token})
-		},
-	}
-	cmd.Flags().StringVar(&tunnelID, "tunnel-id", "", "tunnel ID")
-	cobra.CheckErr(cmd.MarkFlagRequired("tunnel-id"))
-	return cmd
-}
-
 func newTunnelGetConfigCmd(credentialsFile *string) *cobra.Command {
 	var tunnelID string
 	cmd := &cobra.Command{
@@ -189,35 +135,3 @@ func newTunnelGetConfigCmd(credentialsFile *string) *cobra.Command {
 	return cmd
 }
 
-func newTunnelUpdateConfigCmd(credentialsFile *string) *cobra.Command {
-	var tunnelID, ingressJSON string
-	cmd := &cobra.Command{
-		Use:   "update-config",
-		Short: "Update a tunnel's ingress configuration",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := newClient(*credentialsFile)
-			if err != nil {
-				return err
-			}
-			var rules []ingressRuleOutput
-			if err := json.Unmarshal([]byte(ingressJSON), &rules); err != nil {
-				return fmt.Errorf("parsing --ingress JSON: %w", err)
-			}
-			ingress := make([]cloudflare.IngressRule, len(rules))
-			for i, r := range rules {
-				ingress[i] = cloudflare.IngressRule{
-					Hostname: r.Hostname,
-					Service:  r.Service,
-					Path:     r.Path,
-				}
-			}
-			return c.UpdateTunnelConfiguration(cmd.Context(), tunnelID, ingress)
-		},
-	}
-	cmd.Flags().StringVar(&tunnelID, "tunnel-id", "", "tunnel ID")
-	cmd.Flags().StringVar(&ingressJSON, "ingress", "",
-		`ingress rules as JSON array, e.g. '[{"hostname":"app.example.com","service":"http://localhost:8080"}]'`)
-	cobra.CheckErr(cmd.MarkFlagRequired("tunnel-id"))
-	cobra.CheckErr(cmd.MarkFlagRequired("ingress"))
-	return cmd
-}
