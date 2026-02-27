@@ -38,16 +38,16 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: tidy
-tidy: ## Run go mod tidy.
+tidy: fmt ## Run go mod tidy and go fmt.
 	go mod tidy
 
 .PHONY: test
-test: tidy fmt vet envtest ## Run all unit tests.
+test: envtest ## Run all unit tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
 	go test $(shell go list ./... | grep -v -e '^github.com/matheuscscp/cloudflare-gateway-controller$$' -e '/cmd/') $(GO_TEST_ARGS) -coverprofile cover.out
 
 .PHONY: lint
-lint: golangci-lint ## Run golangci and helm linters.
+lint: vet golangci-lint ## Run go vet, golangci and helm linters.
 	$(GOLANGCI_LINT) run
 	helm lint charts/cloudflare-gateway-controller
 
@@ -58,11 +58,11 @@ lint-fix: golangci-lint ## Run golangci linters and perform fixes.
 ##@ Build
 
 .PHONY: build
-build: fmt vet ## Build the binary.
+build: ## Build the binary.
 	CGO_ENABLED=0 go build -o ./bin/cloudflare-gateway-controller .
 
 .PHONY: build-cfgwctl
-build-cfgwctl: fmt vet ## Build the cfgwctl CLI binary.
+build-cfgwctl: ## Build the cfgwctl CLI binary.
 	CGO_ENABLED=0 go build -o ./bin/cfgwctl ./cmd/cfgwctl
 
 .PHONY: docker-build
@@ -86,11 +86,11 @@ test-e2e-ts-az: build-cfgwctl ## Run TrafficSplitting with AZs e2e tests.
 	hack/e2e-test-ts-az.sh 2>&1 | stdbuf -oL tee test-e2e-ts-az.log
 
 .PHONY: run
-run: fmt vet ## Run the controller locally against the current kubeconfig cluster.
+run: ## Run the controller locally against the current kubeconfig cluster.
 	go run ./main.go --enable-leader-election=false 2>&1 | stdbuf -oL tee run.log
 
 .PHONY: run-debug
-run-debug: fmt vet ## Run the controller locally with debug logging (verbosity level 1).
+run-debug: ## Run the controller locally with debug logging (verbosity level 1).
 	go run ./main.go --enable-leader-election=false --log-level=debug 2>&1 | stdbuf -oL tee run.log
 
 ##@ Dependencies
