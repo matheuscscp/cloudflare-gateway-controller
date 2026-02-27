@@ -103,7 +103,7 @@ jobs:
           SEMVER: ${{ steps.prep.outputs.SEMVER }}
         run: |
           sed -i "s/^version: .*/version: ${SEMVER}/" charts/cloudflare-gateway-controller/Chart.yaml
-          sed -i "s/^appVersion: .*/appVersion: \"${SEMVER}\"/" charts/cloudflare-gateway-controller/Chart.yaml
+          sed -i "s/^appVersion: .*/appVersion: \"v${SEMVER}\"/" charts/cloudflare-gateway-controller/Chart.yaml
 
       - name: Lint Helm chart
         if: startsWith(github.ref, 'refs/tags/v')
