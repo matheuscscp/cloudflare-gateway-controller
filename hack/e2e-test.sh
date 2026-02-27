@@ -691,6 +691,7 @@ EOF
 
     log "Manual cleanup of orphaned resources..."
     kubectl delete deployment cloudflared-disabled-gw -n "$TEST_NS" --ignore-not-found
+    retry 60 3 bash -c "! kubectl get deployment cloudflared-disabled-gw -n '$TEST_NS' 2>/dev/null"
     kubectl delete secret cloudflared-token-disabled-gw -n "$TEST_NS" --ignore-not-found
     cfgwctl dns delete-cname --zone-id "$dis_zone_id" --hostname "$disabled_hostname"
     cfgwctl tunnel cleanup-connections --tunnel-id "$dis_tunnel_id"
