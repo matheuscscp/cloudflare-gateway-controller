@@ -431,10 +431,121 @@ EOF
     kubectl delete service api-svc web-svc -n "$TEST_NS" --ignore-not-found
 }
 
+test_dns_default_all_zones() {
+    local dns_def_hostname="dd-${TS: -6}.${TEST_ZONE_NAME}"
+
+    log "Creating Gateway 'dns-def-gw' without CloudflareGatewayParameters (bare Secret)..."
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: dns-def-gw
+  namespace: $TEST_NS
+spec:
+  gatewayClassName: cloudflare
+  infrastructure:
+    parametersRef:
+      group: ""
+      kind: Secret
+      name: cloudflare-creds
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+EOF
+
+    retry 60 2 kubectl wait gateway/dns-def-gw -n "$TEST_NS" \
+        --for=condition=Programmed --timeout=5s \
+        || fail "dns-def-gw did not become Programmed"
+    pass "dns-def-gw is Programmed"
+
+    log "Verifying DNSManagement=True with 'All hostnames'..."
+    check_dns_all_hostnames() {
+        local msg
+        msg=$(kubectl get gateway dns-def-gw -n "$TEST_NS" -o jsonpath='{.status.conditions[?(@.type=="DNSManagement")].message}')
+        [ "$msg" = "All hostnames" ]
+    }
+    retry 30 2 check_dns_all_hostnames || fail "DNSManagement condition not 'All hostnames'"
+    pass "DNSManagement=True/Managed with 'All hostnames'"
+
+    local dd_tunnel_name dd_tunnel_id dd_tunnel_target
+    dd_tunnel_name=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "dns-def-gw")
+    dd_tunnel_id=$(cfgwctl tunnel get-id --name "$dd_tunnel_name" | jq -r '.tunnelId')
+    [ -n "$dd_tunnel_id" ] && [ "$dd_tunnel_id" != "null" ] || fail "dns-def tunnel not found"
+    dd_tunnel_target="${dd_tunnel_id}.cfargotunnel.com"
+
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: dns-def-backend
+  namespace: $TEST_NS
+spec:
+  ports:
+  - port: 80
+    protocol: TCP
+EOF
+
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: dns-def-route
+  namespace: $TEST_NS
+spec:
+  parentRefs:
+  - name: dns-def-gw
+  hostnames:
+  - "$dns_def_hostname"
+  rules:
+  - backendRefs:
+    - name: dns-def-backend
+      port: 80
+EOF
+
+    log "Verifying DNS CNAME created for '$dns_def_hostname' (all-zones mode)..."
+    local dd_zone_id
+    dd_zone_id=$(cfgwctl dns find-zone --hostname "$dns_def_hostname" | jq -r '.zoneId')
+    retry 60 3 bash -c "cfgwctl dns list-cnames --zone-id '$dd_zone_id' --target '$dd_tunnel_target' | jq -e '.hostnames[] | select(. == \"$dns_def_hostname\")' >/dev/null" \
+        || fail "DNS CNAME not created in all-zones mode"
+    pass "DNS CNAME created in all-zones mode"
+
+    log "Verifying HTTPRoute DNSRecordsApplied condition has no 'Skipped' section..."
+    check_no_skipped() {
+        local msg
+        msg=$(kubectl get httproute dns-def-route -n "$TEST_NS" \
+            -o jsonpath='{.status.parents[0].conditions[?(@.type=="DNSRecordsApplied")].message}')
+        [ -n "$msg" ] && echo "$msg" | grep -q "Applied hostnames" && ! echo "$msg" | grep -q "Skipped"
+    }
+    retry 30 2 check_no_skipped || fail "DNSRecordsApplied message has unexpected 'Skipped' section"
+    pass "HTTPRoute DNSRecordsApplied shows all hostnames applied (no skipped)"
+
+    log "Cleaning up dns-default-all-zones test..."
+    kubectl delete httproute dns-def-route -n "$TEST_NS"
+    kubectl delete gateway dns-def-gw -n "$TEST_NS"
+    retry 60 3 bash -c "! kubectl get gateway dns-def-gw -n '$TEST_NS' 2>/dev/null" \
+        || fail "dns-def-gw still exists"
+    kubectl delete service dns-def-backend -n "$TEST_NS" --ignore-not-found
+}
+
 test_no_dns() {
     local no_dns_hostname="nd-${TS: -6}.${TEST_ZONE_NAME}"
 
-    log "Creating Gateway 'no-dns-gw' without DNS config..."
+    log "Creating CloudflareGatewayParameters 'no-dns-params' with DNS disabled (empty zones)..."
+    kubectl apply -f - <<EOF
+apiVersion: cloudflare-gateway-controller.io/v1
+kind: CloudflareGatewayParameters
+metadata:
+  name: no-dns-params
+  namespace: $TEST_NS
+spec:
+  secretRef:
+    name: cloudflare-creds
+  dns:
+    zones: []
+EOF
+
+    log "Creating Gateway 'no-dns-gw' with DNS disabled..."
     kubectl apply -f - <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
@@ -445,9 +556,9 @@ spec:
   gatewayClassName: cloudflare
   infrastructure:
     parametersRef:
-      group: ""
-      kind: Secret
-      name: cloudflare-creds
+      group: cloudflare-gateway-controller.io
+      kind: CloudflareGatewayParameters
+      name: no-dns-params
   listeners:
   - name: http
     protocol: HTTP
@@ -516,6 +627,7 @@ EOF
     kubectl delete gateway no-dns-gw -n "$TEST_NS"
     retry 60 3 bash -c "! kubectl get gateway no-dns-gw -n '$TEST_NS' 2>/dev/null" \
         || fail "no-dns-gw still exists"
+    kubectl delete cloudflaregatewayparameters no-dns-params -n "$TEST_NS" --ignore-not-found
     kubectl delete service no-dns-backend -n "$TEST_NS" --ignore-not-found
 }
 
@@ -787,7 +899,7 @@ EOF
         || fail "DNS CNAME for zone-rm not found"
     pass "DNS CNAME exists"
 
-    log "Removing DNS config from CloudflareGatewayParameters..."
+    log "Disabling DNS by setting empty zones list..."
     kubectl apply -f - <<EOF
 apiVersion: cloudflare-gateway-controller.io/v1
 kind: CloudflareGatewayParameters
@@ -797,12 +909,14 @@ metadata:
 spec:
   secretRef:
     name: cloudflare-creds
+  dns:
+    zones: []
 EOF
 
     log "Verifying DNS CNAME removed..."
     retry 60 3 bash -c "! cfgwctl dns list-cnames --zone-id '$zr_zone_id' --target '$zr_tunnel_target' | jq -e '.hostnames[] | select(. == \"$zone_rm_hostname\")' >/dev/null 2>&1" \
-        || fail "DNS CNAME still exists after zone removal"
-    pass "DNS CNAME removed after DNS config removal"
+        || fail "DNS CNAME still exists after DNS disabled"
+    pass "DNS CNAME removed after DNS disabled"
 
     log "Verifying tunnel config still has hostname (tunnel config unaffected)..."
     cfgwctl tunnel get-config --tunnel-id "$zr_tunnel_id" \
@@ -1602,6 +1716,7 @@ run_tests \
     test_gateway_lifecycle \
     test_multi_routes \
     test_path_matching \
+    test_dns_default_all_zones \
     test_no_dns \
     test_deployment_patches \
     test_disabled_reconciliation \

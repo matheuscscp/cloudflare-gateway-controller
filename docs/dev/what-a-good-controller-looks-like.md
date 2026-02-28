@@ -55,6 +55,21 @@ For example: in the Gateway controller, the stale DNS records are discovered by 
 the actual state of DNS records in Cloudflare, and then comparing it to the desired state
 computed from the attached HTTPRoutes.
 
+## API Field Documentation
+
+API fields must be thoroughly documented in their struct comments (which become CRD field
+descriptions). Every field description must explain the full behavior, including default
+semantics, interactions with other fields, corner cases, and what happens when the field is
+absent versus present with various values. The documentation must be sufficient for users to
+fully understand the API by running `kubectl explain` on the CRD — without needing to read
+external docs. This is a core API design goal.
+
+For example, if a field's absence has a different meaning than its presence with an empty
+value (e.g. `dns` absent = enabled for all, `dns.zones: []` = disabled), both cases must
+be explicitly described. If a field intersects with another field's behavior (e.g. a parent
+field's absence changes the meaning of a child field), document that intersection on both
+fields.
+
 ## Exhaustive Configuration Validation
 
 A good controller validates all configuration exhaustively and rejects anything that is

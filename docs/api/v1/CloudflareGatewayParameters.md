@@ -75,7 +75,20 @@ documentation.
 
 ### DNS configuration
 
-The `.spec.dns` field is optional and configures DNS CNAME record management.
+The `.spec.dns` field configures DNS CNAME record management. By default (when
+the `dns` field is omitted), DNS management is enabled for **all** hostnames in
+attached HTTPRoutes — each hostname's zone is resolved dynamically via the
+Cloudflare API.
+
+There are three modes:
+
+**All hostnames (default)** — omit the `dns` field entirely:
+
+```yaml
+spec: {}
+```
+
+**Specific zones** — list the zones to manage:
 
 ```yaml
 spec:
@@ -85,12 +98,19 @@ spec:
       - name: "other.com"
 ```
 
-The `.spec.dns.zones` field is required when `.spec.dns` is set and specifies
-one or more DNS zone names. Only hostnames that are single-level subdomains of
-a configured zone get CNAME records (e.g. `app.example.com` matches zone
-`example.com`, but `deep.sub.example.com` does not).
+Only hostnames that are single-level subdomains of a configured zone get CNAME
+records (e.g. `app.example.com` matches zone `example.com`, but
+`deep.sub.example.com` does not).
 
-When DNS is configured, the controller creates CNAME records for matching
+**Disabled** — set an empty zones list:
+
+```yaml
+spec:
+  dns:
+    zones: []
+```
+
+When DNS is enabled, the controller creates CNAME records for matching
 hostnames in the attached [HTTPRoutes](HTTPRoute.md).
 
 ### Tunnel configuration

@@ -352,14 +352,20 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	}
 	changes = append(changes, configChanges...)
 
-	// Reconcile DNS, handling zone changes.
-	var zoneNames []string
-	if params != nil && params.Spec.DNS != nil {
-		for _, z := range params.Spec.DNS.Zones {
-			zoneNames = append(zoneNames, z.Name)
+	// Build DNS policy from parameters.
+	var dns dnsPolicy
+	if params == nil || params.Spec.DNS == nil {
+		dns = dnsPolicy{enabled: true}
+	} else if len(params.Spec.DNS.Zones) > 0 {
+		zones := make([]string, len(params.Spec.DNS.Zones))
+		for i, z := range params.Spec.DNS.Zones {
+			zones[i] = z.Name
 		}
+		dns = dnsPolicy{enabled: true, zones: zones}
 	}
-	dnsResult := r.reconcileDNSWithZoneChange(ctx, tc, gw, entries, validRoutes, zoneNames)
+
+	// Reconcile DNS, handling zone changes.
+	dnsResult := r.reconcileDNSWithZoneChange(ctx, tc, gw, entries, validRoutes, dns)
 	changes = append(changes, dnsResult.changes...)
 	errs = append(errs, dnsResult.errs...)
 
@@ -368,7 +374,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 
 	// Update HTTPRoute status.parents for allowed routes (after DNS and
 	// Deployment checks so we can report DNS status and Gateway readiness).
-	errs = append(errs, r.updateRouteStatuses(ctx, gw, validRoutes, routesWithDeniedRefs, zoneNames, dnsResult.dnsErr,
+	errs = append(errs, r.updateRouteStatuses(ctx, gw, validRoutes, routesWithDeniedRefs, dns, dnsResult.dnsErr,
 		readiness.readyStatus, readiness.readyReason, readiness.readyMsg)...)
 
 	// Reconcile the CloudflareGatewayStatus (observability only — tunnel info
@@ -389,7 +395,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	}
 
 	// Patch Gateway status and emit events
-	return r.patchGatewayStatus(ctx, gw, cgs, entries, desiredListeners, changes, errs, readiness, zoneNames, requeueAfter)
+	return r.patchGatewayStatus(ctx, gw, cgs, entries, desiredListeners, changes, errs, readiness, dns, requeueAfter)
 }
 
 // dnsResult holds the results of DNS reconciliation.
@@ -406,14 +412,14 @@ func (r *GatewayReconciler) reconcileDNSWithZoneChange(
 	ctx context.Context, tc cloudflare.Client,
 	gw *gatewayv1.Gateway,
 	entries []tunnelEntry, validRoutes []*gatewayv1.HTTPRoute,
-	zoneNames []string,
+	dns dnsPolicy,
 ) dnsResult {
 	var res dnsResult
 	var tunnelID string
 	if len(entries) > 0 {
 		tunnelID = entries[0].tunnelID
 	}
-	dnsChanges, dnsErr := r.reconcileDNS(ctx, tc, gw, tunnelID, zoneNames, validRoutes)
+	dnsChanges, dnsErr := r.reconcileDNS(ctx, tc, gw, tunnelID, dns, validRoutes)
 	res.changes = append(res.changes, dnsChanges...)
 	res.dnsErr = dnsErr
 	if dnsErr != nil {
@@ -422,11 +428,40 @@ func (r *GatewayReconciler) reconcileDNSWithZoneChange(
 	return res
 }
 
+// buildDNSManagementCondition builds the DNSManagement condition for the
+// Gateway status based on the current DNS policy.
+func buildDNSManagementCondition(generation int64, now metav1.Time, dns dnsPolicy) metav1.Condition {
+	cond := metav1.Condition{
+		Type:               apiv1.ConditionDNSManagement,
+		ObservedGeneration: generation,
+		LastTransitionTime: now,
+	}
+	if dns.enabled {
+		cond.Status = metav1.ConditionTrue
+		cond.Reason = apiv1.ReasonDNSManaged
+		if dns.allZones() {
+			cond.Message = "All hostnames"
+		} else {
+			var msg strings.Builder
+			msg.WriteString("Allowed zones:")
+			for _, z := range dns.zones {
+				fmt.Fprintf(&msg, "\n- %s", z)
+			}
+			cond.Message = msg.String()
+		}
+	} else {
+		cond.Status = metav1.ConditionFalse
+		cond.Reason = apiv1.ReasonDNSNotConfigured
+		cond.Message = "DNS management is disabled"
+	}
+	return cond
+}
+
 // patchGatewayStatus builds the desired Gateway conditions from the readiness
 // state, checks whether a status patch is needed (conditions, listeners, or
 // resource changes), patches the status, and emits summary events/logs.
 // It also patches the CGS conditions to mirror the Gateway conditions.
-func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv1.Gateway, cgs *apiv1.CloudflareGatewayStatus, entries []tunnelEntry, desiredListeners []gatewayv1.ListenerStatus, changes, errs []string, readiness gatewayReadiness, zoneNames []string, requeueAfter time.Duration) (ctrl.Result, error) {
+func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv1.Gateway, cgs *apiv1.CloudflareGatewayStatus, entries []tunnelEntry, desiredListeners []gatewayv1.ListenerStatus, changes, errs []string, readiness gatewayReadiness, dns dnsPolicy, requeueAfter time.Duration) (ctrl.Result, error) {
 	l := log.FromContext(ctx)
 	now := metav1.Now()
 
@@ -440,25 +475,7 @@ func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv
 	}
 
 	// Build DNSManagement condition.
-	dnsCond := metav1.Condition{
-		Type:               apiv1.ConditionDNSManagement,
-		ObservedGeneration: gw.Generation,
-		LastTransitionTime: now,
-	}
-	if len(zoneNames) > 0 {
-		dnsCond.Status = metav1.ConditionTrue
-		dnsCond.Reason = apiv1.ReasonDNSManaged
-		var msg strings.Builder
-		msg.WriteString("Allowed zones:")
-		for _, z := range zoneNames {
-			fmt.Fprintf(&msg, "\n- %s", z)
-		}
-		dnsCond.Message = msg.String()
-	} else {
-		dnsCond.Status = metav1.ConditionFalse
-		dnsCond.Reason = apiv1.ReasonDNSNotConfigured
-		dnsCond.Message = "DNS management is not configured"
-	}
+	dnsCond := buildDNSManagementCondition(gw.Generation, now, dns)
 
 	desiredConds := []metav1.Condition{
 		{
@@ -843,7 +860,7 @@ func (r *GatewayReconciler) finalizeEnabled(ctx context.Context, gw *gatewayv1.G
 	}
 	if tunnelID != "" {
 		// Delete DNS CNAME records pointing to this tunnel.
-		dnsChanges, dnsErr := r.reconcileDNS(ctx, tc, gw, tunnelID, nil, nil)
+		dnsChanges, dnsErr := r.reconcileDNS(ctx, tc, gw, tunnelID, dnsPolicy{}, nil)
 		changes = append(changes, dnsChanges...)
 		if dnsErr != nil {
 			return changes, fmt.Errorf("cleaning up DNS for tunnel %s: %s", tunnelName, *dnsErr)

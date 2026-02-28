@@ -2725,13 +2725,13 @@ func TestGatewayReconciler_CloudflareDNSCleanupOnZoneRemovalError(t *testing.T) 
 		g.Expect(dns.Status).To(Equal(metav1.ConditionTrue))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
-	// Set ListZoneIDs error and remove DNS config from CloudflareGatewayParameters.
+	// Set ListZoneIDs error and disable DNS by setting empty zones.
 	testMock.listZoneIDsErr = fmt.Errorf("zone listing failed")
 
 	g.Eventually(func(g Gomega) {
 		var latestParams apiv1.CloudflareGatewayParameters
 		g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(params), &latestParams)).To(Succeed())
-		latestParams.Spec.DNS = nil
+		latestParams.Spec.DNS = &apiv1.DNSConfig{Zones: []apiv1.DNSZoneConfig{}}
 		g.Expect(testClient.Update(testCtx, &latestParams)).To(Succeed())
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
