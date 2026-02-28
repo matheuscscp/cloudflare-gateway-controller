@@ -108,22 +108,8 @@ func validateGateway(gw *gatewayv1.Gateway) *gatewayValidationError {
 
 // validateParameters checks that the CloudflareGatewayParameters spec is valid.
 func validateParameters(params *apiv1.CloudflareGatewayParameters) *gatewayValidationError {
-	if params == nil || params.Spec.DNS == nil {
+	if params == nil || params.Spec.DNS == nil || len(params.Spec.DNS.Zones) == 0 {
 		return nil
-	}
-
-	// Belt-and-suspenders: kubebuilder MinItems=1 should catch this, but
-	// validate defensively.
-	if len(params.Spec.DNS.Zones) == 0 {
-		return &gatewayValidationError{
-			err: reconcile.TerminalError(fmt.Errorf("dns.zones must have at least 1 element")),
-			cond: metav1.Condition{
-				Type:    string(gatewayv1.GatewayConditionAccepted),
-				Status:  metav1.ConditionFalse,
-				Reason:  string(gatewayv1.GatewayReasonInvalidParameters),
-				Message: "dns.zones must have at least 1 element",
-			},
-		}
 	}
 
 	// Reject duplicate zone names.
@@ -646,11 +632,11 @@ func (r *GatewayReconciler) updateInvalidRouteStatus(ctx context.Context, gw *ga
 
 // updateRouteStatuses iterates over allowed HTTPRoutes and delegates to
 // updateRouteStatus for each one, collecting non-fatal errors.
-func (r *GatewayReconciler) updateRouteStatuses(ctx context.Context, gw *gatewayv1.Gateway, routes []*gatewayv1.HTTPRoute, routesWithDeniedRefs map[types.NamespacedName][]string, zoneNames []string, dnsErr *string, readyStatus metav1.ConditionStatus, readyReason, readyMsg string) []string {
+func (r *GatewayReconciler) updateRouteStatuses(ctx context.Context, gw *gatewayv1.Gateway, routes []*gatewayv1.HTTPRoute, routesWithDeniedRefs map[types.NamespacedName][]string, dns dnsPolicy, dnsErr *string, readyStatus metav1.ConditionStatus, readyReason, readyMsg string) []string {
 	var errs []string
 	for _, route := range routes {
 		deniedRefs := routesWithDeniedRefs[types.NamespacedName{Namespace: route.Namespace, Name: route.Name}]
-		if err := r.updateRouteStatus(ctx, gw, route, deniedRefs, zoneNames, dnsErr, readyStatus, readyReason, readyMsg); err != nil {
+		if err := r.updateRouteStatus(ctx, gw, route, deniedRefs, dns, dnsErr, readyStatus, readyReason, readyMsg); err != nil {
 			errs = append(errs, fmt.Sprintf("failed to update HTTPRoute %s/%s status: %v", route.Namespace, route.Name, err))
 		}
 	}
@@ -661,10 +647,10 @@ func (r *GatewayReconciler) updateRouteStatuses(ctx context.Context, gw *gateway
 // given HTTPRoute using merge-patch. Condition values are pre-computed by
 // buildRouteConditions; this method handles the RetryOnConflict + patch logic.
 // If the entry already exists with up-to-date conditions, no patch is issued.
-func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1.Gateway, route *gatewayv1.HTTPRoute, deniedRefs []string, zoneNames []string, dnsErr *string, readyStatus metav1.ConditionStatus, readyReason, readyMsg string) error {
+func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1.Gateway, route *gatewayv1.HTTPRoute, deniedRefs []string, dns dnsPolicy, dnsErr *string, readyStatus metav1.ConditionStatus, readyReason, readyMsg string) error {
 	acceptedType := string(gatewayv1.RouteConditionAccepted)
 	resolvedRefsType := string(gatewayv1.RouteConditionResolvedRefs)
-	rc := buildRouteConditions(route, deniedRefs, zoneNames, dnsErr, readyStatus, readyReason, readyMsg)
+	rc := buildRouteConditions(route, deniedRefs, dns, dnsErr, readyStatus, readyReason, readyMsg)
 
 	routeKey := client.ObjectKeyFromObject(route)
 	patched := false
@@ -760,12 +746,12 @@ func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1
 // status.parents entry: ResolvedRefs, DNS (if enabled), and Ready. The Ready
 // condition starts from the Gateway's readiness and is downgraded when DNS errors
 // exist.
-func buildRouteConditions(route *gatewayv1.HTTPRoute, deniedRefs []string, zoneNames []string, dnsErr *string, readyStatus metav1.ConditionStatus, readyReason, readyMsg string) routeConditions {
+func buildRouteConditions(route *gatewayv1.HTTPRoute, deniedRefs []string, dns dnsPolicy, dnsErr *string, readyStatus metav1.ConditionStatus, readyReason, readyMsg string) routeConditions {
 	rc := routeConditions{
 		resolvedRefsStatus: metav1.ConditionTrue,
 		resolvedRefsReason: string(gatewayv1.RouteReasonResolvedRefs),
 		resolvedRefsMsg:    "References resolved",
-		dnsEnabled:         len(zoneNames) > 0,
+		dnsEnabled:         dns.enabled,
 		readyStatus:        readyStatus,
 		readyReason:        readyReason,
 		readyMsg:           readyMsg,
@@ -789,7 +775,7 @@ func buildRouteConditions(route *gatewayv1.HTTPRoute, deniedRefs []string, zoneN
 		} else {
 			rc.dnsStatus = metav1.ConditionTrue
 			rc.dnsReason = apiv1.ReasonReconciliationSucceeded
-			rc.dnsMessage = routeDNSMessage(route, zoneNames)
+			rc.dnsMessage = routeDNSMessage(route, dns)
 		}
 	}
 
@@ -806,12 +792,25 @@ func buildRouteConditions(route *gatewayv1.HTTPRoute, deniedRefs []string, zoneN
 // routeDNSMessage builds a per-route DNS condition message listing the
 // hostnames that were applied and those that were skipped (not in any
 // configured zone).
-func routeDNSMessage(route *gatewayv1.HTTPRoute, zoneNames []string) string {
+func routeDNSMessage(route *gatewayv1.HTTPRoute, dns dnsPolicy) string {
+	// When all zones are managed, every hostname is applied.
+	if dns.allZones() {
+		var msg strings.Builder
+		msg.WriteString("Applied hostnames:")
+		for _, h := range route.Spec.Hostnames {
+			fmt.Fprintf(&msg, "\n- %s", string(h))
+		}
+		if len(route.Spec.Hostnames) == 0 {
+			msg.WriteString("\n(none)")
+		}
+		return msg.String()
+	}
+
 	var applied, skipped []string
 	for _, h := range route.Spec.Hostnames {
 		hostname := string(h)
 		matched := false
-		for _, zoneName := range zoneNames {
+		for _, zoneName := range dns.zones {
 			if hostnameInZone(hostname, zoneName) {
 				matched = true
 				break

@@ -449,6 +449,7 @@ func (m *mockCloudflareClient) FindZoneIDByHostname(_ context.Context, hostname 
 		if zoneID, ok := m.zones[hostname]; ok {
 			return zoneID, nil
 		}
+		return "", fmt.Errorf("zone not found for %q", hostname)
 	}
 	return "test-zone-id", nil
 }

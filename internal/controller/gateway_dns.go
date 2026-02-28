@@ -15,14 +15,27 @@ import (
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
 )
 
+// dnsPolicy describes how DNS CNAME record management is configured for a
+// Gateway during reconciliation.
+type dnsPolicy struct {
+	// enabled is true when DNS management is active.
+	enabled bool
+	// zones restricts CNAME management to hostnames matching these zones.
+	// When empty and enabled is true, all hostnames are managed.
+	zones []string
+}
+
+// allZones returns true when DNS is enabled for all hostnames (no zone filter).
+func (d dnsPolicy) allZones() bool { return d.enabled && len(d.zones) == 0 }
+
 // reconcileDNS reconciles DNS CNAME records for the Gateway. It lists all
 // records pointing to the tunnel across all account zones, computes the
 // desired set from routes + configured zones, and diffs: creating missing
-// records and deleting stale ones. When zoneNames is empty, all records
+// records and deleting stale ones. When dns is disabled, all records
 // are deleted.
 func (r *GatewayReconciler) reconcileDNS(
 	ctx context.Context, tc cloudflare.Client, gw *gatewayv1.Gateway,
-	tunnelID string, zoneNames []string,
+	tunnelID string, dns dnsPolicy,
 	routes []*gatewayv1.HTTPRoute,
 ) ([]string, *string) {
 	l := log.FromContext(ctx)
@@ -50,8 +63,8 @@ func (r *GatewayReconciler) reconcileDNS(
 		}
 	}
 
-	// When no zones are configured, delete everything.
-	if len(zoneNames) == 0 {
+	// When DNS is disabled, delete everything.
+	if !dns.enabled {
 		var changes []string
 		for _, r := range actual {
 			if err := tc.DeleteDNSCNAME(ctx, r.zoneID, r.hostname); err != nil {
@@ -63,25 +76,43 @@ func (r *GatewayReconciler) reconcileDNS(
 		return changes, nil
 	}
 
-	// Resolve each configured zone name to a zone ID.
-	zoneMap := make(map[string]string, len(zoneNames)) // zoneName -> zoneID
-	for _, zoneName := range zoneNames {
-		zoneID, err := tc.FindZoneIDByHostname(ctx, zoneName)
-		if err != nil {
-			return nil, new(fmt.Sprintf("Failed to find zone ID for %q: %v", zoneName, err))
-		}
-		zoneMap[zoneName] = zoneID
-	}
-
 	// Compute desired hostnames from all attached HTTPRoutes.
 	// Each desired hostname is mapped to the zone ID it should live in.
 	desired := make(map[string]string) // hostname -> zoneID
-	for _, route := range routes {
-		for _, h := range route.Spec.Hostnames {
-			hostname := string(h)
-			for _, zoneName := range zoneNames {
-				if hostnameInZone(hostname, zoneName) {
-					desired[hostname] = zoneMap[zoneName]
+
+	if dns.allZones() {
+		// All-zones mode: resolve each hostname's zone dynamically.
+		for _, route := range routes {
+			for _, h := range route.Spec.Hostnames {
+				hostname := string(h)
+				zoneID, err := tc.FindZoneIDByHostname(ctx, hostname)
+				if err != nil {
+					// Skip hostnames whose zone cannot be resolved — they may
+					// not belong to any zone in the account.
+					l.V(1).Info("Skipping hostname: zone lookup failed", "hostname", hostname, "error", err)
+					continue
+				}
+				desired[hostname] = zoneID
+			}
+		}
+	} else {
+		// Specific-zones mode: resolve each configured zone name to a zone ID
+		// and filter hostnames.
+		zoneMap := make(map[string]string, len(dns.zones)) // zoneName -> zoneID
+		for _, zoneName := range dns.zones {
+			zoneID, err := tc.FindZoneIDByHostname(ctx, zoneName)
+			if err != nil {
+				return nil, new(fmt.Sprintf("Failed to find zone ID for %q: %v", zoneName, err))
+			}
+			zoneMap[zoneName] = zoneID
+		}
+		for _, route := range routes {
+			for _, h := range route.Spec.Hostnames {
+				hostname := string(h)
+				for _, zoneName := range dns.zones {
+					if hostnameInZone(hostname, zoneName) {
+						desired[hostname] = zoneMap[zoneName]
+					}
 				}
 			}
 		}

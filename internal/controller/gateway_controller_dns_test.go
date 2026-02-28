@@ -402,11 +402,11 @@ func TestGatewayReconciler_DNSZoneRemovalCleanup(t *testing.T) {
 	testMock.listDNSCNAMEsByTarget = []string{"removal.example.com"}
 	testMock.deleteDNSCalls = nil
 
-	// Remove DNS config from CloudflareGatewayParameters.
+	// Disable DNS by setting an empty zones list.
 	g.Eventually(func(g Gomega) {
 		var latestParams apiv1.CloudflareGatewayParameters
 		g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(params), &latestParams)).To(Succeed())
-		latestParams.Spec.DNS = nil
+		latestParams.Spec.DNS = &apiv1.DNSConfig{Zones: []apiv1.DNSZoneConfig{}}
 		g.Expect(testClient.Update(testCtx, &latestParams)).To(Succeed())
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
@@ -697,4 +697,357 @@ func TestGatewayReconciler_DNSMultiZoneWithParentChild(t *testing.T) {
 		g.Expect(dns.Message).To(ContainSubstring("unrelated.net"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
+}
+
+func TestGatewayReconciler_DNSAllZones(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-dns-allzones", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	testMock.ensureDNSCalls = nil
+	testMock.deleteDNSCalls = nil
+	testMock.listDNSCNAMEsByTarget = nil
+
+	// CGP with no dns field → DNS enabled for all hostnames.
+	params := createTestParameters(g, "test-gw-dns-allzones-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{})
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-dns-allzones",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "http",
+					Protocol: gatewayv1.HTTPProtocolType,
+					Port:     80,
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+	waitForGatewayProgrammed(g, gw)
+
+	// Verify DNSManagement=True/Managed with "All hostnames" message.
+	gwKey := client.ObjectKeyFromObject(gw)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
+		dnsMgmt := conditions.Find(result.Status.Conditions, apiv1.ConditionDNSManagement)
+		g.Expect(dnsMgmt).NotTo(BeNil())
+		g.Expect(dnsMgmt.Status).To(Equal(metav1.ConditionTrue))
+		g.Expect(dnsMgmt.Reason).To(Equal(apiv1.ReasonDNSManaged))
+		g.Expect(dnsMgmt.Message).To(Equal("All hostnames"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Reset mock tracking after Gateway is programmed.
+	testMock.ensureDNSCalls = nil
+
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-route-dns-allzones",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{Name: gatewayv1.ObjectName(gw.Name)},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"app.example.com", "api.other.com"},
+			Rules: []gatewayv1.HTTPRouteRule{
+				{
+					BackendRefs: []gatewayv1.HTTPBackendRef{
+						{BackendRef: gatewayv1.BackendRef{
+							BackendObjectReference: gatewayv1.BackendObjectReference{
+								Name: "my-service", Port: new(gatewayv1.PortNumber(8080)),
+							},
+						}},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.HTTPRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Verify EnsureDNSCNAME was called for both hostnames.
+	g.Eventually(func() int {
+		return len(testMock.ensureDNSCalls)
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(BeNumerically(">=", 2))
+	dnsHostnames := make([]string, 0, len(testMock.ensureDNSCalls))
+	for _, call := range testMock.ensureDNSCalls {
+		dnsHostnames = append(dnsHostnames, call.Hostname)
+	}
+	g.Expect(dnsHostnames).To(ContainElement("app.example.com"))
+	g.Expect(dnsHostnames).To(ContainElement("api.other.com"))
+
+	// Verify DNSRecordsApplied condition with no "Skipped" section.
+	routeKey := client.ObjectKeyFromObject(route)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.HTTPRoute
+		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(HaveLen(1))
+		dns := conditions.Find(result.Status.Parents[0].Conditions, apiv1.ConditionDNSRecordsApplied)
+		g.Expect(dns).NotTo(BeNil())
+		g.Expect(dns.Status).To(Equal(metav1.ConditionTrue))
+		g.Expect(dns.Message).To(ContainSubstring("app.example.com"))
+		g.Expect(dns.Message).To(ContainSubstring("api.other.com"))
+		g.Expect(dns.Message).NotTo(ContainSubstring("Skipped"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func TestGatewayReconciler_DNSDisabledViaEmptyZones(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-dns-disabled", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	testMock.ensureDNSCalls = nil
+	testMock.deleteDNSCalls = nil
+	testMock.listDNSCNAMEsByTarget = nil
+
+	// CGP with dns.zones: [] → DNS disabled.
+	params := createTestParameters(g, "test-gw-dns-disabled-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		DNS: &apiv1.DNSConfig{Zones: []apiv1.DNSZoneConfig{}},
+	})
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-dns-disabled",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "http",
+					Protocol: gatewayv1.HTTPProtocolType,
+					Port:     80,
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+	waitForGatewayProgrammed(g, gw)
+
+	// Verify DNSManagement=False/NotConfigured.
+	gwKey := client.ObjectKeyFromObject(gw)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
+		dnsMgmt := conditions.Find(result.Status.Conditions, apiv1.ConditionDNSManagement)
+		g.Expect(dnsMgmt).NotTo(BeNil())
+		g.Expect(dnsMgmt.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(dnsMgmt.Reason).To(Equal(apiv1.ReasonDNSNotConfigured))
+		g.Expect(dnsMgmt.Message).To(Equal("DNS management is disabled"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Reset mock tracking.
+	testMock.ensureDNSCalls = nil
+
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-route-dns-disabled",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{Name: gatewayv1.ObjectName(gw.Name)},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"app.example.com"},
+			Rules: []gatewayv1.HTTPRouteRule{
+				{
+					BackendRefs: []gatewayv1.HTTPBackendRef{
+						{BackendRef: gatewayv1.BackendRef{
+							BackendObjectReference: gatewayv1.BackendObjectReference{
+								Name: "my-service", Port: new(gatewayv1.PortNumber(8080)),
+							},
+						}},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.HTTPRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Verify DNSRecordsApplied condition is absent on HTTPRoute.
+	routeKey := client.ObjectKeyFromObject(route)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.HTTPRoute
+		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(HaveLen(1))
+		dns := conditions.Find(result.Status.Parents[0].Conditions, apiv1.ConditionDNSRecordsApplied)
+		g.Expect(dns).To(BeNil(), "DNSRecordsApplied condition should be absent when DNS is disabled")
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Verify no EnsureDNSCNAME calls.
+	g.Consistently(func() int {
+		return len(testMock.ensureDNSCalls)
+	}).WithTimeout(2 * time.Second).WithPolling(100 * time.Millisecond).Should(Equal(0))
+}
+
+func TestGatewayReconciler_DNSAllZonesSkipsUnresolvable(t *testing.T) {
+	g := NewWithT(t)
+	resetMockErrors(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-dns-skip-unres", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	// Configure mock: only "example.com" zone is known; "unknown.net" will fail.
+	testMock.zones = map[string]string{
+		"app.example.com": "zone-example",
+	}
+	testMock.findZoneIDErr = nil
+	testMock.ensureDNSCalls = nil
+	testMock.deleteDNSCalls = nil
+	testMock.listDNSCNAMEsByTarget = nil
+
+	// CGP with no dns field → DNS enabled for all hostnames.
+	params := createTestParameters(g, "test-gw-dns-skip-unres-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{})
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-dns-skip-unres",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "http",
+					Protocol: gatewayv1.HTTPProtocolType,
+					Port:     80,
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		testMock.zones = nil
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+	waitForGatewayProgrammed(g, gw)
+
+	// Reset mock tracking.
+	testMock.ensureDNSCalls = nil
+
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-route-dns-skip-unres",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{Name: gatewayv1.ObjectName(gw.Name)},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"app.example.com", "app.unknown.net"},
+			Rules: []gatewayv1.HTTPRouteRule{
+				{
+					BackendRefs: []gatewayv1.HTTPBackendRef{
+						{BackendRef: gatewayv1.BackendRef{
+							BackendObjectReference: gatewayv1.BackendObjectReference{
+								Name: "my-service", Port: new(gatewayv1.PortNumber(8080)),
+							},
+						}},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.HTTPRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Verify EnsureDNSCNAME called for the resolvable hostname.
+	g.Eventually(func() int {
+		return len(testMock.ensureDNSCalls)
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(BeNumerically(">=", 1))
+	g.Expect(testMock.ensureDNSCalls[0].Hostname).To(Equal("app.example.com"))
+
+	// Verify no EnsureDNSCNAME call for the unresolvable hostname.
+	g.Consistently(func() bool {
+		for _, call := range testMock.ensureDNSCalls {
+			if call.Hostname == "app.unknown.net" {
+				return true
+			}
+		}
+		return false
+	}).WithTimeout(2 * time.Second).WithPolling(100 * time.Millisecond).Should(BeFalse())
 }

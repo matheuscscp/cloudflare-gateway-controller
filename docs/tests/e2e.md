@@ -67,17 +67,18 @@ while preserving the other.
 
 HTTPRoute with path-based matching rules. Two different Services are routed
 by path prefix (`/api` and `/web`), verifying that cloudflared receives
-path-based ingress entries.
+path-based ingress entries. Uses a `.test` hostname that won't resolve to any
+Cloudflare zone, so DNS is effectively skipped in all-zones mode.
 
 **Resources created:**
-- `Gateway` with no DNS config (bare Secret as parametersRef)
+- `Gateway` with bare Secret as parametersRef (no CGP)
 - 2 Services and 1 HTTPRoute with 2 path-based rules
 
-**Cloudflare resources:** 1 tunnel (no DNS CNAMEs — Gateway has no DNS config).
+**Cloudflare resources:** 1 tunnel (no DNS CNAMEs — hostname zone unresolvable).
 
 **Steps:**
 
-1. Create `Gateway` without DNS config; wait for Programmed.
+1. Create `Gateway` with bare Secret; wait for Programmed.
 2. Create 2 Services (`api-svc`, `web-svc`).
 3. Create `HTTPRoute` with 2 rules: `/api` to `api-svc`, `/web` to `web-svc`.
 4. Verify tunnel config has an entry for the hostname with `/api` path.
@@ -85,25 +86,51 @@ path-based ingress entries.
 6. Delete `HTTPRoute` and `Gateway`.
 7. Clean up Services.
 
-## test_no_dns
+## test_dns_default_all_zones
 
-HTTPRoute on a Gateway without DNS configuration. Verifies that the tunnel is
-configured correctly but no DNS CNAME record is created.
+Gateway with a bare Secret (no `CloudflareGatewayParameters`) verifies that DNS
+management is enabled by default for all hostnames. Each hostname's zone is
+resolved dynamically via the Cloudflare API.
 
 **Resources created:**
-- `Gateway` with no DNS config (bare Secret as parametersRef)
+- `Gateway` with bare Secret as parametersRef (no CGP)
+- `Service` and `HTTPRoute` with one hostname
+
+**Cloudflare resources:** 1 tunnel, 1 DNS CNAME record (created via all-zones mode).
+
+**Steps:**
+
+1. Create `Gateway` with bare Secret; wait for Programmed.
+2. Verify `DNSManagement` condition is `True/Managed` with message "All hostnames".
+3. Create `Service` and `HTTPRoute`.
+4. Verify DNS CNAME record created for the hostname (all-zones mode).
+5. Verify HTTPRoute `DNSRecordsApplied` condition has "Applied hostnames" and no
+   "Skipped" section.
+6. Delete `HTTPRoute` and `Gateway`; verify Gateway deleted.
+7. Clean up `Service`.
+
+## test_no_dns
+
+HTTPRoute on a Gateway with DNS explicitly disabled via an empty zones list.
+Verifies that the tunnel is configured correctly but no DNS CNAME record is
+created.
+
+**Resources created:**
+- `CloudflareGatewayParameters` with `dns: { zones: [] }` (DNS disabled)
+- `Gateway` referencing the parameters
 - `Service` and `HTTPRoute`
 
 **Cloudflare resources:** 1 tunnel, explicitly no DNS CNAME.
 
 **Steps:**
 
-1. Create `Gateway` without DNS config; wait for Programmed.
+1. Create `CloudflareGatewayParameters` with empty zones list; create `Gateway`;
+   wait for Programmed.
 2. Create `Service` and `HTTPRoute`.
 3. Verify tunnel config has the hostname.
 4. Verify no DNS CNAME record exists (checked multiple times with sleep).
 5. Delete `HTTPRoute` and `Gateway`.
-6. Clean up `Service`.
+6. Clean up `CloudflareGatewayParameters` and `Service`.
 
 ## test_deployment_patches
 
@@ -152,23 +179,24 @@ leaving Kubernetes and Cloudflare resources orphaned.
 
 ## test_dns_config_removal
 
-Removes the DNS zone configuration from an existing `CloudflareGatewayParameters`.
-Verifies that DNS CNAME records are deleted but tunnel ingress config is preserved.
+Disables DNS management by updating `CloudflareGatewayParameters` to use an empty
+zones list (`dns: { zones: [] }`). Verifies that DNS CNAME records are deleted but
+tunnel ingress config is preserved.
 
 **Resources created:**
 - `CloudflareGatewayParameters` with DNS zone config
 - `Gateway`, `Service`, and `HTTPRoute`
 
-**Cloudflare resources:** 1 tunnel, 1 DNS CNAME (CNAME deleted after config removal).
+**Cloudflare resources:** 1 tunnel, 1 DNS CNAME (CNAME deleted after config change).
 
 **Steps:**
 
 1. Create parameters with DNS zone, `Gateway`, `Service`, `HTTPRoute`;
    wait for Programmed.
 2. Verify DNS CNAME exists.
-3. Update `CloudflareGatewayParameters` to remove `dns.zones` config.
+3. Update `CloudflareGatewayParameters` to set `dns: { zones: [] }` (disable DNS).
 4. Verify DNS CNAME deleted.
-5. Verify tunnel config still has the hostname (ingress unaffected by DNS removal).
+5. Verify tunnel config still has the hostname (ingress unaffected by DNS change).
 6. Delete `HTTPRoute` and `Gateway`.
 7. Clean up `CloudflareGatewayParameters` and `Service`.
 

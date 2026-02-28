@@ -33,11 +33,45 @@ flowchart LR
     CD --> SB[Service B]
 ```
 
+A minimal setup needs only a Gateway and an HTTPRoute — no CloudflareGatewayParameters
+required. Credentials come from the GatewayClass `parametersRef` Secret, and DNS management
+is enabled for all hostnames by default:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: my-gateway
+spec:
+  gatewayClassName: cloudflare
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: my-route
+spec:
+  parentRefs:
+  - name: my-gateway
+  hostnames:
+  - app.example.com
+  rules:
+  - backendRefs:
+    - name: my-service
+      port: 80
+```
+
+For more control, reference a CloudflareGatewayParameters to provide per-Gateway credentials
+or restrict DNS management to specific zones:
+
 ```yaml
 apiVersion: cloudflare-gateway-controller.io/v1
 kind: CloudflareGatewayParameters
 metadata:
-  name: example
+  name: my-params
 spec:
   secretRef:
     name: cloudflare-creds
@@ -45,6 +79,9 @@ spec:
     zones:
     - name: example.com
 ```
+
+See the [CloudflareGatewayParameters](docs/api/v1/CloudflareGatewayParameters.md) docs for
+all options, including how to disable DNS management entirely.
 
 **DNS:** The controller creates a CNAME record for each hostname declared in the attached
 HTTPRoutes. Each CNAME points directly to the tunnel address (`<tunnelID>.cfargotunnel.com`).
@@ -56,7 +93,15 @@ When an HTTPRoute hostname is removed, its CNAME is deleted.
 (with a sidecar proxy container), a tunnel token Secret, a sidecar ConfigMap (routing
 table), a ServiceAccount, a Role, and a RoleBinding.
 
-Works on the **free plan** with no additional cost.
+**Observability:** The controller creates a
+[CloudflareGatewayStatus](docs/api/v1/CloudflareGatewayStatus.md) (short name: `cgs`) per
+Gateway, providing a quick view of tunnel info, conditions, and managed resources:
+
+```
+$ kubectl get cgs
+NAME         TUNNEL NAME   TUNNEL ID    DNS       READY
+my-gateway   gw-a1b2c3…    abcd-1234…   Managed   True
+```
 
 ### Sidecar reverse proxy
 

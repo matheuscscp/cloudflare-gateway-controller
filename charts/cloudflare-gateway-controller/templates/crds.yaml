@@ -48,10 +48,19 @@ spec:
             description: CloudflareGatewayParametersSpec defines the desired configuration.
             properties:
               dns:
-                description: DNS configures DNS CNAME record management.
+                description: |-
+                  DNS configures DNS CNAME record management. When absent, DNS
+                  management is enabled for all hostnames in attached HTTPRoutes
+                  (each hostname's zone is resolved dynamically via the Cloudflare
+                  API). Set dns.zones to restrict management to specific zones, or
+                  set dns.zones to an empty list to disable DNS management entirely.
                 properties:
                   zones:
-                    description: Zones configures the DNS zones for CNAME management.
+                    description: |-
+                      Zones restricts DNS CNAME management to hostnames matching these
+                      zones. When empty, DNS management is disabled. When this field is
+                      absent (i.e. the entire dns object is omitted), DNS management is
+                      enabled for all hostnames.
                     items:
                       description: DNSZoneConfig identifies a Cloudflare DNS zone.
                       properties:
@@ -61,7 +70,6 @@ spec:
                       required:
                       - name
                       type: object
-                    minItems: 1
                     type: array
                 required:
                 - zones

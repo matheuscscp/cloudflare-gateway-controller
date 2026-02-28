@@ -27,7 +27,11 @@ type CloudflareGatewayParametersSpec struct {
 	// +optional
 	SecretRef *SecretRef `json:"secretRef,omitempty"`
 
-	// DNS configures DNS CNAME record management.
+	// DNS configures DNS CNAME record management. When absent, DNS
+	// management is enabled for all hostnames in attached HTTPRoutes
+	// (each hostname's zone is resolved dynamically via the Cloudflare
+	// API). Set dns.zones to restrict management to specific zones, or
+	// set dns.zones to an empty list to disable DNS management entirely.
 	// +optional
 	DNS *DNSConfig `json:"dns,omitempty"`
 
@@ -43,9 +47,21 @@ type SecretRef struct {
 }
 
 // DNSConfig configures DNS CNAME record management.
+//
+// By default (when this field is absent from the spec), DNS management is
+// enabled for ALL hostnames in attached HTTPRoutes — each hostname's zone
+// is resolved dynamically via the Cloudflare API.
+//
+// Set this field with a non-empty zones list to restrict DNS management to
+// hostnames that are single-level subdomains of the listed zones.
+//
+// Set this field with an empty zones list (dns.zones: []) to explicitly
+// disable DNS management.
 type DNSConfig struct {
-	// Zones configures the DNS zones for CNAME management.
-	// +kubebuilder:validation:MinItems=1
+	// Zones restricts DNS CNAME management to hostnames matching these
+	// zones. When empty, DNS management is disabled. When this field is
+	// absent (i.e. the entire dns object is omitted), DNS management is
+	// enabled for all hostnames.
 	Zones []DNSZoneConfig `json:"zones"`
 }
 

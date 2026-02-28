@@ -3,8 +3,8 @@
 The controller reconciles **Gateway** resources whose GatewayClass has
 `.spec.controllerName: cloudflare-gateway-controller.io/controller`.
 
-This document covers only the annotations and conditions set by this controller.
-For the full Gateway spec, see the
+This document covers the annotations recognized by this controller and the
+conditions it sets. For the full Gateway spec, see the
 [Gateway API documentation](https://gateway-api.sigs.k8s.io/api-types/gateway/).
 
 ## Example
@@ -255,18 +255,28 @@ When the Deployment is not yet ready:
 #### DNS Management
 
 Custom condition, not part of the Gateway API spec. Reports whether DNS CNAME
-record management is configured for this Gateway via the
-[CloudflareGatewayParameters](CloudflareGatewayParameters.md) `.spec.dns.zones`
-field.
+record management is enabled for this Gateway.
 
-When DNS management is configured:
+DNS is enabled by default for all hostnames. It can be restricted to specific
+zones via `.spec.dns.zones` in the
+[CloudflareGatewayParameters](CloudflareGatewayParameters.md), or disabled
+entirely by setting an empty zones list (`dns.zones: []`).
+
+When DNS management is enabled for all hostnames (no zone restriction):
+
+- `type: DNSManagement`
+- `status: "True"`
+- `reason: Managed`
+- `message: All hostnames`
+
+When DNS management is enabled for specific zones:
 
 - `type: DNSManagement`
 - `status: "True"`
 - `reason: Managed`
 - `message`: lists each allowed zone on its own line
 
-When DNS management is not configured:
+When DNS management is disabled:
 
 - `type: DNSManagement`
 - `status: "False"`

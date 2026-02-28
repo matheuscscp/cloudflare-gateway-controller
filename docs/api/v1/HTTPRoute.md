@@ -132,8 +132,10 @@ permitted by a `ReferenceGrant`.
 #### DNS records applied
 
 Custom condition, not part of the Gateway API spec. Reports whether DNS CNAME
-records have been applied for the route's hostnames. This condition is only present when DNS is configured in
-the [CloudflareGatewayParameters](CloudflareGatewayParameters.md).
+records have been applied for the route's hostnames. This condition is only
+present when DNS management is enabled (see
+[CloudflareGatewayParameters](CloudflareGatewayParameters.md) for configuration
+details).
 
 When DNS records are applied successfully:
 
@@ -141,7 +143,8 @@ When DNS records are applied successfully:
 - `status: "True"`
 - `reason: ReconciliationSucceeded`
 
-The Condition `message` lists applied and skipped hostnames.
+In all-hostnames mode (default), the `message` lists all applied hostnames. In
+specific-zones mode, the `message` lists applied and skipped hostnames.
 
 When DNS record creation or update fails:
 
@@ -149,7 +152,7 @@ When DNS record creation or update fails:
 - `status: "False"`
 - `reason: ReconciliationFailed`
 
-This condition is removed from the status when DNS is not configured.
+This condition is removed from the status when DNS is disabled.
 
 #### Ready HTTPRoute
 
