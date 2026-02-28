@@ -1,9 +1,8 @@
-# Simple Topology E2E Tests
+# E2E Tests
 
 **Script:** `hack/e2e-test.sh` | **Make target:** `make test-e2e` | **Kind config:** single node
 
-The simple topology uses a single Cloudflare tunnel with optional DNS CNAME records.
-No load balancer is involved. These tests run on Cloudflare's free plan.
+The controller uses a single Cloudflare tunnel with optional DNS CNAME records.
 
 ## test_gateway_lifecycle
 
@@ -58,11 +57,8 @@ while preserving the other.
 8. Delete `route-a`.
 9. Verify hostname A removed from tunnel config; hostname B still present.
 10. Verify CNAME A deleted; CNAME B still exists.
-11. Delete `route-b`.
-12. Verify hostname B removed from tunnel config.
-13. Verify CNAME B deleted.
-14. Delete `Gateway`; verify tunnel deleted.
-15. Clean up `CloudflareGatewayParameters` and Services.
+11. Delete `route-b` and `Gateway`; verify tunnel deleted.
+12. Clean up `CloudflareGatewayParameters` and Services.
 
 ## test_path_matching
 
@@ -109,7 +105,7 @@ configured correctly but no DNS CNAME record is created.
 ## test_deployment_patches
 
 CloudflareGatewayParameters with JSON Patch operations applied to the cloudflared
-Deployment. Verifies that the patch is applied correctly.
+Deployment via the `spec.tunnels.deployment` field. Verifies that the patch is applied correctly.
 
 **Resources created:**
 - `CloudflareGatewayParameters` with a patch that adds label `e2e-patch=applied`

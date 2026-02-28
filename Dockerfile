@@ -5,15 +5,15 @@ FROM golang:1.26@sha256:9edf71320ef8a791c4c33ec79f90496d641f306a91fb112d3d060d5c
 WORKDIR /workspace
 COPY go.mod go.sum ./
 RUN go mod download
-COPY main.go main.go
+COPY cmd/ cmd/
 COPY api/ api/
 COPY internal/ internal/
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 RUN CGO_ENABLED=0 GOFIPS140=latest GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -o /cloudflare-gateway-controller .
+    go build -o /cfgwctl ./cmd/cfgwctl
 
 FROM gcr.io/distroless/static:nonroot@sha256:01e550fdb7ab79ee7be5ff440a563a58f1fd000ad9e0c532e65c3d23f917f1c5
-COPY --from=builder /cloudflare-gateway-controller /cloudflare-gateway-controller
+COPY --from=builder /cfgwctl /cfgwctl
 USER 65532:65532
-ENTRYPOINT ["/cloudflare-gateway-controller"]
+ENTRYPOINT ["/cfgwctl", "controller"]

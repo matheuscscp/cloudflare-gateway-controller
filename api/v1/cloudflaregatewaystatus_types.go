@@ -35,12 +35,7 @@ type CloudflareGatewayStatusDetail struct {
 	// +optional
 	Tunnels []TunnelStatus `json:"tunnels,omitempty"`
 
-	// LoadBalancer holds the current LB resource state.
-	// Nil when no LB topology is configured.
-	// +optional
-	LoadBalancer *LoadBalancerStatus `json:"loadBalancer,omitempty"`
-
-	// DNS holds the DNS zone info used for CNAME and LB management.
+	// DNS holds the DNS zone info used for CNAME management.
 	// +optional
 	DNS *DNSStatus `json:"dns,omitempty"`
 }
@@ -59,47 +54,9 @@ type TunnelStatus struct {
 
 	// SecretName is the name of the tunnel token Secret.
 	SecretName string `json:"secretName"`
-
-	// AZName is the availability zone name (empty if not per-AZ).
-	// +optional
-	AZName string `json:"azName,omitempty"`
-
-	// ServiceNamespace is the backend service namespace (empty if not per-service).
-	// +optional
-	ServiceNamespace string `json:"serviceNamespace,omitempty"`
-
-	// ServiceName is the backend service name (empty if not per-service).
-	// +optional
-	ServiceName string `json:"serviceName,omitempty"`
 }
 
-// LoadBalancerStatus records the state of Cloudflare Load Balancer resources.
-type LoadBalancerStatus struct {
-	// MonitorID is the Cloudflare monitor UUID.
-	MonitorID string `json:"monitorId"`
-
-	// MonitorName is the Cloudflare monitor name.
-	MonitorName string `json:"monitorName"`
-
-	// Pools lists the Cloudflare LB pools.
-	// +optional
-	Pools []PoolStatus `json:"pools,omitempty"`
-
-	// Hostnames lists the load-balanced hostnames.
-	// +optional
-	Hostnames []string `json:"hostnames,omitempty"`
-}
-
-// PoolStatus records the state of a single Cloudflare LB pool.
-type PoolStatus struct {
-	// Name is the Cloudflare pool name.
-	Name string `json:"name"`
-
-	// ID is the Cloudflare pool UUID.
-	ID string `json:"id"`
-}
-
-// DNSStatus records the DNS zone used for CNAME and LB management.
+// DNSStatus records the DNS zone used for CNAME management.
 type DNSStatus struct {
 	// ZoneName is the DNS zone name (e.g. "example.com").
 	ZoneName string `json:"zoneName"`

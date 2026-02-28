@@ -53,11 +53,8 @@ The following fields are not supported and must not be set:
 
 - Only `core` `Service` backends are supported. Other `group`/`kind`
   combinations (e.g. custom backend resources) are rejected.
-- Multiple `backendRefs` in a single rule (traffic splitting) require
-  the Gateway's `CloudflareGatewayParameters` to have
-  `loadBalancer.topology: TrafficSplitting`. Without it, the HTTPRoute is
-  rejected. Use a single Kubernetes Service with internal load balancing
-  instead.
+- Multiple `backendRefs` in a single rule are not supported. Use a single
+  Kubernetes Service with internal load balancing instead.
 - Cross-namespace `backendRefs` must be allowed by a `ReferenceGrant`.
   Without one, the HTTPRoute is accepted but the condition
   `ResolvedRefs=False/RefNotPermitted` is set.

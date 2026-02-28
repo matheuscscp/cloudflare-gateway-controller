@@ -7,8 +7,7 @@ for Gateways managed by this controller. It is referenced via
 ## Example
 
 The following example shows a CloudflareGatewayParameters that configures
-DNS record management, two availability zones, and a geographic load balancer
-with health monitoring:
+DNS record management and deployment patches:
 
 ```yaml
 apiVersion: cloudflare-gateway-controller.io/v1
@@ -23,26 +22,12 @@ spec:
     zone:
       name: "example.com"
   tunnels:
-    availabilityZones:
-      - name: az-a
-        zone: us-east-1a
-      - name: az-b
-        zone: us-east-1b
-    cloudflared:
+    deployment:
       patches:
         - op: replace
           path: /spec/template/spec/nodeSelector
           value:
             kubernetes.io/os: linux
-  loadBalancer:
-    topology: HighAvailability
-    steeringPolicy: Geographic
-    sessionAffinity: Cookie
-    monitor:
-      type: HTTPS
-      path: /ready
-      interval: 60
-      timeout: 5
 ```
 
 The Secret referenced by `.spec.secretRef.name` must contain the Cloudflare API
@@ -103,93 +88,22 @@ The `.spec.dns.zone.name` field is required when `.spec.dns` is set and
 specifies the DNS zone name (e.g. `example.com`).
 
 When DNS is configured, the controller creates CNAME records for each hostname
-in the attached [HTTPRoutes](HTTPRoute.md). This field is required when
-`.spec.loadBalancer` is set.
+in the attached [HTTPRoutes](HTTPRoute.md).
 
 ### Tunnels configuration
 
 The `.spec.tunnels` field is optional and configures Cloudflare tunnel settings.
 
-#### Availability zones
+#### Deployment patches
 
-The `.spec.tunnels.availabilityZones` field is optional and specifies multi-AZ
-tunnel deployment. Each entry creates a separate tunnel and cloudflared
-Deployment.
-
-Example using the `zone` shorthand for `topology.kubernetes.io/zone` node
-affinity:
-
-```yaml
-spec:
-  tunnels:
-    availabilityZones:
-      - name: az-a
-        zone: us-east-1a
-      - name: az-b
-        zone: us-east-1b
-```
-
-Example using `nodeSelector` for label-based pod placement:
-
-```yaml
-spec:
-  tunnels:
-    availabilityZones:
-      - name: az-1
-        nodeSelector:
-          workload: gateway-az1
-      - name: az-2
-        nodeSelector:
-          workload: gateway-az2
-```
-
-Example using a full Kubernetes `affinity` spec:
-
-```yaml
-spec:
-  tunnels:
-    availabilityZones:
-      - name: az-1
-        affinity:
-          nodeAffinity:
-            requiredDuringSchedulingIgnoredDuringExecution:
-              nodeSelectorTerms:
-                - matchExpressions:
-                    - key: topology.kubernetes.io/zone
-                      operator: In
-                      values:
-                        - us-west-2a
-```
-
-Each availability zone entry has the following fields:
-
-- `name` (required): Identifies this AZ. Used in Deployment, tunnel, and pool
-  naming. Must be 1-63 lowercase alphanumeric characters or hyphens, starting
-  and ending with an alphanumeric character.
-- `zone` (optional): Shorthand for `topology.kubernetes.io/zone` node affinity.
-- `nodeSelector` (optional): Label key-value pairs for node selection.
-- `affinity` (optional): Full Kubernetes
-  [Affinity](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.31/#affinity-v1-core)
-  spec for pod placement.
-
-Exactly one of `zone`, `nodeSelector`, or `affinity` must be set.
-
-**Cross-field validations:**
-
-- `.spec.loadBalancer` is required when `.spec.tunnels.availabilityZones` is set.
-- `.spec.tunnels.availabilityZones` is required when `.spec.loadBalancer.topology`
-  is `HighAvailability`.
-
-#### Cloudflared deployment patches
-
-The `.spec.tunnels.cloudflared.patches` field is optional and specifies
+The `.spec.tunnels.deployment.patches` field is optional and specifies
 [RFC 6902](https://datatracker.ietf.org/doc/html/rfc6902) JSON Patch operations
 applied to the cloudflared Deployment after it is built.
 
 ```yaml
 spec:
   tunnels:
-    cloudflared:
+    deployment:
       patches:
         - op: replace
           path: /spec/template/spec/nodeSelector
@@ -209,108 +123,3 @@ Each patch operation has the following fields:
 - `path` (required): JSON Pointer path for the operation.
 - `from` (optional): Source path for `move` and `copy` operations.
 - `value` (optional): Value for `add`, `replace`, and `test` operations.
-
-### Load balancer configuration
-
-The `.spec.loadBalancer` field is optional and configures Cloudflare Load
-Balancer settings.
-
-```yaml
-spec:
-  loadBalancer:
-    topology: HighAvailability
-    steeringPolicy: Geographic
-    sessionAffinity: Cookie
-    monitor:
-      type: HTTPS
-      path: /ready
-      interval: 60
-      timeout: 5
-```
-
-This field is required when `.spec.tunnels.availabilityZones` is set. When
-`.spec.loadBalancer` is set, `.spec.dns` is also required.
-
-#### Topology
-
-The `.spec.loadBalancer.topology` field is required and specifies the load
-balancer topology.
-
-Supported values:
-
-- `HighAvailability`: One tunnel per AZ, each carrying full ingress rules.
-  The LB steers traffic between zones. Requires
-  `.spec.tunnels.availabilityZones`.
-- `TrafficSplitting`: One tunnel per Service backendRef (times per AZ if
-  `availabilityZones` is set). Each tunnel routes traffic to one service. The
-  LB distributes traffic by HTTPRoute backendRef weights.
-
-#### Steering policy
-
-The `.spec.loadBalancer.steeringPolicy` field is optional and specifies the
-traffic distribution policy.
-
-Supported values:
-
-- `Off`: No active steering.
-- `Geographic`: Routes to closest pool by client region.
-- `Random`: Distributes traffic proportionally using pool weights.
-- `DynamicLatency`: Learns latency over time and routes to the fastest pool.
-- `Proximity`: Routes to lowest-latency pool based on health check RTT.
-- `LeastOutstandingRequests`: Routes to pool with fewest pending requests.
-- `LeastConnections`: Routes to pool with fewest active connections.
-
-#### Session affinity
-
-The `.spec.loadBalancer.sessionAffinity` field is optional and specifies the
-session persistence mode. The default value is `None`.
-
-Supported values:
-
-- `None`: No session affinity.
-- `Cookie`: Routes subsequent requests to the same pool using a cookie.
-- `IPCookie`: Like `Cookie` but based on client IP address.
-- `Header`: Routes based on a request header value.
-
-#### Health monitor
-
-The `.spec.loadBalancer.monitor` field is optional and configures health
-checking for tunnel origins.
-
-```yaml
-spec:
-  loadBalancer:
-    monitor:
-      type: HTTPS
-      path: /ready
-      interval: 60
-      timeout: 5
-```
-
-The monitor fields are:
-
-- `type` (optional): Health check protocol. One of `HTTP`, `HTTPS`, `TCP`.
-  Default is `HTTPS`.
-- `path` (optional): Health check endpoint path. Default is `/ready`.
-- `interval` (optional): Seconds between health checks. When `0` or omitted,
-  Cloudflare uses the plan-specific default.
-- `timeout` (optional): Seconds before marking a health check as failed. When
-  `0` or omitted, Cloudflare uses the plan-specific default.
-
-## Validations
-
-The following cross-field validations are enforced by CEL rules on the CRD
-and by the controller at reconciliation time. Violations are reported on the
-referencing Gateway as `Accepted=False/InvalidParameters`.
-
-- `.spec.dns` is required when `.spec.loadBalancer` is set. The load
-  balancer needs a DNS zone to create load balancers in.
-- `.spec.loadBalancer` is required when `.spec.tunnels.availabilityZones`
-  is set. Multiple tunnels without a load balancer would leave traffic
-  unbalanced.
-- `.spec.tunnels.availabilityZones` is required when
-  `.spec.loadBalancer.topology` is `HighAvailability`. The HA topology
-  distributes traffic across zones, so at least one AZ must be defined.
-- Each availability zone entry must have exactly one of `zone`,
-  `nodeSelector` (non-empty), or `affinity`. Setting none or more than one
-  is rejected.

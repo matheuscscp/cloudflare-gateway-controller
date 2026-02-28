@@ -58,38 +58,6 @@ func TestTunnelName(t *testing.T) {
 	g.Expect(apiv1.TunnelName(gw)).To(Equal(name))
 }
 
-func TestTunnelNameForAZ(t *testing.T) {
-	g := NewWithT(t)
-	gw := testGateway()
-	name := apiv1.TunnelNameForAZ(gw, "us-east-1a")
-	g.Expect(name).To(HavePrefix("gw-"))
-	g.Expect(name).To(HaveLen(67))
-	// Different AZ produces different name.
-	g.Expect(apiv1.TunnelNameForAZ(gw, "us-west-2b")).NotTo(Equal(name))
-}
-
-func TestTunnelNameForService(t *testing.T) {
-	g := NewWithT(t)
-	gw := testGateway()
-	name := apiv1.TunnelNameForService(gw, "default", "web")
-	g.Expect(name).To(HavePrefix("gw-"))
-	g.Expect(name).To(HaveLen(67))
-	// Different service namespace produces different name.
-	g.Expect(apiv1.TunnelNameForService(gw, "other-ns", "web")).NotTo(Equal(name))
-	// Different service name produces different name.
-	g.Expect(apiv1.TunnelNameForService(gw, "default", "api")).NotTo(Equal(name))
-}
-
-func TestTunnelNameForServiceAZ(t *testing.T) {
-	g := NewWithT(t)
-	gw := testGateway()
-	name := apiv1.TunnelNameForServiceAZ(gw, "default", "web", "us-east-1a")
-	g.Expect(name).To(HavePrefix("gw-"))
-	g.Expect(name).To(HaveLen(67))
-	// Different AZ produces different name.
-	g.Expect(apiv1.TunnelNameForServiceAZ(gw, "default", "web", "us-west-2b")).NotTo(Equal(name))
-}
-
 func TestCloudflaredDeploymentName(t *testing.T) {
 	g := NewWithT(t)
 	gw := testGateway()
@@ -106,70 +74,6 @@ func TestFinalizerGatewayClass(t *testing.T) {
 	g := NewWithT(t)
 	gw := testGateway()
 	g.Expect(apiv1.FinalizerGatewayClass(gw)).To(Equal("gateway-exists-finalizer.gateway.networking.k8s.io/my-gw.my-ns"))
-}
-
-func TestCloudflaredDeploymentNameForAZ(t *testing.T) {
-	g := NewWithT(t)
-	gw := testGateway()
-	g.Expect(apiv1.CloudflaredDeploymentNameForAZ(gw, "us-east-1a")).To(Equal("cloudflared-my-gw-us-east-1a"))
-}
-
-func TestCloudflaredDeploymentNameForService(t *testing.T) {
-	g := NewWithT(t)
-	gw := testGateway()
-	g.Expect(apiv1.CloudflaredDeploymentNameForService(gw, "web")).To(Equal("cloudflared-my-gw-web"))
-}
-
-func TestCloudflaredDeploymentNameForServiceAZ(t *testing.T) {
-	g := NewWithT(t)
-	gw := testGateway()
-	g.Expect(apiv1.CloudflaredDeploymentNameForServiceAZ(gw, "web", "us-east-1a")).To(Equal("cloudflared-my-gw-web-us-east-1a"))
-}
-
-func TestTunnelTokenSecretNameForAZ(t *testing.T) {
-	g := NewWithT(t)
-	gw := testGateway()
-	g.Expect(apiv1.TunnelTokenSecretNameForAZ(gw, "us-east-1a")).To(Equal("cloudflared-token-my-gw-us-east-1a"))
-}
-
-func TestTunnelTokenSecretNameForService(t *testing.T) {
-	g := NewWithT(t)
-	gw := testGateway()
-	g.Expect(apiv1.TunnelTokenSecretNameForService(gw, "web")).To(Equal("cloudflared-token-my-gw-web"))
-}
-
-func TestTunnelTokenSecretNameForServiceAZ(t *testing.T) {
-	g := NewWithT(t)
-	gw := testGateway()
-	g.Expect(apiv1.TunnelTokenSecretNameForServiceAZ(gw, "web", "us-east-1a")).To(Equal("cloudflared-token-my-gw-web-us-east-1a"))
-}
-
-func TestMonitorName(t *testing.T) {
-	g := NewWithT(t)
-	gw := testGateway()
-	name := apiv1.MonitorName(gw)
-	g.Expect(name).To(HavePrefix("gw-"))
-	g.Expect(name).To(HaveLen(67))
-}
-
-func TestPoolNameForAZ(t *testing.T) {
-	g := NewWithT(t)
-	gw := testGateway()
-	name := apiv1.PoolNameForAZ(gw, "us-east-1a")
-	g.Expect(name).To(HavePrefix("gw-"))
-	g.Expect(name).To(HaveLen(67))
-	// Different AZ produces different name.
-	g.Expect(apiv1.PoolNameForAZ(gw, "us-west-2b")).NotTo(Equal(name))
-}
-
-func TestPoolNameForService(t *testing.T) {
-	g := NewWithT(t)
-	gw := testGateway()
-	name := apiv1.PoolNameForService(gw, "default", "web")
-	g.Expect(name).To(HavePrefix("gw-"))
-	g.Expect(name).To(HaveLen(67))
-	// Different service namespace produces different name.
-	g.Expect(apiv1.PoolNameForService(gw, "other-ns", "web")).NotTo(Equal(name))
 }
 
 func TestReconcileInterval(t *testing.T) {

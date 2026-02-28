@@ -120,84 +120,14 @@ func TunnelName(gw *gatewayv1.Gateway) string {
 	return ResourceName(cfClusterName, gw.Namespace, gw.Name)
 }
 
-// TunnelNameForAZ returns the Cloudflare tunnel name for a Gateway in a specific AZ.
-func TunnelNameForAZ(gw *gatewayv1.Gateway, azName string) string {
-	return ResourceName(cfClusterName, gw.Namespace, gw.Name, azName)
-}
-
-// TunnelNameForService returns the Cloudflare tunnel name for a Gateway
-// dedicated to a specific Service (traffic splitting mode, no AZs).
-func TunnelNameForService(gw *gatewayv1.Gateway, svcNamespace, svcName string) string {
-	return ResourceName(cfClusterName, gw.Namespace, gw.Name, svcNamespace, svcName)
-}
-
-// TunnelNameForServiceAZ returns the Cloudflare tunnel name for a Gateway
-// dedicated to a specific Service in a specific AZ (traffic splitting + AZs).
-func TunnelNameForServiceAZ(gw *gatewayv1.Gateway, svcNamespace, svcName, azName string) string {
-	return ResourceName(cfClusterName, gw.Namespace, gw.Name, svcNamespace, svcName, azName)
-}
-
 // CloudflaredDeploymentName returns the name of the cloudflared Deployment for a Gateway.
 func CloudflaredDeploymentName(gw *gatewayv1.Gateway) string {
 	return fmt.Sprintf("cloudflared-%s", gw.Name)
 }
 
-// CloudflaredDeploymentNameForAZ returns the name of the cloudflared Deployment
-// for a Gateway in a specific AZ.
-func CloudflaredDeploymentNameForAZ(gw *gatewayv1.Gateway, azName string) string {
-	return fmt.Sprintf("cloudflared-%s-%s", gw.Name, azName)
-}
-
-// CloudflaredDeploymentNameForService returns the name of the cloudflared
-// Deployment for a Gateway dedicated to a specific Service (no AZs).
-func CloudflaredDeploymentNameForService(gw *gatewayv1.Gateway, serviceName string) string {
-	return fmt.Sprintf("cloudflared-%s-%s", gw.Name, serviceName)
-}
-
-// CloudflaredDeploymentNameForServiceAZ returns the name of the cloudflared
-// Deployment for a Gateway dedicated to a specific Service in a specific AZ.
-func CloudflaredDeploymentNameForServiceAZ(gw *gatewayv1.Gateway, serviceName, azName string) string {
-	return fmt.Sprintf("cloudflared-%s-%s-%s", gw.Name, serviceName, azName)
-}
-
 // TunnelTokenSecretName returns the name of the tunnel token Secret for a Gateway.
 func TunnelTokenSecretName(gw *gatewayv1.Gateway) string {
 	return fmt.Sprintf("cloudflared-token-%s", gw.Name)
-}
-
-// TunnelTokenSecretNameForAZ returns the name of the tunnel token Secret
-// for a Gateway in a specific AZ.
-func TunnelTokenSecretNameForAZ(gw *gatewayv1.Gateway, azName string) string {
-	return fmt.Sprintf("cloudflared-token-%s-%s", gw.Name, azName)
-}
-
-// TunnelTokenSecretNameForService returns the name of the tunnel token Secret
-// for a Gateway dedicated to a specific Service (no AZs).
-func TunnelTokenSecretNameForService(gw *gatewayv1.Gateway, serviceName string) string {
-	return fmt.Sprintf("cloudflared-token-%s-%s", gw.Name, serviceName)
-}
-
-// TunnelTokenSecretNameForServiceAZ returns the name of the tunnel token Secret
-// for a Gateway dedicated to a specific Service in a specific AZ.
-func TunnelTokenSecretNameForServiceAZ(gw *gatewayv1.Gateway, serviceName, azName string) string {
-	return fmt.Sprintf("cloudflared-token-%s-%s-%s", gw.Name, serviceName, azName)
-}
-
-// MonitorName returns the Cloudflare LB monitor name for a Gateway.
-func MonitorName(gw *gatewayv1.Gateway) string {
-	return ResourceName(cfClusterName, gw.Namespace, gw.Name, "monitor")
-}
-
-// PoolNameForAZ returns the Cloudflare LB pool name for a Gateway AZ
-// (geographic steering mode).
-func PoolNameForAZ(gw *gatewayv1.Gateway, azName string) string {
-	return ResourceName(cfClusterName, gw.Namespace, gw.Name, azName)
-}
-
-// PoolNameForService returns the Cloudflare LB pool name for a Gateway Service
-// (traffic splitting mode).
-func PoolNameForService(gw *gatewayv1.Gateway, svcNamespace, svcName string) string {
-	return ResourceName(cfClusterName, gw.Namespace, gw.Name, svcNamespace, svcName)
 }
 
 // ReconcileInterval returns the reconciliation interval for an object

@@ -47,7 +47,7 @@ The `.spec.addresses` field is not supported and must not be set.
 
 The `.spec.infrastructure.parametersRef` field references a
 [CloudflareGatewayParameters](CloudflareGatewayParameters.md) that provides
-Cloudflare-specific configuration (credentials, DNS, tunnels, load balancer):
+Cloudflare-specific configuration (credentials, DNS, tunnels):
 
 ```yaml
 spec:
@@ -165,23 +165,6 @@ When falling back to the GatewayClass `parametersRef`:
   Rejected with `Accepted=False/InvalidParameters`.
 - Cross-namespace Secret references must be allowed by a `ReferenceGrant`.
   Rejected with `Accepted=False/InvalidParameters`.
-
-### CloudflareGatewayParameters cross-field rules
-
-When the Gateway references a `CloudflareGatewayParameters`, the controller
-validates cross-field constraints (in addition to the CEL validations on the
-CRD itself):
-
-- `.spec.loadBalancer` is required when `.spec.tunnels.availabilityZones` is
-  set. Rejected with `Accepted=False/InvalidParameters`.
-- `.spec.tunnels.availabilityZones` is required when
-  `.spec.loadBalancer.topology` is `HighAvailability`. Rejected with
-  `Accepted=False/InvalidParameters`.
-- `.spec.dns` is required when `.spec.loadBalancer` is set. Rejected with
-  `Accepted=False/InvalidParameters`.
-- Each availability zone entry must have exactly one of `zone`,
-  `nodeSelector` (non-empty), or `affinity`. Rejected with
-  `Accepted=False/InvalidParameters`.
 
 ## Gateway Status
 

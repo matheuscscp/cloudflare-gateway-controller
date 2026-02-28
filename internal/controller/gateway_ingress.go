@@ -18,18 +18,11 @@ import (
 )
 
 // reconcileAllTunnelIngress builds and applies ingress rules for all tunnel
-// entries based on the LB mode:
-//   - lbModeNone / lbModePerAZ: every tunnel gets identical full ingress rules.
-//   - lbModePerBackendRef: each tunnel gets ingress routing all hostnames to
-//     its single service with a catch-all 404.
-//
-// Returns the denied refs map, change messages, and any error.
-func (r *GatewayReconciler) reconcileAllTunnelIngress(ctx context.Context, tc cloudflare.Client, mode lbMode, entries []tunnelEntry, routes []*gatewayv1.HTTPRoute) (map[types.NamespacedName][]string, []string, error) {
+// entries. Returns the denied refs map, change messages, and any error.
+func (r *GatewayReconciler) reconcileAllTunnelIngress(ctx context.Context, tc cloudflare.Client, entries []tunnelEntry, routes []*gatewayv1.HTTPRoute) (map[types.NamespacedName][]string, []string, error) {
 	l := log.FromContext(ctx)
 
-	// Build full ingress rules (used by simple and per-AZ modes, and for
-	// extracting denied refs in all modes).
-	fullIngress, routesWithDeniedRefs, err := buildIngressRules(ctx, r.Client, routes)
+	ingress, routesWithDeniedRefs, err := buildIngressRules(ctx, r.Client, routes)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -40,16 +33,6 @@ func (r *GatewayReconciler) reconcileAllTunnelIngress(ctx context.Context, tc cl
 	var changes []string
 	for i := range entries {
 		e := &entries[i]
-
-		var ingress []cloudflare.IngressRule
-		switch {
-		case mode == lbModePerBackendRef && e.serviceName != "":
-			// Per-backendRef: route all hostnames to this tunnel's single service.
-			ingress = buildIngressRulesForService(routes, e.serviceNamespace, e.serviceName)
-		default:
-			// Simple / per-AZ: full ingress on every tunnel.
-			ingress = fullIngress
-		}
 
 		currentIngress, err := tc.GetTunnelConfiguration(ctx, e.tunnelID)
 		if err != nil {
@@ -64,42 +47,6 @@ func (r *GatewayReconciler) reconcileAllTunnelIngress(ctx context.Context, tc cl
 		}
 	}
 	return routesWithDeniedRefs, changes, nil
-}
-
-// buildIngressRulesForService builds ingress rules that route all hostnames
-// referencing a given Service to that service, with a catch-all 404. Used in
-// per-backendRef (TrafficSplitting) mode where each tunnel handles one service.
-func buildIngressRulesForService(routes []*gatewayv1.HTTPRoute, serviceNamespace, serviceName string) []cloudflare.IngressRule {
-	var rules []cloudflare.IngressRule
-	for _, route := range routes {
-		for _, rule := range route.Spec.Rules {
-			for _, ref := range rule.BackendRefs {
-				ns := route.Namespace
-				if ref.Namespace != nil {
-					ns = string(*ref.Namespace)
-				}
-				if string(ref.Name) != serviceName || ns != serviceNamespace {
-					continue
-				}
-				port := int32(80)
-				if ref.Port != nil {
-					port = *ref.Port
-				}
-				service := fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", serviceName, ns, port)
-				for _, hostname := range route.Spec.Hostnames {
-					rules = append(rules, cloudflare.IngressRule{
-						Hostname: string(hostname),
-						Service:  service,
-					})
-				}
-			}
-		}
-	}
-	// Append catch-all rule.
-	rules = append(rules, cloudflare.IngressRule{
-		Service: "http_status:404",
-	})
-	return rules
 }
 
 // buildIngressRules converts a list of HTTPRoutes into Cloudflare tunnel ingress rules.
