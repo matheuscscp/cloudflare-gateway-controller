@@ -13,6 +13,10 @@ const (
 	// for the Gateway.
 	ConditionDNSManagement = "DNSManagement"
 
+	// ConditionSidecar reports whether the sidecar reverse proxy is enabled
+	// for the Gateway.
+	ConditionSidecar = "Sidecar"
+
 	// ConditionDNSRecordsApplied is an HTTPRoute status.parents condition that
 	// reports whether DNS CNAME records have been applied for the route's hostnames.
 	ConditionDNSRecordsApplied = "DNSRecordsApplied"
@@ -27,8 +31,8 @@ const (
 	ReasonProgressing             = "Progressing"
 )
 
-// Reasons for the DNSManagement condition.
+// Reasons for the DNSManagement and Sidecar conditions.
 const (
-	ReasonDNSManaged       = "Managed"
-	ReasonDNSNotConfigured = "NotConfigured"
+	ReasonEnabled  = "Enabled"
+	ReasonDisabled = "Disabled"
 )

@@ -382,7 +382,7 @@ func buildTunnelTokenSecretForEntry(gw *gatewayv1.Gateway, e *tunnelEntry, tunne
 // JSON Patch operations are applied to the base Deployment. AZ placement is
 // applied last so it always takes effect.
 func (r *GatewayReconciler) buildCloudflaredDeployment(gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters, e *tunnelEntry) (*unstructured.Unstructured, error) {
-	apply := r.buildCloudflaredDeploymentApply(gw, e)
+	apply := r.buildCloudflaredDeploymentApply(gw, params, e)
 	data, err := json.Marshal(apply)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling deployment: %w", err)
@@ -391,8 +391,8 @@ func (r *GatewayReconciler) buildCloudflaredDeployment(gw *gatewayv1.Gateway, pa
 	// Apply RFC 6902 JSON Patch operations from CloudflareGatewayParameters if present.
 	// These errors are terminal because the CRD is a watched object and
 	// retrying won't fix invalid user input.
-	if params != nil && params.Spec.Tunnel != nil && params.Spec.Tunnel.Deployment != nil && len(params.Spec.Tunnel.Deployment.Patches) > 0 {
-		patchJSON, err := json.Marshal(params.Spec.Tunnel.Deployment.Patches)
+	if params != nil && params.Spec.Tunnel != nil && len(params.Spec.Tunnel.Patches) > 0 {
+		patchJSON, err := json.Marshal(params.Spec.Tunnel.Patches)
 		if err != nil {
 			return nil, reconcile.TerminalError(fmt.Errorf("marshaling deployment patches: %w", err))
 		}
@@ -417,7 +417,7 @@ func (r *GatewayReconciler) buildCloudflaredDeployment(gw *gatewayv1.Gateway, pa
 // buildCloudflaredDeploymentApply builds the apply configuration for the
 // cloudflared Deployment, including selector labels, infrastructure
 // labels/annotations, owner reference, and the cloudflared container spec.
-func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gateway, e *tunnelEntry) *acappsv1.DeploymentApplyConfiguration {
+func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters, e *tunnelEntry) *acappsv1.DeploymentApplyConfiguration {
 	selectorLabels := map[string]string{
 		"app.kubernetes.io/name":       "cloudflared",
 		"app.kubernetes.io/managed-by": apiv1.ShortControllerName,
@@ -469,7 +469,7 @@ func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gatewa
 
 	podSpec := accorev1.PodSpec()
 
-	if r.sidecarEnabled() {
+	if r.sidecarEnabled(params) {
 		podSpec = podSpec.WithServiceAccountName(apiv1.GatewayResourceName(gw))
 
 		sidecarContainer := accorev1.Container().

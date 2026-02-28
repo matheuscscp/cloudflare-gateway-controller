@@ -240,6 +240,7 @@ func (r *GatewayReconciler) reconcileCGS(
 	ctx context.Context,
 	gw *gatewayv1.Gateway,
 	cgs *apiv1.CloudflareGatewayStatus,
+	params *apiv1.CloudflareGatewayParameters,
 	entries []tunnelEntry,
 ) (*apiv1.CloudflareGatewayStatus, error) {
 	// Build desired status detail.
@@ -260,7 +261,7 @@ func (r *GatewayReconciler) reconcileCGS(
 		{APIVersion: "apps/v1", Kind: apiv1.KindDeployment, Name: resourceName},
 		{APIVersion: "v1", Kind: apiv1.KindSecret, Name: resourceName},
 	}
-	if r.sidecarEnabled() {
+	if r.sidecarEnabled(params) {
 		desired.Inventory = append(desired.Inventory,
 			apiv1.ResourceRef{APIVersion: "v1", Kind: apiv1.KindConfigMap, Name: resourceName},
 			apiv1.ResourceRef{APIVersion: "v1", Kind: apiv1.KindServiceAccount, Name: resourceName},

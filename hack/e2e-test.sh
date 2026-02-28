@@ -466,7 +466,7 @@ EOF
         [ "$msg" = "All hostnames" ]
     }
     retry 30 2 check_dns_all_hostnames || fail "DNSManagement condition not 'All hostnames'"
-    pass "DNSManagement=True/Managed with 'All hostnames'"
+    pass "DNSManagement=True/Enabled with 'All hostnames'"
 
     local dd_tunnel_name dd_tunnel_id dd_tunnel_target
     dd_tunnel_name=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "dns-def-gw")
@@ -643,11 +643,10 @@ spec:
   secretRef:
     name: cloudflare-creds
   tunnel:
-    deployment:
-      patches:
-      - op: add
-        path: /spec/template/metadata/labels/e2e-patch
-        value: "applied"
+    patches:
+    - op: add
+      path: /spec/template/metadata/labels/e2e-patch
+      value: "applied"
 EOF
 
     log "Creating Gateway 'patched-gw' with deployment patches..."

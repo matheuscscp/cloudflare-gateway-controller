@@ -13,6 +13,7 @@ import (
 // +kubebuilder:printcolumn:name="Tunnel Name",type=string,JSONPath=`.status.tunnel.name`
 // +kubebuilder:printcolumn:name="Tunnel ID",type=string,JSONPath=`.status.tunnel.id`
 // +kubebuilder:printcolumn:name="DNS",type=string,JSONPath=`.status.conditions[?(@.type=="DNSManagement")].reason`
+// +kubebuilder:printcolumn:name="Sidecar",type=string,JSONPath=`.status.conditions[?(@.type=="Sidecar")].reason`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 
 // CloudflareGatewayStatus stores the observable Cloudflare resource state
@@ -31,7 +32,7 @@ type CloudflareGatewayStatus struct {
 type CloudflareGatewayStatusDetail struct {
 	// Conditions report the current state of the Gateway's Cloudflare resources.
 	// Condition types mirror the Gateway's own conditions (Accepted, Programmed,
-	// Ready) so users can inspect them on the CGS directly.
+	// DNSManagement, Sidecar, Ready) so users can inspect them on the CGS directly.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 

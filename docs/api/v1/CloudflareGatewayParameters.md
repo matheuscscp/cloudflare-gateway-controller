@@ -7,7 +7,7 @@ for Gateways managed by this controller. It is referenced via
 ## Example
 
 The following example shows a CloudflareGatewayParameters that configures
-DNS record management and deployment patches:
+DNS record management, tunnel patches, and sidecar settings:
 
 ```yaml
 apiVersion: cloudflare-gateway-controller.io/v1
@@ -22,12 +22,13 @@ spec:
     zones:
       - name: "example.com"
   tunnel:
-    deployment:
-      patches:
-        - op: replace
-          path: /spec/template/spec/nodeSelector
-          value:
-            kubernetes.io/os: linux
+    patches:
+      - op: replace
+        path: /spec/template/spec/nodeSelector
+        value:
+          kubernetes.io/os: linux
+    sidecar:
+      enabled: true
 ```
 
 The Secret referenced by `.spec.secretRef.name` must contain the Cloudflare API
@@ -117,26 +118,25 @@ hostnames in the attached [HTTPRoutes](HTTPRoute.md).
 
 The `.spec.tunnel` field is optional and configures Cloudflare tunnel settings.
 
-#### Deployment patches
+#### Patches
 
-The `.spec.tunnel.deployment.patches` field is optional and specifies
+The `.spec.tunnel.patches` field is optional and specifies
 [RFC 6902](https://datatracker.ietf.org/doc/html/rfc6902) JSON Patch operations
 applied to the cloudflared Deployment after it is built.
 
 ```yaml
 spec:
   tunnel:
-    deployment:
-      patches:
-        - op: replace
-          path: /spec/template/spec/nodeSelector
-          value:
-            kubernetes.io/os: linux
-        - op: add
-          path: /spec/template/spec/tolerations
-          value:
-            - key: "CriticalAddonsOnly"
-              operator: "Exists"
+    patches:
+      - op: replace
+        path: /spec/template/spec/nodeSelector
+        value:
+          kubernetes.io/os: linux
+      - op: add
+        path: /spec/template/spec/tolerations
+        value:
+          - key: "CriticalAddonsOnly"
+            operator: "Exists"
 ```
 
 Each patch operation has the following fields:
@@ -146,3 +146,23 @@ Each patch operation has the following fields:
 - `path` (required): JSON Pointer path for the operation.
 - `from` (optional): Source path for `move` and `copy` operations.
 - `value` (optional): Value for `add`, `replace`, and `test` operations.
+
+#### Sidecar configuration
+
+The `.spec.tunnel.sidecar` field configures the sidecar reverse proxy that runs
+alongside cloudflared for per-request load balancing through kube-proxy.
+
+By default (when this field is absent), the sidecar is **enabled**. Set
+`.spec.tunnel.sidecar.enabled` to `false` to disable the sidecar and let
+cloudflared connect directly to backend Services.
+
+```yaml
+spec:
+  tunnel:
+    sidecar:
+      enabled: false
+```
+
+When the sidecar is disabled, the cloudflared Deployment has a single container,
+no ConfigMap/ServiceAccount/Role/RoleBinding resources are created, and tunnel
+ingress rules point directly to backend Services instead of the sidecar proxy.

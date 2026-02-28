@@ -36,10 +36,15 @@ status:
       lastTransitionTime: "2026-01-15T10:01:00Z"
     - type: DNSManagement
       status: "True"
-      reason: Managed
+      reason: Enabled
       message: |-
         Allowed zones:
         - example.com
+      lastTransitionTime: "2026-01-15T10:01:00Z"
+    - type: Sidecar
+      status: "True"
+      reason: Enabled
+      message: Sidecar reverse proxy is enabled
       lastTransitionTime: "2026-01-15T10:01:00Z"
     - type: Ready
       status: "True"
@@ -95,7 +100,8 @@ The CGS mirrors the same conditions as the parent
 
 - `Accepted`: Whether the Gateway passed validation.
 - `Programmed`: Whether the cloudflared Deployment is available.
-- `DNSManagement`: Whether DNS management is configured.
+- `DNSManagement`: Whether DNS CNAME record management is enabled.
+- `Sidecar`: Whether the sidecar reverse proxy is enabled.
 - `Ready`: Overall reconciliation state (custom kstatus condition).
 
 See [Gateway conditions](Gateway.md#conditions) for the full status/reason

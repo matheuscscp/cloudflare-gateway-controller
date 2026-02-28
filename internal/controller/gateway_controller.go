@@ -306,7 +306,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 
 	// Reconcile sidecar resources when sidecar is enabled.
 	var sidecarDeniedRefs map[types.NamespacedName][]string
-	if r.sidecarEnabled() {
+	if r.sidecarEnabled(params) {
 		var sidecarCMChanges []string
 		sidecarDeniedRefs, sidecarCMChanges, err = r.reconcileSidecarConfigMap(ctx, gw, validRoutes)
 		if err != nil {
@@ -336,7 +336,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 
 	// Clean up sidecar resources when sidecar is disabled (handles the case
 	// where sidecar was previously enabled and is now turned off).
-	if !r.sidecarEnabled() {
+	if !r.sidecarEnabled(params) {
 		sidecarCleanupChanges, sidecarCleanupErrs := r.cleanupStaleSidecarResources(ctx, gw)
 		changes = append(changes, sidecarCleanupChanges...)
 		errs = append(errs, sidecarCleanupErrs...)
@@ -346,7 +346,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	desiredListeners := buildListenerStatuses(gw, countAttachedRoutes(validRoutes, gw))
 
 	// Reconcile tunnel ingress configuration.
-	routesWithDeniedRefs, configChanges, err := r.reconcileAllTunnelIngress(ctx, tc, entries, validRoutes, sidecarDeniedRefs)
+	routesWithDeniedRefs, configChanges, err := r.reconcileAllTunnelIngress(ctx, tc, params, entries, validRoutes, sidecarDeniedRefs)
 	if err != nil {
 		return r.reconcileError(ctx, gw, err)
 	}
@@ -381,7 +381,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	// and mirrored conditions). Done before the Gateway status patch so CGS
 	// reflects the latest state even if the status patch fails.
 	cgs, _ := r.getCGS(ctx, gw)
-	if updatedCGS, err := r.reconcileCGS(ctx, gw, cgs, entries); err != nil {
+	if updatedCGS, err := r.reconcileCGS(ctx, gw, cgs, params, entries); err != nil {
 		errs = append(errs, fmt.Sprintf("failed to reconcile CloudflareGatewayStatus: %v", err))
 	} else {
 		cgs = updatedCGS
@@ -395,7 +395,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	}
 
 	// Patch Gateway status and emit events
-	return r.patchGatewayStatus(ctx, gw, cgs, entries, desiredListeners, changes, errs, readiness, dns, requeueAfter)
+	return r.patchGatewayStatus(ctx, gw, cgs, entries, desiredListeners, changes, errs, readiness, dns, r.sidecarEnabled(params), requeueAfter)
 }
 
 // dnsResult holds the results of DNS reconciliation.
@@ -438,7 +438,7 @@ func buildDNSManagementCondition(generation int64, now metav1.Time, dns dnsPolic
 	}
 	if dns.enabled {
 		cond.Status = metav1.ConditionTrue
-		cond.Reason = apiv1.ReasonDNSManaged
+		cond.Reason = apiv1.ReasonEnabled
 		if dns.allZones() {
 			cond.Message = "All hostnames"
 		} else {
@@ -451,8 +451,28 @@ func buildDNSManagementCondition(generation int64, now metav1.Time, dns dnsPolic
 		}
 	} else {
 		cond.Status = metav1.ConditionFalse
-		cond.Reason = apiv1.ReasonDNSNotConfigured
+		cond.Reason = apiv1.ReasonDisabled
 		cond.Message = "DNS management is disabled"
+	}
+	return cond
+}
+
+// buildSidecarCondition builds the Sidecar condition for the Gateway status
+// based on whether the sidecar reverse proxy is enabled.
+func buildSidecarCondition(generation int64, now metav1.Time, sidecarEnabled bool) metav1.Condition {
+	cond := metav1.Condition{
+		Type:               apiv1.ConditionSidecar,
+		ObservedGeneration: generation,
+		LastTransitionTime: now,
+	}
+	if sidecarEnabled {
+		cond.Status = metav1.ConditionTrue
+		cond.Reason = apiv1.ReasonEnabled
+		cond.Message = "Sidecar reverse proxy is enabled"
+	} else {
+		cond.Status = metav1.ConditionFalse
+		cond.Reason = apiv1.ReasonDisabled
+		cond.Message = "Sidecar reverse proxy is disabled"
 	}
 	return cond
 }
@@ -461,7 +481,7 @@ func buildDNSManagementCondition(generation int64, now metav1.Time, dns dnsPolic
 // state, checks whether a status patch is needed (conditions, listeners, or
 // resource changes), patches the status, and emits summary events/logs.
 // It also patches the CGS conditions to mirror the Gateway conditions.
-func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv1.Gateway, cgs *apiv1.CloudflareGatewayStatus, entries []tunnelEntry, desiredListeners []gatewayv1.ListenerStatus, changes, errs []string, readiness gatewayReadiness, dns dnsPolicy, requeueAfter time.Duration) (ctrl.Result, error) {
+func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv1.Gateway, cgs *apiv1.CloudflareGatewayStatus, entries []tunnelEntry, desiredListeners []gatewayv1.ListenerStatus, changes, errs []string, readiness gatewayReadiness, dns dnsPolicy, sidecar bool, requeueAfter time.Duration) (ctrl.Result, error) {
 	l := log.FromContext(ctx)
 	now := metav1.Now()
 
@@ -474,8 +494,9 @@ func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv
 		readiness.readyMsg = strings.Join(errs, "; ")
 	}
 
-	// Build DNSManagement condition.
+	// Build DNSManagement and Sidecar conditions.
 	dnsCond := buildDNSManagementCondition(gw.Generation, now, dns)
+	sidecarCond := buildSidecarCondition(gw.Generation, now, sidecar)
 
 	desiredConds := []metav1.Condition{
 		{
@@ -503,6 +524,7 @@ func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv
 			Message:            readiness.readyMsg,
 		},
 		dnsCond,
+		sidecarCond,
 	}
 
 	desiredAddresses := make([]gatewayv1.GatewayStatusAddress, 0, len(entries))

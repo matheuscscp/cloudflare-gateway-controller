@@ -62,7 +62,6 @@ func newControllerCmd() *cobra.Command {
 	var (
 		clusterName      string
 		cloudflaredImage string
-		disableSidecar   bool
 		sidecarImage     string
 	)
 
@@ -135,11 +134,6 @@ func newControllerCmd() *cobra.Command {
 				return err
 			}
 
-			resolvedSidecarImage := sidecarImage
-			if disableSidecar {
-				resolvedSidecarImage = ""
-			}
-
 			if err := (&controller.GatewayReconciler{
 				Client:          client,
 				EventRecorder:   eventRecorder,
@@ -152,7 +146,7 @@ func newControllerCmd() *cobra.Command {
 					return cloudflare.WithRetry(c), nil
 				},
 				CloudflaredImage: cloudflaredImage,
-				SidecarImage:     resolvedSidecarImage,
+				SidecarImage:     sidecarImage,
 			}).SetupWithManager(mgr); err != nil {
 				setupLog.Error(err, "unable to create controller", "controller", "Gateway")
 				return err
@@ -184,10 +178,7 @@ func newControllerCmd() *cobra.Command {
 		controller.DefaultCloudflaredImage, "cloudflared container image")
 
 	cmd.Flags().StringVar(&sidecarImage, "sidecar-image", "",
-		"sidecar reverse proxy container image (required unless --disable-sidecar is set)")
-
-	cmd.Flags().BoolVar(&disableSidecar, "disable-sidecar", false,
-		"disable the sidecar reverse proxy")
+		"sidecar reverse proxy container image")
 
 	logOptions.BindFlags(cmd.Flags())
 	leaderElectionOptions.BindFlags(cmd.Flags())

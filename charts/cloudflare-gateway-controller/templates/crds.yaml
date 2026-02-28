@@ -88,43 +88,51 @@ spec:
               tunnel:
                 description: Tunnel configures Cloudflare tunnel settings.
                 properties:
-                  deployment:
-                    description: Deployment configures the cloudflared Deployment.
+                  patches:
+                    description: |-
+                      Patches are RFC 6902 JSON Patch operations applied to the
+                      cloudflared Deployment after it is built.
+                    items:
+                      description: JSONPatchOperation represents a single RFC 6902
+                        JSON Patch operation.
+                      properties:
+                        from:
+                          description: From is the source path for move and copy operations.
+                          type: string
+                        op:
+                          description: Op is the patch operation.
+                          enum:
+                          - add
+                          - remove
+                          - replace
+                          - move
+                          - copy
+                          - test
+                          type: string
+                        path:
+                          description: Path is the JSON Pointer path for the operation.
+                          type: string
+                        value:
+                          description: Value is the value to use for add, replace,
+                            and test operations.
+                          x-kubernetes-preserve-unknown-fields: true
+                      required:
+                      - op
+                      - path
+                      type: object
+                    type: array
+                  sidecar:
+                    description: |-
+                      Sidecar configures the sidecar reverse proxy that runs alongside
+                      cloudflared for per-request load balancing through kube-proxy.
                     properties:
-                      patches:
+                      enabled:
                         description: |-
-                          Patches are RFC 6902 JSON Patch operations applied to the
-                          cloudflared Deployment after it is built.
-                        items:
-                          description: JSONPatchOperation represents a single RFC
-                            6902 JSON Patch operation.
-                          properties:
-                            from:
-                              description: From is the source path for move and copy
-                                operations.
-                              type: string
-                            op:
-                              description: Op is the patch operation.
-                              enum:
-                              - add
-                              - remove
-                              - replace
-                              - move
-                              - copy
-                              - test
-                              type: string
-                            path:
-                              description: Path is the JSON Pointer path for the operation.
-                              type: string
-                            value:
-                              description: Value is the value to use for add, replace,
-                                and test operations.
-                              x-kubernetes-preserve-unknown-fields: true
-                          required:
-                          - op
-                          - path
-                          type: object
-                        type: array
+                          Enabled controls whether the sidecar reverse proxy runs alongside
+                          cloudflared. When absent, defaults to true — the sidecar is enabled.
+                          Set to false to disable the sidecar and let cloudflared connect
+                          directly to backend Services.
+                        type: boolean
                     type: object
                 type: object
             type: object
@@ -158,6 +166,9 @@ spec:
       type: string
     - jsonPath: .status.conditions[?(@.type=="DNSManagement")].reason
       name: DNS
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Sidecar")].reason
+      name: Sidecar
       type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
@@ -198,7 +209,7 @@ spec:
                 description: |-
                   Conditions report the current state of the Gateway's Cloudflare resources.
                   Condition types mirror the Gateway's own conditions (Accepted, Programmed,
-                  Ready) so users can inspect them on the CGS directly.
+                  DNSManagement, Sidecar, Ready) so users can inspect them on the CGS directly.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
