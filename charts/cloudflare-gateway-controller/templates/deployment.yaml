@@ -38,14 +38,10 @@ spec:
         args:
         - controller
         - --cluster-name={{ required "config.clusterName is required" .Values.config.clusterName }}
-        {{- if .Values.config.cloudflaredImage }}
-        - --cloudflared-image={{ .Values.config.cloudflaredImage }}
+        {{- if or .Values.config.cloudflaredImage.repository .Values.config.cloudflaredImage.tag }}
+        - --cloudflared-image={{ .Values.config.cloudflaredImage.repository }}:{{ .Values.config.cloudflaredImage.tag }}
         {{- end }}
-        {{- if .Values.config.sidecar.enabled }}
-        - --sidecar-image={{ .Values.config.sidecar.image.repository | default .Values.image.repository }}:{{ .Values.config.sidecar.image.tag | default .Values.image.tag | default .Chart.AppVersion }}
-        {{- else }}
-        - --disable-sidecar
-        {{- end }}
+        - --sidecar-image={{ .Values.config.sidecarImage.repository | default .Values.image.repository }}:{{ .Values.config.sidecarImage.tag | default .Values.image.tag | default .Chart.AppVersion }}
         {{- range .Values.podArgs }}
         - {{ . }}
         {{- end }}

@@ -3,9 +3,8 @@
 **Script:** `hack/e2e-test.sh` | **Make target:** `make test-e2e` | **Kind config:** single node
 
 The controller uses a single Cloudflare tunnel with optional DNS CNAME records.
-The sidecar reverse proxy is enabled by default in all tests (via Helm
-`config.sidecar.enabled: true`), so cloudflared forwards all traffic through
-the sidecar for hostname/path-based routing.
+The sidecar reverse proxy is enabled by default in all tests, so cloudflared
+forwards all traffic through the sidecar for hostname/path-based routing.
 
 ## test_gateway_lifecycle
 

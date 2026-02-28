@@ -758,7 +758,7 @@ func TestGatewayReconciler_DNSAllZones(t *testing.T) {
 		dnsMgmt := conditions.Find(result.Status.Conditions, apiv1.ConditionDNSManagement)
 		g.Expect(dnsMgmt).NotTo(BeNil())
 		g.Expect(dnsMgmt.Status).To(Equal(metav1.ConditionTrue))
-		g.Expect(dnsMgmt.Reason).To(Equal(apiv1.ReasonDNSManaged))
+		g.Expect(dnsMgmt.Reason).To(Equal(apiv1.ReasonEnabled))
 		g.Expect(dnsMgmt.Message).To(Equal("All hostnames"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
@@ -885,7 +885,7 @@ func TestGatewayReconciler_DNSDisabledViaEmptyZones(t *testing.T) {
 		dnsMgmt := conditions.Find(result.Status.Conditions, apiv1.ConditionDNSManagement)
 		g.Expect(dnsMgmt).NotTo(BeNil())
 		g.Expect(dnsMgmt.Status).To(Equal(metav1.ConditionFalse))
-		g.Expect(dnsMgmt.Reason).To(Equal(apiv1.ReasonDNSNotConfigured))
+		g.Expect(dnsMgmt.Reason).To(Equal(apiv1.ReasonDisabled))
 		g.Expect(dnsMgmt.Message).To(Equal("DNS management is disabled"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 

@@ -136,7 +136,9 @@ without leaking Cloudflare resources — a reborn cluster with the same
 | Sidecar RoleBinding     | `gateway-<gatewayName>`                                     |
 
 `clusterName` comes from the Helm value `config.clusterName` (required).
-Sidecar resources are only created when the sidecar is enabled (default).
+Sidecar resources are only created when the sidecar is enabled per-Gateway
+(via [CloudflareGatewayParameters](CloudflareGatewayParameters.md#sidecar-configuration),
+default: enabled).
 
 Source: `TunnelName()`, `GatewayResourceName()` in `api/v1/meta_types.go`.
 
@@ -207,7 +209,8 @@ tunnel, using `type: Hostname` and the tunnel's CNAME target
 A Gateway enters various states during its lifecycle, reflected as Kubernetes
 Conditions. It can be [accepted](#accepted-gateway),
 [programmed](#programmed-gateway),
-[DNS-managed](#dns-management), or [ready](#ready-gateway).
+[DNS-managed](#dns-management), [sidecar-enabled](#sidecar),
+or [ready](#ready-gateway).
 
 #### Accepted Gateway
 
@@ -266,21 +269,42 @@ When DNS management is enabled for all hostnames (no zone restriction):
 
 - `type: DNSManagement`
 - `status: "True"`
-- `reason: Managed`
+- `reason: Enabled`
 - `message: All hostnames`
 
 When DNS management is enabled for specific zones:
 
 - `type: DNSManagement`
 - `status: "True"`
-- `reason: Managed`
+- `reason: Enabled`
 - `message`: lists each allowed zone on its own line
 
 When DNS management is disabled:
 
 - `type: DNSManagement`
 - `status: "False"`
-- `reason: NotConfigured`
+- `reason: Disabled`
+
+#### Sidecar
+
+Custom condition, not part of the Gateway API spec. Reports whether the sidecar
+reverse proxy is enabled for this Gateway.
+
+The sidecar is enabled by default. It can be disabled per-Gateway via
+`.spec.tunnel.sidecar.enabled` in the
+[CloudflareGatewayParameters](CloudflareGatewayParameters.md#sidecar-configuration).
+
+When the sidecar is enabled:
+
+- `type: Sidecar`
+- `status: "True"`
+- `reason: Enabled`
+
+When the sidecar is disabled:
+
+- `type: Sidecar`
+- `status: "False"`
+- `reason: Disabled`
 
 #### Ready Gateway
 

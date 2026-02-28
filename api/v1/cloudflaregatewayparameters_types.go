@@ -73,17 +73,25 @@ type DNSZoneConfig struct {
 
 // TunnelConfig configures Cloudflare tunnel settings.
 type TunnelConfig struct {
-	// Deployment configures the cloudflared Deployment.
-	// +optional
-	Deployment *DeploymentConfig `json:"deployment,omitempty"`
-}
-
-// DeploymentConfig configures the cloudflared Deployment.
-type DeploymentConfig struct {
 	// Patches are RFC 6902 JSON Patch operations applied to the
 	// cloudflared Deployment after it is built.
 	// +optional
 	Patches []JSONPatchOperation `json:"patches,omitempty"`
+
+	// Sidecar configures the sidecar reverse proxy that runs alongside
+	// cloudflared for per-request load balancing through kube-proxy.
+	// +optional
+	Sidecar *SidecarConfig `json:"sidecar,omitempty"`
+}
+
+// SidecarConfig configures the sidecar reverse proxy.
+type SidecarConfig struct {
+	// Enabled controls whether the sidecar reverse proxy runs alongside
+	// cloudflared. When absent, defaults to true — the sidecar is enabled.
+	// Set to false to disable the sidecar and let cloudflared connect
+	// directly to backend Services.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 // JSONPatchOperation represents a single RFC 6902 JSON Patch operation.

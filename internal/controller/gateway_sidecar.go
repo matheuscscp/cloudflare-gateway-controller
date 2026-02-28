@@ -310,9 +310,19 @@ func sidecarLabels(gw *gatewayv1.Gateway) map[string]string {
 	return lbls
 }
 
-// sidecarEnabled returns true when the sidecar image is configured.
-func (r *GatewayReconciler) sidecarEnabled() bool {
-	return r.SidecarImage != ""
+// sidecarEnabled returns true when the sidecar should run for the given Gateway.
+// The sidecar is enabled by default. It is disabled when the sidecar image is
+// not configured, or when the CloudflareGatewayParameters explicitly sets
+// tunnel.sidecar.enabled to false.
+func (r *GatewayReconciler) sidecarEnabled(params *apiv1.CloudflareGatewayParameters) bool {
+	if r.SidecarImage == "" {
+		return false
+	}
+	if params == nil || params.Spec.Tunnel == nil ||
+		params.Spec.Tunnel.Sidecar == nil || params.Spec.Tunnel.Sidecar.Enabled == nil {
+		return true
+	}
+	return *params.Spec.Tunnel.Sidecar.Enabled
 }
 
 // buildSidecarIngressCatchAll returns a single catch-all ingress rule that

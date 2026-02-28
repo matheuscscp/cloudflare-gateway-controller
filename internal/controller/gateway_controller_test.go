@@ -1004,13 +1004,11 @@ func TestGatewayReconciler_DeploymentPatches(t *testing.T) {
 
 	params := createTestParameters(g, "test-gw-deploy-patches-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
 		Tunnel: &apiv1.TunnelConfig{
-			Deployment: &apiv1.DeploymentConfig{
-				Patches: []apiv1.JSONPatchOperation{
-					{
-						Op:    "add",
-						Path:  "/spec/template/spec/tolerations",
-						Value: &apiextensionsv1.JSON{Raw: []byte(`[{"key":"example.com/special-node","operator":"Exists"}]`)},
-					},
+			Patches: []apiv1.JSONPatchOperation{
+				{
+					Op:    "add",
+					Path:  "/spec/template/spec/tolerations",
+					Value: &apiextensionsv1.JSON{Raw: []byte(`[{"key":"example.com/special-node","operator":"Exists"}]`)},
 				},
 			},
 		},
@@ -1072,18 +1070,16 @@ func TestGatewayReconciler_DeploymentPatchesMultiple(t *testing.T) {
 
 	params := createTestParameters(g, "test-gw-patches-multi-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
 		Tunnel: &apiv1.TunnelConfig{
-			Deployment: &apiv1.DeploymentConfig{
-				Patches: []apiv1.JSONPatchOperation{
-					{
-						Op:    "add",
-						Path:  "/spec/replicas",
-						Value: &apiextensionsv1.JSON{Raw: []byte(`3`)},
-					},
-					{
-						Op:    "add",
-						Path:  "/spec/template/spec/tolerations",
-						Value: &apiextensionsv1.JSON{Raw: []byte(`[{"key":"node-role","operator":"Exists"}]`)},
-					},
+			Patches: []apiv1.JSONPatchOperation{
+				{
+					Op:    "add",
+					Path:  "/spec/replicas",
+					Value: &apiextensionsv1.JSON{Raw: []byte(`3`)},
+				},
+				{
+					Op:    "add",
+					Path:  "/spec/template/spec/tolerations",
+					Value: &apiextensionsv1.JSON{Raw: []byte(`[{"key":"node-role","operator":"Exists"}]`)},
 				},
 			},
 		},
@@ -1146,13 +1142,11 @@ func TestGatewayReconciler_DeploymentPatchesResourceRequests(t *testing.T) {
 
 	params := createTestParameters(g, "test-gw-patches-resources-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
 		Tunnel: &apiv1.TunnelConfig{
-			Deployment: &apiv1.DeploymentConfig{
-				Patches: []apiv1.JSONPatchOperation{
-					{
-						Op:    "add",
-						Path:  "/spec/template/spec/containers/0/resources",
-						Value: &apiextensionsv1.JSON{Raw: []byte(`{"requests":{"memory":"128Mi","cpu":"250m"},"limits":{"memory":"256Mi"}}`)},
-					},
+			Patches: []apiv1.JSONPatchOperation{
+				{
+					Op:    "add",
+					Path:  "/spec/template/spec/containers/0/resources",
+					Value: &apiextensionsv1.JSON{Raw: []byte(`{"requests":{"memory":"128Mi","cpu":"250m"},"limits":{"memory":"256Mi"}}`)},
 				},
 			},
 		},
@@ -1216,13 +1210,11 @@ func TestGatewayReconciler_DeploymentPatchesInvalidYAML(t *testing.T) {
 
 	params := createTestParameters(g, "test-gw-patches-invalid-yaml-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
 		Tunnel: &apiv1.TunnelConfig{
-			Deployment: &apiv1.DeploymentConfig{
-				Patches: []apiv1.JSONPatchOperation{
-					{
-						Op:    "replace",
-						Path:  "/spec/nonexistent/field",
-						Value: &apiextensionsv1.JSON{Raw: []byte(`"something"`)},
-					},
+			Patches: []apiv1.JSONPatchOperation{
+				{
+					Op:    "replace",
+					Path:  "/spec/nonexistent/field",
+					Value: &apiextensionsv1.JSON{Raw: []byte(`"something"`)},
 				},
 			},
 		},
@@ -1286,13 +1278,11 @@ func TestGatewayReconciler_DeploymentPatchesInvalidOps(t *testing.T) {
 
 	params := createTestParameters(g, "test-gw-patches-invalid-ops-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
 		Tunnel: &apiv1.TunnelConfig{
-			Deployment: &apiv1.DeploymentConfig{
-				Patches: []apiv1.JSONPatchOperation{
-					{
-						Op:    "replace",
-						Path:  "/spec/nonexistent/field",
-						Value: &apiextensionsv1.JSON{Raw: []byte(`"something"`)},
-					},
+			Patches: []apiv1.JSONPatchOperation{
+				{
+					Op:    "replace",
+					Path:  "/spec/nonexistent/field",
+					Value: &apiextensionsv1.JSON{Raw: []byte(`"something"`)},
 				},
 			},
 		},
@@ -1335,6 +1325,100 @@ func TestGatewayReconciler_DeploymentPatchesInvalidOps(t *testing.T) {
 		g.Expect(ready.Reason).To(Equal(apiv1.ReasonReconciliationFailed))
 		g.Expect(ready.Message).To(ContainSubstring("deployment patches"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func TestGatewayReconciler_SidecarDisabledViaCGP(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-sidecar-disabled", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	sidecarDisabled := false
+	params := createTestParameters(g, "test-gw-sidecar-disabled-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		Tunnel: &apiv1.TunnelConfig{
+			Sidecar: &apiv1.SidecarConfig{
+				Enabled: &sidecarDisabled,
+			},
+		},
+	})
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-sidecar-disabled",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "http",
+					Protocol: gatewayv1.HTTPProtocolType,
+					Port:     80,
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayProgrammed(g, gw)
+
+	// Verify Deployment has 1 container (no sidecar)
+	var deploy appsv1.Deployment
+	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name, Namespace: gw.Namespace}
+	g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
+	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
+	g.Expect(deploy.Spec.Template.Spec.Containers[0].Name).To(Equal("cloudflared"))
+
+	// Verify no sidecar ConfigMap
+	var cm corev1.ConfigMap
+	cmKey := client.ObjectKey{Name: "gateway-" + gw.Name, Namespace: gw.Namespace}
+	g.Expect(apierrors.IsNotFound(testClient.Get(testCtx, cmKey, &cm))).To(BeTrue())
+
+	// Verify no sidecar ServiceAccount
+	var sa corev1.ServiceAccount
+	saKey := client.ObjectKey{Name: "gateway-" + gw.Name, Namespace: gw.Namespace}
+	g.Expect(apierrors.IsNotFound(testClient.Get(testCtx, saKey, &sa))).To(BeTrue())
+
+	// Verify tunnel ingress has per-hostname rules (catch-all 404), not sidecar catch-all
+	g.Expect(testMock.lastTunnelConfigIngress).To(HaveLen(1))
+	g.Expect(testMock.lastTunnelConfigIngress[0].Service).To(Equal("http_status:404"))
+
+	// Verify Sidecar condition is False/Disabled
+	gwKey := client.ObjectKeyFromObject(gw)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
+		sidecarCond := conditions.Find(result.Status.Conditions, apiv1.ConditionSidecar)
+		g.Expect(sidecarCond).NotTo(BeNil())
+		g.Expect(sidecarCond.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(sidecarCond.Reason).To(Equal(apiv1.ReasonDisabled))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Explicitly delete the Gateway and wait for finalization to complete,
+	// so the async DeleteTunnel mock call doesn't leak into the next test.
+	g.Expect(testClient.Delete(testCtx, gw)).To(Succeed())
+	g.Eventually(func() error {
+		return testClient.Get(testCtx, gwKey, &gatewayv1.Gateway{})
+	}).WithTimeout(30 * time.Second).WithPolling(100 * time.Millisecond).Should(Satisfy(apierrors.IsNotFound))
 }
 
 func TestGatewayReconciler_DeletionReconcileDisabled(t *testing.T) {

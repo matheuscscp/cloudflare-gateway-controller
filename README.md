@@ -89,9 +89,10 @@ When an HTTPRoute hostname is removed, its CNAME is deleted.
 
 **Cloudflare resources:** 1 tunnel, 1 CNAME record per HTTPRoute hostname.
 
-**Kubernetes resources:** Per Gateway, the controller creates a cloudflared Deployment
-(with a sidecar proxy container), a tunnel token Secret, a sidecar ConfigMap (routing
-table), a ServiceAccount, a Role, and a RoleBinding.
+**Kubernetes resources:** Per Gateway, the controller creates a cloudflared Deployment,
+a tunnel token Secret, and (when the sidecar is enabled) a sidecar ConfigMap, a
+ServiceAccount, a Role, and a RoleBinding. The sidecar is enabled by default and can be
+disabled per-Gateway via [CloudflareGatewayParameters](docs/api/v1/CloudflareGatewayParameters.md#sidecar-configuration).
 
 **Observability:** The controller creates a
 [CloudflareGatewayStatus](docs/api/v1/CloudflareGatewayStatus.md) (short name: `cgs`) per
@@ -99,8 +100,8 @@ Gateway, providing a quick view of tunnel info, conditions, and managed resource
 
 ```
 $ kubectl get cgs
-NAME         TUNNEL NAME   TUNNEL ID    DNS       READY
-my-gateway   gw-a1b2c3…    abcd-1234…   Managed   True
+NAME         TUNNEL NAME   TUNNEL ID    DNS       SIDECAR   READY
+my-gateway   gw-a1b2c3…    abcd-1234…   Enabled   Enabled   True
 ```
 
 ### Sidecar reverse proxy
@@ -114,8 +115,8 @@ by hostname and path prefix to the correct backend Service, and disables HTTP
 keep-alives on egress so every request opens a fresh connection through kube-proxy
 for proper pod-level load balancing.
 
-The sidecar is enabled by default. To disable it, set `config.sidecar.enabled: false`
-in the Helm values.
+The sidecar is enabled by default. To disable it for a specific Gateway, set
+`tunnel.sidecar.enabled: false` in your CloudflareGatewayParameters.
 
 ## API Token Permissions
 
