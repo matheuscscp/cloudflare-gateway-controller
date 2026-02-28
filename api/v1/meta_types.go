@@ -67,6 +67,10 @@ const (
 	KindSecret                      = "Secret"
 	KindService                     = "Service"
 	KindDeployment                  = "Deployment"
+	KindConfigMap                   = "ConfigMap"
+	KindServiceAccount              = "ServiceAccount"
+	KindRole                        = "Role"
+	KindRoleBinding                 = "RoleBinding"
 )
 
 // GroupCore is the Kubernetes core API group name used in Gateway API
@@ -115,34 +119,32 @@ const (
 	DefaultReconcileInterval = 10 * time.Minute
 )
 
+// GatewayResourceName returns the name used for all Kubernetes resources
+// (Deployment, Secret, ConfigMap, ServiceAccount, Role, RoleBinding)
+// managed by a Gateway.
+func GatewayResourceName(gw *gatewayv1.Gateway) string {
+	return fmt.Sprintf("gateway-%s", gw.Name)
+}
+
 // TunnelName returns the deterministic Cloudflare tunnel name for a Gateway.
 func TunnelName(gw *gatewayv1.Gateway) string {
 	return ResourceName(cfClusterName, gw.Namespace, gw.Name)
 }
 
-// CloudflaredDeploymentName returns the name of the cloudflared Deployment for a Gateway.
-func CloudflaredDeploymentName(gw *gatewayv1.Gateway) string {
-	return fmt.Sprintf("cloudflared-%s", gw.Name)
-}
-
-// TunnelTokenSecretName returns the name of the tunnel token Secret for a Gateway.
-func TunnelTokenSecretName(gw *gatewayv1.Gateway) string {
-	return fmt.Sprintf("cloudflared-token-%s", gw.Name)
-}
-
 // ReconcileInterval returns the reconciliation interval for an object
 // based on its annotations. Returns 0 if reconciliation is disabled.
-func ReconcileInterval(annotations map[string]string) time.Duration {
+// Returns an error if the reconcileEvery annotation has an invalid duration.
+func ReconcileInterval(annotations map[string]string) (time.Duration, error) {
 	if annotations[AnnotationReconcile] == ValueDisabled {
-		return 0
+		return 0, nil
 	}
 	val, ok := annotations[AnnotationReconcileEvery]
 	if !ok {
-		return DefaultReconcileInterval
+		return DefaultReconcileInterval, nil
 	}
 	interval, err := time.ParseDuration(val)
 	if err != nil {
-		return DefaultReconcileInterval
+		return 0, fmt.Errorf("annotation %s has invalid duration %q: %w", AnnotationReconcileEvery, val, err)
 	}
-	return interval
+	return interval, nil
 }

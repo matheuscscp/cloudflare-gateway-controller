@@ -52,7 +52,7 @@ func setupGatewayIndexes(ctx context.Context, mgr ctrl.Manager) {
 	if err := mgr.GetCache().IndexField(ctx, &gatewayv1.Gateway{}, indexGatewayTunnelTokenSecret,
 		func(obj client.Object) []string {
 			gw := obj.(*gatewayv1.Gateway)
-			return []string{apiv1.TunnelTokenSecretName(gw)}
+			return []string{apiv1.GatewayResourceName(gw)}
 		}); err != nil {
 		panic(fmt.Sprintf("failed to setup index %s: %v", indexGatewayTunnelTokenSecret, err))
 	}

@@ -14,6 +14,7 @@ func newRootCmd() *cobra.Command {
 	}
 
 	cmd.AddCommand(newControllerCmd())
+	cmd.AddCommand(newSidecarCmd())
 	cmd.AddCommand(newTestCmd())
 
 	return cmd

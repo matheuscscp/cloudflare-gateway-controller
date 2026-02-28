@@ -254,6 +254,13 @@ func (r *GatewayReconciler) removeOwnerReferences(ctx context.Context, gw *gatew
 		l.V(1).Info("Removed owner reference from Secret", "secret", secretKey)
 	}
 
+	// Remove owner references from sidecar resources.
+	sidecarRemoved, err := r.removeOwnerReferencesFromSidecarResources(ctx, gw)
+	removed = append(removed, sidecarRemoved...)
+	if err != nil {
+		return removed, err
+	}
+
 	return removed, nil
 }
 
@@ -428,6 +435,77 @@ func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gatewa
 	deployLabels := maps.Clone(selectorLabels)
 	maps.Copy(deployLabels, infraLabels)
 
+	cloudflaredContainer := accorev1.Container().
+		WithName("cloudflared").
+		WithImage(r.CloudflaredImage).
+		WithArgs("tunnel", "--no-autoupdate", "--metrics", "0.0.0.0:2000", "run").
+		WithEnv(accorev1.EnvVar().
+			WithName("TUNNEL_TOKEN").
+			WithValueFrom(accorev1.EnvVarSource().
+				WithSecretKeyRef(accorev1.SecretKeySelector().
+					WithName(e.secretName).
+					WithKey("TUNNEL_TOKEN"),
+				),
+			),
+		).
+		WithResources(accorev1.ResourceRequirements().
+			WithRequests(corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("50m"),
+				corev1.ResourceMemory: resource.MustParse("64Mi"),
+			}).
+			WithLimits(corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("500m"),
+				corev1.ResourceMemory: resource.MustParse("256Mi"),
+			}),
+		).
+		WithLivenessProbe(accorev1.Probe().
+			WithHTTPGet(accorev1.HTTPGetAction().
+				WithPath("/ready").
+				WithPort(intstr.FromInt32(2000)),
+			),
+		)
+
+	containers := []*accorev1.ContainerApplyConfiguration{cloudflaredContainer}
+
+	podSpec := accorev1.PodSpec()
+
+	if r.sidecarEnabled() {
+		podSpec = podSpec.WithServiceAccountName(apiv1.GatewayResourceName(gw))
+
+		sidecarContainer := accorev1.Container().
+			WithName("sidecar").
+			WithImage(r.SidecarImage).
+			WithArgs(
+				"sidecar",
+				"--namespace", gw.Namespace,
+				"--configmap-name", apiv1.GatewayResourceName(gw),
+				"--configmap-key", sidecarConfigMapKey,
+			).
+			WithResources(accorev1.ResourceRequirements().
+				WithRequests(corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("50m"),
+					corev1.ResourceMemory: resource.MustParse("64Mi"),
+				}).
+				WithLimits(corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("500m"),
+					corev1.ResourceMemory: resource.MustParse("256Mi"),
+				}),
+			).
+			WithLivenessProbe(accorev1.Probe().
+				WithHTTPGet(accorev1.HTTPGetAction().
+					WithPath("/healthz").
+					WithPort(intstr.FromInt32(8081)),
+				),
+			).
+			WithReadinessProbe(accorev1.Probe().
+				WithHTTPGet(accorev1.HTTPGetAction().
+					WithPath("/healthz").
+					WithPort(intstr.FromInt32(8081)),
+				),
+			)
+		containers = append(containers, sidecarContainer)
+	}
+
 	deploy := acappsv1.Deployment(e.deploymentName, gw.Namespace).
 		WithLabels(deployLabels).
 		WithAnnotations(deployAnnotations).
@@ -446,37 +524,8 @@ func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gatewa
 			WithTemplate(accorev1.PodTemplateSpec().
 				WithLabels(templateLabels).
 				WithAnnotations(templateAnnotations).
-				WithSpec(accorev1.PodSpec().
-					WithContainers(accorev1.Container().
-						WithName("cloudflared").
-						WithImage(r.CloudflaredImage).
-						WithArgs("tunnel", "--no-autoupdate", "--metrics", "0.0.0.0:2000", "run").
-						WithEnv(accorev1.EnvVar().
-							WithName("TUNNEL_TOKEN").
-							WithValueFrom(accorev1.EnvVarSource().
-								WithSecretKeyRef(accorev1.SecretKeySelector().
-									WithName(e.secretName).
-									WithKey("TUNNEL_TOKEN"),
-								),
-							),
-						).
-						WithResources(accorev1.ResourceRequirements().
-							WithRequests(corev1.ResourceList{
-								corev1.ResourceCPU:    resource.MustParse("50m"),
-								corev1.ResourceMemory: resource.MustParse("64Mi"),
-							}).
-							WithLimits(corev1.ResourceList{
-								corev1.ResourceCPU:    resource.MustParse("500m"),
-								corev1.ResourceMemory: resource.MustParse("256Mi"),
-							}),
-						).
-						WithLivenessProbe(accorev1.Probe().
-							WithHTTPGet(accorev1.HTTPGetAction().
-								WithPath("/ready").
-								WithPort(intstr.FromInt32(2000)),
-							),
-						),
-					),
+				WithSpec(podSpec.
+					WithContainers(containers...),
 				),
 			),
 		)

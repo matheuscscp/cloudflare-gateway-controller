@@ -8,6 +8,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
@@ -47,6 +48,21 @@ func (r *GatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		WatchesMetadata(&corev1.Secret{},
 			handler.EnqueueRequestsFromMapFunc(r.mapTunnelTokenSecretToGateway),
 			builder.WithPredicates(predicates.Debug(apiv1.KindSecret,
+				predicate.ResourceVersionChangedPredicate{}))).
+
+		// Owned sidecar resources: ConfigMap, ServiceAccount, Role, RoleBinding.
+		WatchesMetadata(&corev1.ConfigMap{},
+			handler.EnqueueRequestForOwner(mgr.GetScheme(), mgr.GetRESTMapper(), &gatewayv1.Gateway{}, handler.OnlyControllerOwner()),
+			builder.WithPredicates(predicates.Debug(apiv1.KindConfigMap,
+				predicate.ResourceVersionChangedPredicate{}))).
+		Owns(&corev1.ServiceAccount{},
+			builder.WithPredicates(predicates.Debug(apiv1.KindServiceAccount,
+				predicate.ResourceVersionChangedPredicate{}))).
+		Owns(&rbacv1.Role{},
+			builder.WithPredicates(predicates.Debug(apiv1.KindRole,
+				predicate.ResourceVersionChangedPredicate{}))).
+		Owns(&rbacv1.RoleBinding{},
+			builder.WithPredicates(predicates.Debug(apiv1.KindRoleBinding,
 				predicate.ResourceVersionChangedPredicate{}))).
 
 		// Other relationships.

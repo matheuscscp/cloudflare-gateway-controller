@@ -102,16 +102,18 @@ func TestGatewayReconciler_AcceptedAndProgrammed(t *testing.T) {
 
 	// Verify tunnel token Secret created
 	var tokenSecret corev1.Secret
-	secretKey := client.ObjectKey{Name: "cloudflared-token-" + gw.Name, Namespace: gw.Namespace}
+	secretKey := client.ObjectKey{Name: "gateway-" + gw.Name, Namespace: gw.Namespace}
 	g.Expect(testClient.Get(testCtx, secretKey, &tokenSecret)).To(Succeed())
 	g.Expect(tokenSecret.Data).To(HaveKey("TUNNEL_TOKEN"))
 
 	// Verify Deployment created
 	var deploy appsv1.Deployment
-	deployKey := client.ObjectKey{Name: "cloudflared-" + gw.Name, Namespace: gw.Namespace}
+	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name, Namespace: gw.Namespace}
 	g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
-	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
+	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(2))
 	g.Expect(deploy.Spec.Template.Spec.Containers[0].Image).To(Equal(controller.DefaultCloudflaredImage))
+	g.Expect(deploy.Spec.Template.Spec.Containers[1].Name).To(Equal("sidecar"))
+	g.Expect(deploy.Spec.Template.Spec.Containers[1].Image).To(Equal("test-sidecar-image:latest"))
 
 	// Verify env uses secretKeyRef, not plain Value
 	env := deploy.Spec.Template.Spec.Containers[0].Env
@@ -120,7 +122,7 @@ func TestGatewayReconciler_AcceptedAndProgrammed(t *testing.T) {
 	g.Expect(env[0].Value).To(BeEmpty())
 	g.Expect(env[0].ValueFrom).NotTo(BeNil())
 	g.Expect(env[0].ValueFrom.SecretKeyRef).NotTo(BeNil())
-	g.Expect(env[0].ValueFrom.SecretKeyRef.Name).To(Equal("cloudflared-token-" + gw.Name))
+	g.Expect(env[0].ValueFrom.SecretKeyRef.Name).To(Equal("gateway-" + gw.Name))
 	g.Expect(env[0].ValueFrom.SecretKeyRef.Key).To(Equal("TUNNEL_TOKEN"))
 
 	// Verify default resource limits are set on cloudflared container
@@ -155,11 +157,19 @@ func TestGatewayReconciler_AcceptedAndProgrammed(t *testing.T) {
 	// Finalizer prevents accidental deletion.
 	g.Expect(cgs.Finalizers).To(ContainElement(apiv1.Finalizer))
 
-	// Tunnel status holds one tunnel.
+	// Tunnel status.
 	g.Expect(cgs.Status.Tunnel).NotTo(BeNil())
 	g.Expect(cgs.Status.Tunnel.ID).To(Equal("test-tunnel-id"))
-	g.Expect(cgs.Status.Tunnel.DeploymentName).To(Equal("cloudflared-" + gw.Name))
-	g.Expect(cgs.Status.Tunnel.SecretName).To(Equal("cloudflared-token-" + gw.Name))
+
+	// Inventory lists managed Kubernetes objects (sidecar enabled in tests).
+	g.Expect(cgs.Status.Inventory).To(ConsistOf(
+		apiv1.ResourceRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "gateway-" + gw.Name},
+		apiv1.ResourceRef{APIVersion: "v1", Kind: "Secret", Name: "gateway-" + gw.Name},
+		apiv1.ResourceRef{APIVersion: "v1", Kind: "ConfigMap", Name: "gateway-" + gw.Name},
+		apiv1.ResourceRef{APIVersion: "v1", Kind: "ServiceAccount", Name: "gateway-" + gw.Name},
+		apiv1.ResourceRef{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "Role", Name: "gateway-" + gw.Name},
+		apiv1.ResourceRef{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "RoleBinding", Name: "gateway-" + gw.Name},
+	))
 
 	// CGS conditions mirror Gateway conditions.
 	cgsReady := conditions.Find(cgs.Status.Conditions, apiv1.ConditionReady)
@@ -444,6 +454,58 @@ func TestGatewayReconciler_AllowedRoutesKinds(t *testing.T) {
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
+func TestGatewayReconciler_InvalidReconcileEveryAnnotation(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-interval", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-interval",
+			Namespace: ns.Name,
+			Annotations: map[string]string{
+				apiv1.AnnotationReconcileEvery: "not-a-duration",
+			},
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Listeners: []gatewayv1.Listener{
+				{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	gwKey := client.ObjectKeyFromObject(gw)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
+		accepted := conditions.Find(result.Status.Conditions, string(gatewayv1.GatewayConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.GatewayReasonInvalidParameters)))
+		g.Expect(accepted.Message).To(ContainSubstring("invalid duration"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
 func TestGatewayReconciler_Deletion(t *testing.T) {
 	g := NewWithT(t)
 
@@ -692,7 +754,7 @@ func TestGatewayReconciler_Infrastructure(t *testing.T) {
 
 	// Verify Deployment has infrastructure labels/annotations
 	var deploy appsv1.Deployment
-	deployKey := client.ObjectKey{Name: "cloudflared-" + gw.Name, Namespace: gw.Namespace}
+	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name, Namespace: gw.Namespace}
 	g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
 
 	// Deployment ObjectMeta
@@ -708,7 +770,7 @@ func TestGatewayReconciler_Infrastructure(t *testing.T) {
 
 	// Verify Secret has infrastructure labels/annotations
 	var tokenSecret corev1.Secret
-	secretKey := client.ObjectKey{Name: "cloudflared-token-" + gw.Name, Namespace: gw.Namespace}
+	secretKey := client.ObjectKey{Name: "gateway-" + gw.Name, Namespace: gw.Namespace}
 	g.Expect(testClient.Get(testCtx, secretKey, &tokenSecret)).To(Succeed())
 	g.Expect(tokenSecret.Labels).To(HaveKeyWithValue("infra-label", "infra-label-value"))
 	g.Expect(tokenSecret.Annotations).To(HaveKeyWithValue("infra-annotation", "infra-annotation-value"))
@@ -984,7 +1046,7 @@ func TestGatewayReconciler_DeploymentPatches(t *testing.T) {
 
 	// Verify Deployment has tolerations from the patch
 	var deploy appsv1.Deployment
-	deployKey := client.ObjectKey{Name: "cloudflared-" + gw.Name, Namespace: gw.Namespace}
+	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name, Namespace: gw.Namespace}
 	g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
 	g.Expect(deploy.Spec.Template.Spec.Tolerations).To(HaveLen(1))
 	g.Expect(deploy.Spec.Template.Spec.Tolerations[0].Key).To(Equal("example.com/special-node"))
@@ -1057,7 +1119,7 @@ func TestGatewayReconciler_DeploymentPatchesMultiple(t *testing.T) {
 
 	// Verify both replicas and tolerations are applied
 	var deploy appsv1.Deployment
-	deployKey := client.ObjectKey{Name: "cloudflared-" + gw.Name, Namespace: gw.Namespace}
+	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name, Namespace: gw.Namespace}
 	g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
 	g.Expect(deploy.Spec.Replicas).NotTo(BeNil())
 	g.Expect(*deploy.Spec.Replicas).To(Equal(int32(3)))
@@ -1126,9 +1188,9 @@ func TestGatewayReconciler_DeploymentPatchesResourceRequests(t *testing.T) {
 
 	// Verify Deployment container has resource requests/limits
 	var deploy appsv1.Deployment
-	deployKey := client.ObjectKey{Name: "cloudflared-" + gw.Name, Namespace: gw.Namespace}
+	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name, Namespace: gw.Namespace}
 	g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
-	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
+	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(2))
 	resources := deploy.Spec.Template.Spec.Containers[0].Resources
 	g.Expect(resources.Requests.Memory().String()).To(Equal("128Mi"))
 	g.Expect(resources.Requests.Cpu().String()).To(Equal("250m"))
@@ -1303,8 +1365,8 @@ func TestGatewayReconciler_DeletionReconcileDisabled(t *testing.T) {
 	waitForGatewayProgrammed(g, gw)
 
 	// Verify Deployment and Secret exist.
-	deployKey := client.ObjectKey{Name: "cloudflared-" + gw.Name, Namespace: gw.Namespace}
-	secretKey := client.ObjectKey{Name: "cloudflared-token-" + gw.Name, Namespace: gw.Namespace}
+	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name, Namespace: gw.Namespace}
+	secretKey := client.ObjectKey{Name: "gateway-" + gw.Name, Namespace: gw.Namespace}
 	var deploy appsv1.Deployment
 	var tokenSecret corev1.Secret
 	g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
@@ -1405,7 +1467,7 @@ func TestGatewayReconciler_DeploymentProgressDeadlineExceeded(t *testing.T) {
 	// Progressing condition to False. The background goroutine skips Deployments
 	// where ReadyReplicas == desired, so after Programmed we can safely
 	// patch only the Progressing condition.
-	deployKey := client.ObjectKey{Name: "cloudflared-" + gw.Name, Namespace: gw.Namespace}
+	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name, Namespace: gw.Namespace}
 	g.Eventually(func(g Gomega) {
 		var deploy appsv1.Deployment
 		g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
@@ -1828,49 +1890,16 @@ func TestGatewayReconciler_CloudflareUpdateConfigError(t *testing.T) {
 
 	waitForGatewayClassReady(g, gc)
 
-	// First create Gateway without error to get it programmed.
+	// Inject config update error before creating Gateway so the initial
+	// tunnel configuration update (catch-all for sidecar or 404 fallback)
+	// fails on the first reconcile.
+	testMock.updateTunnelConfigErr = fmt.Errorf("config update failed")
+
 	gw := createTestGateway(g, "test-gw-config-err", ns.Name, gc.Name)
 	t.Cleanup(func() {
 		testMock.updateTunnelConfigErr = nil
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-	waitForGatewayProgrammed(g, gw)
-
-	// Now inject error and create HTTPRoute (triggers config update).
-	testMock.updateTunnelConfigErr = fmt.Errorf("config update failed")
-
-	route := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-route-config-err",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.HTTPRouteSpec{
-			CommonRouteSpec: gatewayv1.CommonRouteSpec{
-				ParentRefs: []gatewayv1.ParentReference{
-					{Name: gatewayv1.ObjectName(gw.Name)},
-				},
-			},
-			Hostnames: []gatewayv1.Hostname{"config-err.example.com"},
-			Rules: []gatewayv1.HTTPRouteRule{
-				{
-					BackendRefs: []gatewayv1.HTTPBackendRef{
-						{BackendRef: gatewayv1.BackendRef{
-							BackendObjectReference: gatewayv1.BackendObjectReference{
-								Name: "my-service", Port: new(gatewayv1.PortNumber(8080)),
-							},
-						}},
-					},
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.HTTPRoute
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
 			_ = testClient.Delete(testCtx, &latest)
 		}
 	})

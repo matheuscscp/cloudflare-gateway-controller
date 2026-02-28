@@ -107,15 +107,18 @@ func TestGatewayReconciler_HTTPRouteAccepted(t *testing.T) {
 		g.Expect(ready.Reason).To(Equal(apiv1.ReasonReconciliationSucceeded))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
-	// Verify tunnel configuration was updated by the Gateway controller
-	// (triggered by HTTPRoute watch).
+	// Verify tunnel configuration uses catch-all rule (sidecar enabled).
 	g.Eventually(func(g Gomega) {
 		g.Expect(testMock.lastTunnelConfigID).To(Equal("test-tunnel-id"))
-		g.Expect(testMock.lastTunnelConfigIngress).To(HaveLen(2))
-		g.Expect(testMock.lastTunnelConfigIngress[0].Hostname).To(Equal("app.example.com"))
-		g.Expect(testMock.lastTunnelConfigIngress[0].Service).To(Equal("http://my-service." + ns.Name + ".svc.cluster.local:8080"))
-		g.Expect(testMock.lastTunnelConfigIngress[1].Hostname).To(BeEmpty())
-		g.Expect(testMock.lastTunnelConfigIngress[1].Service).To(Equal("http_status:404"))
+		expectCatchAllIngress(g)
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Verify sidecar ConfigMap has the correct routes.
+	g.Eventually(func(g Gomega) {
+		cfg := getSidecarConfig(g, gw)
+		g.Expect(cfg.Routes).To(HaveLen(1))
+		g.Expect(cfg.Routes[0].Hostname).To(Equal("app.example.com"))
+		g.Expect(cfg.Routes[0].Service).To(Equal("http://my-service." + ns.Name + ".svc.cluster.local:8080"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
 	// Verify Gateway listener has AttachedRoutes=1
@@ -542,10 +545,10 @@ func TestGatewayReconciler_HTTPRouteDeletion(t *testing.T) {
 		return testClient.Get(testCtx, routeKey, &latest)
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Satisfy(apierrors.IsNotFound))
 
-	// Verify tunnel config was rebuilt by the Gateway controller (only catch-all remains)
+	// Verify sidecar ConfigMap has empty routes after deletion.
 	g.Eventually(func(g Gomega) {
-		g.Expect(testMock.lastTunnelConfigIngress).To(HaveLen(1))
-		g.Expect(testMock.lastTunnelConfigIngress[0].Service).To(Equal("http_status:404"))
+		cfg := getSidecarConfig(g, gw)
+		g.Expect(cfg.Routes).To(BeEmpty())
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
@@ -807,10 +810,10 @@ func TestGatewayReconciler_StaleRouteParentRefRemoved(t *testing.T) {
 		g.Expect(result.Status.Listeners[0].AttachedRoutes).To(Equal(int32(0)))
 	}).WithTimeout(30 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
 
-	// Tunnel ingress should be catch-all only.
+	// Sidecar ConfigMap should have empty routes.
 	g.Eventually(func(g Gomega) {
-		g.Expect(testMock.lastTunnelConfigIngress).To(HaveLen(1))
-		g.Expect(testMock.lastTunnelConfigIngress[0].Service).To(Equal("http_status:404"))
+		cfg := getSidecarConfig(g, gw)
+		g.Expect(cfg.Routes).To(BeEmpty())
 	}).WithTimeout(30 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
 }
 
@@ -900,10 +903,10 @@ func TestGatewayReconciler_HTTPRouteCrossNamespaceBackendDenied(t *testing.T) {
 		g.Expect(resolvedRefs.Message).To(ContainSubstring("cross-service"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
-	// Tunnel ingress should have only catch-all (denied backend excluded).
+	// Sidecar ConfigMap should have empty routes (denied backend excluded).
 	g.Eventually(func(g Gomega) {
-		g.Expect(testMock.lastTunnelConfigIngress).To(HaveLen(1))
-		g.Expect(testMock.lastTunnelConfigIngress[0].Service).To(Equal("http_status:404"))
+		cfg := getSidecarConfig(g, gw)
+		g.Expect(cfg.Routes).To(BeEmpty())
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
@@ -1032,11 +1035,12 @@ func TestGatewayReconciler_HTTPRouteCrossNamespaceBackendGranted(t *testing.T) {
 		g.Expect(resolvedRefs.Status).To(Equal(metav1.ConditionTrue))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
-	// Tunnel ingress should contain the cross-namespace service URL.
+	// Sidecar ConfigMap should contain the cross-namespace service URL.
 	g.Eventually(func(g Gomega) {
-		g.Expect(testMock.lastTunnelConfigIngress).To(HaveLen(2))
-		g.Expect(testMock.lastTunnelConfigIngress[0].Hostname).To(Equal("backend-granted.example.com"))
-		g.Expect(testMock.lastTunnelConfigIngress[0].Service).To(Equal(
+		cfg := getSidecarConfig(g, gw)
+		g.Expect(cfg.Routes).To(HaveLen(1))
+		g.Expect(cfg.Routes[0].Hostname).To(Equal("backend-granted.example.com"))
+		g.Expect(cfg.Routes[0].Service).To(Equal(
 			"http://cross-service." + nsB.Name + ".svc.cluster.local:8080"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
@@ -1114,12 +1118,13 @@ func TestGatewayReconciler_HTTPRoutePathMatches(t *testing.T) {
 		}
 	})
 
-	// Verify tunnel ingress rule has Path="/api/v1".
+	// Verify sidecar ConfigMap has the path prefix route.
 	g.Eventually(func(g Gomega) {
-		g.Expect(testMock.lastTunnelConfigIngress).To(HaveLen(2))
-		g.Expect(testMock.lastTunnelConfigIngress[0].Hostname).To(Equal("path.example.com"))
-		g.Expect(testMock.lastTunnelConfigIngress[0].Path).To(Equal("/api/v1"))
-		g.Expect(testMock.lastTunnelConfigIngress[0].Service).To(Equal("http://my-service." + ns.Name + ".svc.cluster.local:8080"))
+		cfg := getSidecarConfig(g, gw)
+		g.Expect(cfg.Routes).To(HaveLen(1))
+		g.Expect(cfg.Routes[0].Hostname).To(Equal("path.example.com"))
+		g.Expect(cfg.Routes[0].PathPrefix).To(Equal("/api/v1"))
+		g.Expect(cfg.Routes[0].Service).To(Equal("http://my-service." + ns.Name + ".svc.cluster.local:8080"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
@@ -1193,12 +1198,10 @@ func TestGatewayReconciler_HTTPRouteMultipleRulesAndHostnames(t *testing.T) {
 		}
 	})
 
-	// 2 rules x 2 hostnames = 4 hostname rules + 1 catch-all = 5 total.
+	// 2 rules x 2 hostnames = 4 sidecar routes.
 	g.Eventually(func(g Gomega) {
-		g.Expect(testMock.lastTunnelConfigIngress).To(HaveLen(5))
-		// Last rule is catch-all.
-		g.Expect(testMock.lastTunnelConfigIngress[4].Service).To(Equal("http_status:404"))
-		g.Expect(testMock.lastTunnelConfigIngress[4].Hostname).To(BeEmpty())
+		cfg := getSidecarConfig(g, gw)
+		g.Expect(cfg.Routes).To(HaveLen(4))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
@@ -1258,7 +1261,8 @@ func TestGatewayReconciler_HTTPRouteNoBackends(t *testing.T) {
 		}
 	})
 
-	// Route should be Accepted.
+	// Route should be rejected (Accepted=False/UnsupportedValue) because
+	// zero backends is not supported.
 	routeKey := client.ObjectKeyFromObject(route)
 	g.Eventually(func(g Gomega) {
 		var result gatewayv1.HTTPRoute
@@ -1266,13 +1270,9 @@ func TestGatewayReconciler_HTTPRouteNoBackends(t *testing.T) {
 		g.Expect(result.Status.Parents).To(HaveLen(1))
 		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
 		g.Expect(accepted).NotTo(BeNil())
-		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-
-	// Tunnel ingress should have only catch-all 404.
-	g.Eventually(func(g Gomega) {
-		g.Expect(testMock.lastTunnelConfigIngress).To(HaveLen(1))
-		g.Expect(testMock.lastTunnelConfigIngress[0].Service).To(Equal("http_status:404"))
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.RouteReasonUnsupportedValue)))
+		g.Expect(accepted.Message).To(ContainSubstring("backendRefs: at least one backend is required"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 

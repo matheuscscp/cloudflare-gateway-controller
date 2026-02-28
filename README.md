@@ -17,8 +17,9 @@ public IPs or `LoadBalancer`-type Services required.
 
 A single Cloudflare tunnel handles all traffic, and DNS CNAME records point each hostname
 directly to the tunnel. Multiple HTTPRoutes can attach to the same Gateway — each hostname
-gets its own CNAME, and cloudflared routes requests to the correct Service by hostname and
-path.
+gets its own CNAME. A sidecar reverse proxy runs alongside cloudflared to route requests
+to the correct backend Service by hostname and path, with per-request load balancing
+through kube-proxy.
 
 ```mermaid
 flowchart LR
@@ -27,7 +28,7 @@ flowchart LR
     C -->|api.example.com| CNB[CNAME api]
     CNA --> T[Tunnel]
     CNB --> T
-    T --> CD[cloudflared<br/>Deployment]
+    T --> CD[cloudflared +<br/>sidecar proxy]
     CD --> SA[Service A]
     CD --> SB[Service B]
 ```
@@ -51,9 +52,25 @@ When an HTTPRoute hostname is removed, its CNAME is deleted.
 
 **Cloudflare resources:** 1 tunnel, 1 CNAME record per HTTPRoute hostname.
 
-**Kubernetes resources:** 1 cloudflared `Deployment`, 1 tunnel token `Secret`.
+**Kubernetes resources:** Per Gateway, the controller creates a cloudflared Deployment
+(with a sidecar proxy container), a tunnel token Secret, a sidecar ConfigMap (routing
+table), a ServiceAccount, a Role, and a RoleBinding.
 
 Works on the **free plan** with no additional cost.
+
+### Sidecar reverse proxy
+
+The sidecar proxy solves the load-balancing problem with cloudflared's persistent
+connections. Without it, cloudflared opens a single long-lived TCP connection to each
+backend Service, bypassing kube-proxy and pinning all traffic to one pod.
+
+The sidecar receives all traffic from cloudflared on `localhost:8080`, routes requests
+by hostname and path prefix to the correct backend Service, and disables HTTP
+keep-alives on egress so every request opens a fresh connection through kube-proxy
+for proper pod-level load balancing.
+
+The sidecar is enabled by default. To disable it, set `config.sidecar.enabled: false`
+in the Helm values.
 
 ## API Token Permissions
 
