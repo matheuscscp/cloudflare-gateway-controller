@@ -41,8 +41,8 @@ spec:
   secretRef:
     name: cloudflare-creds
   dns:
-    zone:
-      name: example.com
+    zones:
+    - name: example.com
 ```
 
 **DNS:** The controller creates a CNAME record for each hostname declared in the attached

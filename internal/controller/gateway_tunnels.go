@@ -273,7 +273,7 @@ func removeOwnerRef(obj client.Object, ownerUID types.UID) bool {
 // cleanupStaleTunnelResources deletes Deployments, Secrets, and Cloudflare tunnels
 // that are no longer part of the desired tunnel entries. This handles AZ
 // addition/removal, service changes, and mode switches.
-func (r *GatewayReconciler) cleanupStaleTunnelResources(ctx context.Context, tc cloudflare.Client, gw *gatewayv1.Gateway, entries []tunnelEntry, previousTunnels []apiv1.TunnelStatus) ([]string, []string) {
+func (r *GatewayReconciler) cleanupStaleTunnelResources(ctx context.Context, gw *gatewayv1.Gateway, entries []tunnelEntry) ([]string, []string) {
 	l := log.FromContext(ctx)
 
 	// Build set of desired Deployment names.
@@ -345,32 +345,6 @@ func (r *GatewayReconciler) cleanupStaleTunnelResources(ctx context.Context, tc 
 		l.V(1).Info("Deleted stale tunnel token Secret", "secret", secret.Name)
 	}
 
-	// Delete stale Cloudflare tunnels using CGS-tracked names (previous tunnels
-	// from CGS.Status.Tunnels). Compare against desired set and delete any
-	// that are no longer needed.
-	desiredTunnels := make(map[string]struct{}, len(entries))
-	for _, e := range entries {
-		desiredTunnels[e.tunnelName] = struct{}{}
-	}
-	for _, prev := range previousTunnels {
-		if _, ok := desiredTunnels[prev.Name]; ok {
-			continue
-		}
-		if prev.ID == "" {
-			continue
-		}
-		if err := tc.CleanupTunnelConnections(ctx, prev.ID); err != nil {
-			errs = append(errs, fmt.Sprintf("failed to cleanup connections for stale tunnel %s: %v", prev.Name, err))
-			continue
-		}
-		if err := tc.DeleteTunnel(ctx, prev.ID); err != nil {
-			errs = append(errs, fmt.Sprintf("failed to delete stale tunnel %s: %v", prev.Name, err))
-			continue
-		}
-		changes = append(changes, fmt.Sprintf("deleted stale tunnel %s", prev.Name))
-		l.V(1).Info("Deleted stale tunnel", "tunnelName", prev.Name, "tunnelID", prev.ID)
-	}
-
 	return changes, errs
 }
 
@@ -410,8 +384,8 @@ func (r *GatewayReconciler) buildCloudflaredDeployment(gw *gatewayv1.Gateway, pa
 	// Apply RFC 6902 JSON Patch operations from CloudflareGatewayParameters if present.
 	// These errors are terminal because the CRD is a watched object and
 	// retrying won't fix invalid user input.
-	if params != nil && params.Spec.Tunnels != nil && params.Spec.Tunnels.Deployment != nil && len(params.Spec.Tunnels.Deployment.Patches) > 0 {
-		patchJSON, err := json.Marshal(params.Spec.Tunnels.Deployment.Patches)
+	if params != nil && params.Spec.Tunnel != nil && params.Spec.Tunnel.Deployment != nil && len(params.Spec.Tunnel.Deployment.Patches) > 0 {
+		patchJSON, err := json.Marshal(params.Spec.Tunnel.Deployment.Patches)
 		if err != nil {
 			return nil, reconcile.TerminalError(fmt.Errorf("marshaling deployment patches: %w", err))
 		}

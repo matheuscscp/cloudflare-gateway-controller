@@ -47,7 +47,7 @@ The `.spec.addresses` field is not supported and must not be set.
 
 The `.spec.infrastructure.parametersRef` field references a
 [CloudflareGatewayParameters](CloudflareGatewayParameters.md) that provides
-Cloudflare-specific configuration (credentials, DNS, tunnels):
+Cloudflare-specific configuration (credentials, DNS, tunnel):
 
 ```yaml
 spec:
@@ -118,6 +118,24 @@ metadata:
 The default interval is `10m`. If the value cannot be parsed, the default is
 used.
 
+### Cloudflare resource naming
+
+The controller generates deterministic names for Cloudflare and Kubernetes
+resources based on the Gateway identity. This enables cluster recreation
+without leaking Cloudflare resources — a reborn cluster with the same
+`clusterName` adopts existing resources instead of creating duplicates.
+
+| Resource                | Name                                                        |
+|-------------------------|-------------------------------------------------------------|
+| Cloudflare Tunnel       | `gw-` + hex SHA256 of `clusterName/namespace/gatewayName` (67 chars) |
+| cloudflared Deployment  | `cloudflared-<gatewayName>`                                 |
+| Tunnel token Secret     | `cloudflared-token-<gatewayName>`                           |
+
+`clusterName` comes from the Helm value `config.clusterName` (required).
+
+Source: `TunnelName()`, `CloudflaredDeploymentName()`,
+`TunnelTokenSecretName()` in `api/v1/meta_types.go`.
+
 ## Validations
 
 The controller validates the Gateway spec on every reconciliation. If any
@@ -170,15 +188,16 @@ When falling back to the GatewayClass `parametersRef`:
 
 ### Addresses
 
-The controller populates `.status.addresses` with one entry per managed tunnel,
-using `type: Hostname` and the tunnel's CNAME target
+The controller populates `.status.addresses` with one entry for the managed
+tunnel, using `type: Hostname` and the tunnel's CNAME target
 (`<tunnelID>.cfargotunnel.com`).
 
 ### Conditions
 
 A Gateway enters various states during its lifecycle, reflected as Kubernetes
 Conditions. It can be [accepted](#accepted-gateway),
-[programmed](#programmed-gateway), or [ready](#ready-gateway).
+[programmed](#programmed-gateway),
+[DNS-managed](#dns-management), or [ready](#ready-gateway).
 
 #### Accepted Gateway
 
@@ -208,20 +227,40 @@ Reasons for rejection:
 
 #### Programmed Gateway
 
-Standard Gateway API condition. The controller reports whether all cloudflared
-Deployments are available.
+Standard Gateway API condition. The controller reports whether the cloudflared
+Deployment is available.
 
-When all Deployments are ready:
+When the Deployment is ready:
 
 - `type: Programmed`
 - `status: "True"`
 - `reason: Programmed`
 
-When one or more Deployments are not yet ready:
+When the Deployment is not yet ready:
 
 - `type: Programmed`
 - `status: "False"`
 - `reason: Pending`
+
+#### DNS Management
+
+Custom condition, not part of the Gateway API spec. Reports whether DNS CNAME
+record management is configured for this Gateway via the
+[CloudflareGatewayParameters](CloudflareGatewayParameters.md) `.spec.dns.zones`
+field.
+
+When DNS management is configured:
+
+- `type: DNSManagement`
+- `status: "True"`
+- `reason: Managed`
+- `message`: lists each allowed zone on its own line
+
+When DNS management is not configured:
+
+- `type: DNSManagement`
+- `status: "False"`
+- `reason: NotConfigured`
 
 #### Ready Gateway
 
@@ -229,20 +268,20 @@ Custom condition, not part of the Gateway API spec.
 [kstatus](https://github.com/kubernetes-sigs/cli-utils/blob/master/pkg/kstatus/README.md)-compatible
 condition that summarizes the overall reconciliation state.
 
-When all Cloudflare resources are reconciled and all Deployments are available:
+When all Cloudflare resources are reconciled and the Deployment is available:
 
 - `type: Ready`
 - `status: "True"`
 - `reason: ReconciliationSucceeded`
 
-When a terminal failure occurs (e.g. Deployment exceeded progress deadline,
-unrecoverable API error):
+When a terminal failure occurs (e.g. the Deployment exceeded its progress
+deadline, unrecoverable API error):
 
 - `type: Ready`
 - `status: "False"`
 - `reason: ReconciliationFailed`
 
-When waiting for Deployments to become ready (not an error):
+When waiting for the Deployment to become ready (not an error):
 
 - `type: Ready`
 - `status: "Unknown"`

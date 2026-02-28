@@ -567,7 +567,7 @@ func TestGatewayReconciler_DeletionWithHTTPRoutes(t *testing.T) {
 	waitForGatewayClassReady(g, gc)
 
 	params := createTestParameters(g, "test-gw-del-routes-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
-		DNS: &apiv1.DNSConfig{Zone: apiv1.DNSZoneConfig{Name: "example.com"}},
+		DNS: &apiv1.DNSConfig{Zones: []apiv1.DNSZoneConfig{{Name: "example.com"}}},
 	})
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{

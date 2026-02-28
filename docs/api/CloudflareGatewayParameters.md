@@ -19,9 +19,9 @@ spec:
   secretRef:
     name: cloudflare-creds
   dns:
-    zone:
-      name: "example.com"
-  tunnels:
+    zones:
+      - name: "example.com"
+  tunnel:
     deployment:
       patches:
         - op: replace
@@ -80,29 +80,32 @@ The `.spec.dns` field is optional and configures DNS CNAME record management.
 ```yaml
 spec:
   dns:
-    zone:
-      name: "example.com"
+    zones:
+      - name: "example.com"
+      - name: "other.com"
 ```
 
-The `.spec.dns.zone.name` field is required when `.spec.dns` is set and
-specifies the DNS zone name (e.g. `example.com`).
+The `.spec.dns.zones` field is required when `.spec.dns` is set and specifies
+one or more DNS zone names. Only hostnames that are single-level subdomains of
+a configured zone get CNAME records (e.g. `app.example.com` matches zone
+`example.com`, but `deep.sub.example.com` does not).
 
-When DNS is configured, the controller creates CNAME records for each hostname
-in the attached [HTTPRoutes](HTTPRoute.md).
+When DNS is configured, the controller creates CNAME records for matching
+hostnames in the attached [HTTPRoutes](HTTPRoute.md).
 
-### Tunnels configuration
+### Tunnel configuration
 
-The `.spec.tunnels` field is optional and configures Cloudflare tunnel settings.
+The `.spec.tunnel` field is optional and configures Cloudflare tunnel settings.
 
 #### Deployment patches
 
-The `.spec.tunnels.deployment.patches` field is optional and specifies
+The `.spec.tunnel.deployment.patches` field is optional and specifies
 [RFC 6902](https://datatracker.ietf.org/doc/html/rfc6902) JSON Patch operations
 applied to the cloudflared Deployment after it is built.
 
 ```yaml
 spec:
-  tunnels:
+  tunnel:
     deployment:
       patches:
         - op: replace

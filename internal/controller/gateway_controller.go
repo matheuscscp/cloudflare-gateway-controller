@@ -306,15 +306,9 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	}
 	changes = append(changes, deployChanges...)
 
-	// Read existing CGS for previous state (needed for stale cleanup of tunnels,
-	// pools, and zone changes).
-	cgs, cgsErr := r.getCGS(ctx, gw)
-	if cgsErr != nil {
-		return r.reconcileError(ctx, gw, fmt.Errorf("getting CloudflareGatewayStatus: %w", cgsErr))
-	}
-
-	// Clean up stale tunnel resources (from removed AZs, services, or mode switches).
-	cleanupChanges, cleanupErrs := r.cleanupStaleTunnelResources(ctx, tc, gw, entries, cgsTunnels(cgs))
+	// Clean up stale Kubernetes resources (Deployments, Secrets) that are no
+	// longer desired. Tunnel names are deterministic, so no previous state needed.
+	cleanupChanges, cleanupErrs := r.cleanupStaleTunnelResources(ctx, gw, entries)
 	changes = append(changes, cleanupChanges...)
 	errs = append(errs, cleanupErrs...)
 
@@ -329,11 +323,13 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	changes = append(changes, configChanges...)
 
 	// Reconcile DNS, handling zone changes.
-	var zoneName string
+	var zoneNames []string
 	if params != nil && params.Spec.DNS != nil {
-		zoneName = params.Spec.DNS.Zone.Name
+		for _, z := range params.Spec.DNS.Zones {
+			zoneNames = append(zoneNames, z.Name)
+		}
 	}
-	dnsResult := r.reconcileDNSWithZoneChange(ctx, tc, gw, cgs, entries, validRoutes, zoneName)
+	dnsResult := r.reconcileDNSWithZoneChange(ctx, tc, gw, entries, validRoutes, zoneNames)
 	changes = append(changes, dnsResult.changes...)
 	errs = append(errs, dnsResult.errs...)
 
@@ -342,61 +338,45 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 
 	// Update HTTPRoute status.parents for allowed routes (after DNS and
 	// Deployment checks so we can report DNS status and Gateway readiness).
-	errs = append(errs, r.updateRouteStatuses(ctx, gw, validRoutes, routesWithDeniedRefs, zoneName, dnsResult.dnsErr,
+	errs = append(errs, r.updateRouteStatuses(ctx, gw, validRoutes, routesWithDeniedRefs, zoneNames, dnsResult.dnsErr,
 		readiness.readyStatus, readiness.readyReason, readiness.readyMsg)...)
 
-	// Reconcile the CloudflareGatewayStatus resource state (tunnels, DNS).
-	// Done before the Gateway status patch so CGS reflects the latest state
-	// even if the status patch fails.
-	if updatedCGS, err := r.reconcileCGS(ctx, gw, cgs, entries, zoneName, dnsResult.zoneID); err != nil {
+	// Reconcile the CloudflareGatewayStatus (observability only — tunnel info
+	// and mirrored conditions). Done before the Gateway status patch so CGS
+	// reflects the latest state even if the status patch fails.
+	cgs, _ := r.getCGS(ctx, gw)
+	if updatedCGS, err := r.reconcileCGS(ctx, gw, cgs, entries); err != nil {
 		errs = append(errs, fmt.Sprintf("failed to reconcile CloudflareGatewayStatus: %v", err))
 	} else {
 		cgs = updatedCGS
 	}
 
 	// Patch Gateway status and emit events
-	return r.patchGatewayStatus(ctx, gw, cgs, entries, desiredListeners, changes, errs, readiness)
+	return r.patchGatewayStatus(ctx, gw, cgs, entries, desiredListeners, changes, errs, readiness, zoneNames)
 }
 
 // dnsResult holds the results of DNS reconciliation.
 type dnsResult struct {
-	zoneID  string
 	dnsErr  *string
 	changes []string
 	errs    []string
 }
 
-// reconcileDNSWithZoneChange reconciles DNS CNAME records, handling zone changes
-// between the previous CGS state and current parameters.
+// reconcileDNSWithZoneChange reconciles DNS CNAME records. reconcileDNS
+// lists all records pointing to the tunnel across all account zones and
+// diffs against the desired set, so no previous-zone tracking is needed.
 func (r *GatewayReconciler) reconcileDNSWithZoneChange(
 	ctx context.Context, tc cloudflare.Client,
 	gw *gatewayv1.Gateway,
-	cgs *apiv1.CloudflareGatewayStatus,
 	entries []tunnelEntry, validRoutes []*gatewayv1.HTTPRoute,
-	zoneName string,
+	zoneNames []string,
 ) dnsResult {
 	var res dnsResult
-
-	// Detect zone changes from CGS state — used to clean up DNS
-	// records in the old zone before reconciling in the new one.
-	cgsZoneName, cgsZoneID := cgsZoneInfo(cgs)
-	zoneChanged := cgsZoneName != "" && cgsZoneName != zoneName
-
-	// If zone changed to a different non-empty zone, clean up DNS
-	// CNAMEs in the old zone first. When zone is removed entirely
-	// (zoneName==""), reconcileDNS handles cleanup via cleanupAllDNS.
-	if zoneChanged && zoneName != "" && len(entries) > 0 {
-		oldDNSChanges, oldDNSErr := r.cleanupDNSInZone(ctx, tc, entries[0].tunnelID, cgsZoneName, cgsZoneID)
-		res.changes = append(res.changes, oldDNSChanges...)
-		if oldDNSErr != nil {
-			res.errs = append(res.errs, fmt.Sprintf("failed to clean up DNS in old zone %s: %v", cgsZoneName, oldDNSErr))
-		}
-	}
 	var tunnelID string
 	if len(entries) > 0 {
 		tunnelID = entries[0].tunnelID
 	}
-	dnsChanges, dnsErr := r.reconcileDNS(ctx, tc, gw, tunnelID, zoneName, validRoutes)
+	dnsChanges, dnsErr := r.reconcileDNS(ctx, tc, gw, tunnelID, zoneNames, validRoutes)
 	res.changes = append(res.changes, dnsChanges...)
 	res.dnsErr = dnsErr
 	if dnsErr != nil {
@@ -409,7 +389,7 @@ func (r *GatewayReconciler) reconcileDNSWithZoneChange(
 // state, checks whether a status patch is needed (conditions, listeners, or
 // resource changes), patches the status, and emits summary events/logs.
 // It also patches the CGS conditions to mirror the Gateway conditions.
-func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv1.Gateway, cgs *apiv1.CloudflareGatewayStatus, entries []tunnelEntry, desiredListeners []gatewayv1.ListenerStatus, changes, errs []string, readiness gatewayReadiness) (ctrl.Result, error) {
+func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv1.Gateway, cgs *apiv1.CloudflareGatewayStatus, entries []tunnelEntry, desiredListeners []gatewayv1.ListenerStatus, changes, errs []string, readiness gatewayReadiness, zoneNames []string) (ctrl.Result, error) {
 	l := log.FromContext(ctx)
 	now := metav1.Now()
 
@@ -420,6 +400,27 @@ func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv
 		readiness.readyStatus = metav1.ConditionUnknown
 		readiness.readyReason = apiv1.ReasonProgressingWithRetry
 		readiness.readyMsg = strings.Join(errs, "; ")
+	}
+
+	// Build DNSManagement condition.
+	dnsCond := metav1.Condition{
+		Type:               apiv1.ConditionDNSManagement,
+		ObservedGeneration: gw.Generation,
+		LastTransitionTime: now,
+	}
+	if len(zoneNames) > 0 {
+		dnsCond.Status = metav1.ConditionTrue
+		dnsCond.Reason = apiv1.ReasonDNSManaged
+		var msg strings.Builder
+		msg.WriteString("Allowed zones:")
+		for _, z := range zoneNames {
+			fmt.Fprintf(&msg, "\n- %s", z)
+		}
+		dnsCond.Message = msg.String()
+	} else {
+		dnsCond.Status = metav1.ConditionFalse
+		dnsCond.Reason = apiv1.ReasonDNSNotConfigured
+		dnsCond.Message = "DNS management is not configured"
 	}
 
 	desiredConds := []metav1.Condition{
@@ -447,6 +448,7 @@ func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv
 			Reason:             readiness.readyReason,
 			Message:            readiness.readyMsg,
 		},
+		dnsCond,
 	}
 
 	desiredAddresses := make([]gatewayv1.GatewayStatusAddress, 0, len(entries))
@@ -775,21 +777,13 @@ func (r *GatewayReconciler) finalizeEnabled(ctx context.Context, gw *gatewayv1.G
 	}
 	l.V(1).Info("All cloudflared Deployments are gone")
 
-	// Read CGS for zone info (needed for LB cleanup even if CGP is deleted).
-	cgs, cgsErr := r.getCGS(ctx, gw)
-	if cgsErr != nil {
-		return nil, fmt.Errorf("getting CloudflareGatewayStatus: %w", cgsErr)
-	}
-
 	// Try reading params; if CGP was deleted, params will be nil.
 	params, err := readParameters(ctx, r.Client, gw)
 	if err != nil {
-		// If CGP is NotFound (TerminalError), we can still finalize using
-		// CGS zone info and GatewayClass credentials.
 		if !errors.Is(err, reconcile.TerminalError(nil)) {
 			return nil, fmt.Errorf("reading parameters for tunnel deletion: %w", err)
 		}
-		l.V(1).Info("CloudflareGatewayParameters not found, using CGS zone info for cleanup")
+		l.V(1).Info("CloudflareGatewayParameters not found, continuing with GatewayClass credentials")
 	}
 	cfg, err := readCredentials(ctx, r.Client, gc, gw, params)
 	if err != nil {
@@ -805,31 +799,33 @@ func (r *GatewayReconciler) finalizeEnabled(ctx context.Context, gw *gatewayv1.G
 		changes = append(changes, fmt.Sprintf("deleted cloudflared Deployment %s", deployList.Items[i].Name))
 	}
 
-	// Delete all tunnels owned by this Gateway using CGS-tracked tunnel state.
-	for _, t := range cgsTunnels(cgs) {
-		if t.ID == "" {
-			continue
-		}
-
+	// Look up the tunnel by its deterministic name.
+	tunnelName := apiv1.TunnelName(gw)
+	tunnelID, err := tc.GetTunnelIDByName(ctx, tunnelName)
+	if err != nil {
+		return changes, fmt.Errorf("looking up tunnel %s: %w", tunnelName, err)
+	}
+	if tunnelID != "" {
 		// Delete DNS CNAME records pointing to this tunnel.
-		dnsChanges, dnsErr := r.cleanupAllDNS(ctx, tc, t.ID)
+		dnsChanges, dnsErr := r.reconcileDNS(ctx, tc, gw, tunnelID, nil, nil)
 		changes = append(changes, dnsChanges...)
 		if dnsErr != nil {
-			return changes, fmt.Errorf("cleaning up DNS for tunnel %s: %w", t.Name, dnsErr)
+			return changes, fmt.Errorf("cleaning up DNS for tunnel %s: %s", tunnelName, *dnsErr)
 		}
 
-		if err := tc.CleanupTunnelConnections(ctx, t.ID); err != nil {
-			return changes, fmt.Errorf("cleaning up connections for tunnel %s: %w", t.Name, err)
+		if err := tc.CleanupTunnelConnections(ctx, tunnelID); err != nil {
+			return changes, fmt.Errorf("cleaning up connections for tunnel %s: %w", tunnelName, err)
 		}
-		if err := tc.DeleteTunnel(ctx, t.ID); err != nil {
-			return changes, fmt.Errorf("deleting tunnel %s: %w", t.Name, err)
+		if err := tc.DeleteTunnel(ctx, tunnelID); err != nil {
+			return changes, fmt.Errorf("deleting tunnel %s: %w", tunnelName, err)
 		}
-		changes = append(changes, fmt.Sprintf("deleted tunnel %s", t.Name))
-		l.V(1).Info("Deleted tunnel", "tunnelName", t.Name, "tunnelID", t.ID)
+		changes = append(changes, fmt.Sprintf("deleted tunnel %s", tunnelName))
+		l.V(1).Info("Deleted tunnel", "tunnelName", tunnelName, "tunnelID", tunnelID)
 	}
 
 	// Remove the CGS finalizer so it can be garbage-collected after the
 	// Gateway is fully deleted (owner reference cascade).
+	cgs, _ := r.getCGS(ctx, gw)
 	if cgs != nil && controllerutil.ContainsFinalizer(cgs, apiv1.Finalizer) {
 		cgsPatch := client.MergeFrom(cgs.DeepCopy())
 		controllerutil.RemoveFinalizer(cgs, apiv1.Finalizer)

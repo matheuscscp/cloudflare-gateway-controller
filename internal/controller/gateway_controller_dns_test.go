@@ -35,7 +35,7 @@ func TestGatewayReconciler_DNSReconciliation(t *testing.T) {
 	waitForGatewayClassReady(g, gc)
 
 	params := createTestParameters(g, "test-gw-dns-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
-		DNS: &apiv1.DNSConfig{Zone: apiv1.DNSZoneConfig{Name: "example.com"}},
+		DNS: &apiv1.DNSConfig{Zones: []apiv1.DNSZoneConfig{{Name: "example.com"}}},
 	})
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
@@ -146,12 +146,13 @@ func TestGatewayReconciler_DNSStaleCleanup(t *testing.T) {
 	waitForGatewayClassReady(g, gc)
 
 	// Pre-populate the mock with a stale DNS record
+	testMock.zoneIDs = []string{"test-zone-id"}
 	testMock.listDNSCNAMEsByTarget = []string{"stale.example.com"}
 	testMock.ensureDNSCalls = nil
 	testMock.deleteDNSCalls = nil
 
 	params := createTestParameters(g, "test-gw-dns-stale-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
-		DNS: &apiv1.DNSConfig{Zone: apiv1.DNSZoneConfig{Name: "example.com"}},
+		DNS: &apiv1.DNSConfig{Zones: []apiv1.DNSZoneConfig{{Name: "example.com"}}},
 	})
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
@@ -174,6 +175,7 @@ func TestGatewayReconciler_DNSStaleCleanup(t *testing.T) {
 	}
 	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
 	t.Cleanup(func() {
+		testMock.zoneIDs = nil
 		testMock.listDNSCNAMEsByTarget = nil
 		var latest gatewayv1.Gateway
 		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
@@ -210,7 +212,7 @@ func TestGatewayReconciler_DNSSkippedHostnames(t *testing.T) {
 	testMock.listDNSCNAMEsByTarget = nil
 
 	params := createTestParameters(g, "test-gw-dns-skip-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
-		DNS: &apiv1.DNSConfig{Zone: apiv1.DNSZoneConfig{Name: "example.com"}},
+		DNS: &apiv1.DNSConfig{Zones: []apiv1.DNSZoneConfig{{Name: "example.com"}}},
 	})
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
@@ -287,7 +289,7 @@ func TestGatewayReconciler_DNSSkippedHostnames(t *testing.T) {
 		g.Expect(dns.Status).To(Equal(metav1.ConditionTrue))
 		g.Expect(dns.Reason).To(Equal(apiv1.ReasonReconciliationSucceeded))
 		g.Expect(dns.Message).To(ContainSubstring("Applied hostnames:\n(none)"))
-		g.Expect(dns.Message).To(ContainSubstring("Skipped hostnames (not in zone):\n- app.other.com"))
+		g.Expect(dns.Message).To(ContainSubstring("Skipped hostnames (not in any configured zone):\n- app.other.com"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
 	// Verify EnsureDNSCNAME was NOT called for the skipped hostname
@@ -319,7 +321,7 @@ func TestGatewayReconciler_DNSZoneRemovalCleanup(t *testing.T) {
 	waitForGatewayClassReady(g, gc)
 
 	params := createTestParameters(g, "test-gw-dns-removal-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
-		DNS: &apiv1.DNSConfig{Zone: apiv1.DNSZoneConfig{Name: "example.com"}},
+		DNS: &apiv1.DNSConfig{Zones: []apiv1.DNSZoneConfig{{Name: "example.com"}}},
 	})
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
@@ -450,7 +452,7 @@ func TestGatewayReconciler_DNSMultipleHostnamesMixed(t *testing.T) {
 	testMock.listDNSCNAMEsByTarget = nil
 
 	params := createTestParameters(g, "test-gw-dns-mixed-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
-		DNS: &apiv1.DNSConfig{Zone: apiv1.DNSZoneConfig{Name: "example.com"}},
+		DNS: &apiv1.DNSConfig{Zones: []apiv1.DNSZoneConfig{{Name: "example.com"}}},
 	})
 	gw := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
@@ -541,4 +543,158 @@ func TestGatewayReconciler_DNSMultipleHostnamesMixed(t *testing.T) {
 	g.Expect(dnsHostnames).To(ContainElement("app.example.com"))
 	g.Expect(dnsHostnames).To(ContainElement("api.example.com"))
 	g.Expect(dnsHostnames).NotTo(ContainElement("app.other.com"))
+}
+
+func TestGatewayReconciler_DNSMultiZoneWithParentChild(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-dns-mz", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	// Configure the mock to return distinct zone IDs per zone name.
+	testMock.zones = map[string]string{
+		"example.com":     "zone-parent",
+		"sub.example.com": "zone-child",
+		"other.com":       "zone-other",
+	}
+	testMock.ensureDNSCalls = nil
+	testMock.deleteDNSCalls = nil
+	testMock.listDNSCNAMEsByTarget = nil
+
+	// Three zones: a parent (example.com), its child (sub.example.com), and an
+	// unrelated zone (other.com). hostnameInZone is single-level subdomain only,
+	// so "app.sub.example.com" matches sub.example.com but NOT example.com.
+	params := createTestParameters(g, "test-gw-dns-mz-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		DNS: &apiv1.DNSConfig{Zones: []apiv1.DNSZoneConfig{
+			{Name: "example.com"},
+			{Name: "sub.example.com"},
+			{Name: "other.com"},
+		}},
+	})
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-dns-mz",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "http",
+					Protocol: gatewayv1.HTTPProtocolType,
+					Port:     80,
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		testMock.zones = nil
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+	waitForGatewayProgrammed(g, gw)
+
+	testMock.ensureDNSCalls = nil
+
+	// Hostnames that exercise parent/child zone matching:
+	// - app.example.com       → matches example.com (single-level subdomain)
+	// - app.sub.example.com   → matches sub.example.com (single-level), NOT example.com (two levels)
+	// - svc.other.com         → matches other.com
+	// - deep.app.example.com  → matches NOTHING (two levels below example.com, one level below sub would be wrong suffix)
+	// - unrelated.net         → matches NOTHING
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-route-dns-mz",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{Name: gatewayv1.ObjectName(gw.Name)},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{
+				"app.example.com",
+				"app.sub.example.com",
+				"svc.other.com",
+				"deep.app.example.com",
+				"unrelated.net",
+			},
+			Rules: []gatewayv1.HTTPRouteRule{
+				{
+					BackendRefs: []gatewayv1.HTTPBackendRef{
+						{BackendRef: gatewayv1.BackendRef{
+							BackendObjectReference: gatewayv1.BackendObjectReference{
+								Name: "my-service", Port: new(gatewayv1.PortNumber(8080)),
+							},
+						}},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.HTTPRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Wait for at least 3 DNS ensure calls (one per matching hostname).
+	g.Eventually(func() int {
+		return len(testMock.ensureDNSCalls)
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(BeNumerically(">=", 3))
+
+	// Build a map of hostname -> zoneID from ensure calls for easy assertions.
+	ensuredByHostname := make(map[string]string)
+	for _, call := range testMock.ensureDNSCalls {
+		ensuredByHostname[call.Hostname] = call.ZoneID
+	}
+
+	// app.example.com → zone-parent (single-level sub of example.com)
+	g.Expect(ensuredByHostname).To(HaveKeyWithValue("app.example.com", "zone-parent"))
+	// app.sub.example.com → zone-child (single-level sub of sub.example.com)
+	g.Expect(ensuredByHostname).To(HaveKeyWithValue("app.sub.example.com", "zone-child"))
+	// svc.other.com → zone-other
+	g.Expect(ensuredByHostname).To(HaveKeyWithValue("svc.other.com", "zone-other"))
+	// deep.app.example.com → NOT ensured (two levels below example.com)
+	g.Expect(ensuredByHostname).NotTo(HaveKey("deep.app.example.com"))
+	// unrelated.net → NOT ensured
+	g.Expect(ensuredByHostname).NotTo(HaveKey("unrelated.net"))
+
+	// Verify route condition reports skipped hostnames.
+	routeKey := client.ObjectKeyFromObject(route)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.HTTPRoute
+		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(HaveLen(1))
+		dns := conditions.Find(result.Status.Parents[0].Conditions, apiv1.ConditionDNSRecordsApplied)
+		g.Expect(dns).NotTo(BeNil())
+		g.Expect(dns.Status).To(Equal(metav1.ConditionTrue))
+		g.Expect(dns.Message).To(ContainSubstring("app.example.com"))
+		g.Expect(dns.Message).To(ContainSubstring("app.sub.example.com"))
+		g.Expect(dns.Message).To(ContainSubstring("svc.other.com"))
+		g.Expect(dns.Message).To(ContainSubstring("Skipped hostnames"))
+		g.Expect(dns.Message).To(ContainSubstring("deep.app.example.com"))
+		g.Expect(dns.Message).To(ContainSubstring("unrelated.net"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
 }

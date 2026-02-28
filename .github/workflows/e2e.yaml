@@ -20,7 +20,9 @@ env:
   IMAGE: ghcr.io/matheuscscp/cloudflare-gateway-controller/test
 
 jobs:
-  # Build and push the controller image to GHCR for use by e2e jobs.
+  # Build and push the controller image, then clean up orphaned Cloudflare
+  # resources from previous failed runs. On fork PRs, only the build runs
+  # (no push, no cleanup) to validate compilation.
   docker-build:
     runs-on: ubuntu-latest
     permissions:
@@ -32,40 +34,37 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Log in to GHCR
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build controller image
-        run: make docker-build IMG=${{ env.IMAGE }}:${{ github.sha }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
-      - name: Push controller image
+      - name: Build and push controller image
         id: push
-        run: |
-          docker push ${{ env.IMAGE }}:${{ github.sha }}
-          FULL_REF=$(docker inspect --format='{{index .RepoDigests 0}}' "${{ env.IMAGE }}:${{ github.sha }}")
-          echo "digest=${FULL_REF##*@}" >> "$GITHUB_OUTPUT"
-
-  # Clean up orphaned Cloudflare resources from previous failed runs.
-  # Runs in parallel with docker-build so it doesn't add latency.
-  cleanup:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
-          go-version-file: go.mod
-          cache: true
+          context: .
+          push: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: Build
-        run: make build
+      - name: Extract cfgwctl from controller image
+        if: steps.push.outputs.digest != ''
+        run: |
+          mkdir -p ./bin
+          docker pull ${{ env.IMAGE }}@${{ steps.push.outputs.digest }}
+          container=$(docker create ${{ env.IMAGE }}@${{ steps.push.outputs.digest }})
+          docker cp "$container":/cfgwctl ./bin/cfgwctl
+          docker rm "$container"
 
       - name: Write credentials
+        if: steps.push.outputs.digest != ''
         env:
           CLOUDFLARE_CREDENTIALS: ${{ secrets.CLOUDFLARE_CREDENTIALS }}
         run: |
@@ -74,31 +73,49 @@ jobs:
           EOF
 
       - name: Cleanup Cloudflare resources
+        if: steps.push.outputs.digest != ''
         run: hack/cleanup-cloudflare.sh
 
       - name: Cleanup credentials
         if: always()
         run: rm -f api.token
 
-  # Run e2e tests.
-  e2e:
-    needs: [docker-build, cleanup]
+  # Run e2e tests in parallel (one job per test).
+  e2e-matrix:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: [docker-build]
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        test:
+          - test_gateway_lifecycle
+          - test_multi_routes
+          - test_path_matching
+          - test_no_dns
+          - test_deployment_patches
+          - test_disabled_reconciliation
+          - test_dns_config_removal
+          - test_multiple_listeners_rejected
+          - test_multi_zone_dns
+          - test_multi_gateway_overlapping_zones
+          - test_cluster_recreation
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version-file: go.mod
-          cache: true
 
       - name: Pull controller image by digest
         run: docker pull ${{ env.IMAGE }}@${{ needs.docker-build.outputs.digest }}
 
       - name: Tag image for kind
         run: docker tag ${{ env.IMAGE }}@${{ needs.docker-build.outputs.digest }} controller:e2e
+
+      - name: Extract cfgwctl from controller image
+        run: |
+          mkdir -p ./bin
+          container=$(docker create controller:e2e)
+          docker cp "$container":/cfgwctl ./bin/cfgwctl
+          docker rm "$container"
 
       - name: Write credentials
         env:
@@ -108,11 +125,14 @@ jobs:
           ${CLOUDFLARE_CREDENTIALS}
           EOF
 
-      - name: Run e2e tests
+      - name: Run e2e test
         env:
           IMAGE: controller:e2e
           TEST_ZONE_NAME: ci.cloudflare-gateway-controller.dev
-        run: make test-e2e
+          TEST_ZONE_NAME_2: z2.ci.cloudflare-gateway-controller.dev
+          TEST_ZONE_NAME_3: z3.cloudflare-gateway-controller.dev
+          TEST: ${{ matrix.test }}
+        run: KIND_CLUSTER_NAME="${TEST//_/-}" hack/e2e-test.sh 2>&1 | stdbuf -oL tee test-e2e.log
 
       - name: Print controller logs
         if: always()
@@ -122,24 +142,34 @@ jobs:
         if: always()
         run: rm -f api.token
 
+  # Gate job for branch protection rules. Always runs, but fails if any
+  # matrix job did not succeed.
+  e2e:
+    if: always()
+    needs: [e2e-matrix]
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          result="${{ needs.e2e-matrix.result }}"
+          [ "$result" = "success" ] || [ "$result" = "skipped" ] || exit 1
+
   # Clean up Cloudflare resources created during e2e tests.
   # Runs even if e2e jobs fail to avoid leaving orphaned resources.
   post-cleanup:
-    if: always()
-    needs: [e2e]
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    needs: [docker-build, e2e-matrix]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Build
-        run: make build
+      - name: Extract cfgwctl from controller image
+        run: |
+          mkdir -p ./bin
+          docker pull ${{ env.IMAGE }}@${{ needs.docker-build.outputs.digest }}
+          container=$(docker create ${{ env.IMAGE }}@${{ needs.docker-build.outputs.digest }})
+          docker cp "$container":/cfgwctl ./bin/cfgwctl
+          docker rm "$container"
 
       - name: Write credentials
         env:

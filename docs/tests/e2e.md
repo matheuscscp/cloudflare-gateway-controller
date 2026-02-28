@@ -105,7 +105,7 @@ configured correctly but no DNS CNAME record is created.
 ## test_deployment_patches
 
 CloudflareGatewayParameters with JSON Patch operations applied to the cloudflared
-Deployment via the `spec.tunnels.deployment` field. Verifies that the patch is applied correctly.
+Deployment via the `spec.tunnel.deployment` field. Verifies that the patch is applied correctly.
 
 **Resources created:**
 - `CloudflareGatewayParameters` with a patch that adds label `e2e-patch=applied`
@@ -163,7 +163,7 @@ Verifies that DNS CNAME records are deleted but tunnel ingress config is preserv
 1. Create parameters with DNS zone, `Gateway`, `Service`, `HTTPRoute`;
    wait for Programmed.
 2. Verify DNS CNAME exists.
-3. Update `CloudflareGatewayParameters` to remove `dns.zone` config.
+3. Update `CloudflareGatewayParameters` to remove `dns.zones` config.
 4. Verify DNS CNAME deleted.
 5. Verify tunnel config still has the hostname (ingress unaffected by DNS removal).
 6. Delete `HTTPRoute` and `Gateway`.
@@ -186,13 +186,65 @@ rejects it with `Accepted=False` and reason `ListenersNotValid`.
 3. Verify `Accepted` reason is `ListenersNotValid`.
 4. Delete `Gateway`; verify deleted.
 
+## test_multi_zone_dns
+
+Multi-zone DNS management with zone additions and removals. Requires
+`TEST_ZONE_NAME_2` and `TEST_ZONE_NAME_3`; skips if unset.
+
+**Resources created:**
+- `CloudflareGatewayParameters` with 2 DNS zones (initially)
+- `Gateway` with HTTP listener
+- `Service` and `HTTPRoute` with hostnames across 3 zones plus one unmanaged hostname
+
+**Cloudflare resources:** 1 tunnel, DNS CNAMEs in multiple zones.
+
+**Steps:**
+
+1. Create `CloudflareGatewayParameters` with zones 1 and 2; create `Gateway`;
+   wait for Programmed.
+2. Create `Service` and `HTTPRoute` with hostnames in zones 1, 2, 3, and an
+   unmanaged domain.
+3. Verify CNAMEs created in zones 1 and 2; zone 3 hostname correctly absent.
+4. Verify `DNSRecordsApplied` condition reports skipped hostnames (zone 3 and
+   unmanaged).
+5. Update config: remove zone 1, add zone 3.
+6. Verify zone 1 CNAMEs deleted, zone 2 CNAME intact, zone 3 CNAME created.
+7. Update config: add zone 1 back (all 3 zones).
+8. Verify zone 1 CNAMEs re-created; all 3 zones have their CNAMEs.
+9. Delete `HTTPRoute`, `Gateway`; clean up resources.
+
+## test_multi_gateway_overlapping_zones
+
+Multiple Gateways with overlapping DNS zone configurations sharing the same
+Cloudflare account. Requires `TEST_ZONE_NAME_2` and `TEST_ZONE_NAME_3`; skips
+if unset.
+
+**Resources created:**
+- 3 `CloudflareGatewayParameters` with overlapping zone configs:
+  - gw-a: zones 1, 2, 3
+  - gw-b: zones 1, 2
+  - gw-c: zones 2, 3
+- 3 Gateways, 1 Service, 3 HTTPRoutes with unique hostnames per gateway
+
+**Cloudflare resources:** 3 tunnels, 7 DNS CNAMEs total (3 + 2 + 2).
+
+**Steps:**
+
+1. Create 3 `CloudflareGatewayParameters` and 3 Gateways; wait for all Programmed.
+2. Create `Service` and 3 HTTPRoutes (gw-a: 3 hostnames, gw-b: 2, gw-c: 2).
+3. Verify all 7 CNAMEs exist across the 3 tunnels.
+4. Delete gw-b (zones 1, 2); verify gw-b CNAMEs removed.
+5. Verify gw-a and gw-c CNAMEs unaffected by gw-b deletion.
+6. Remove zone 3 from gw-a config; verify gw-a zone 3 CNAME removed.
+7. Verify gw-a zones 1, 2 CNAMEs intact.
+8. Verify gw-c CNAMEs completely unaffected by gw-a's zone change.
+9. Clean up all resources.
+
 ## test_cluster_recreation
 
 Proves that deterministic Cloudflare resource naming enables cluster recreation
 without leaking resources. A reborn cluster with the same `clusterName` adopts
 existing Cloudflare resources (tunnel, DNS CNAME) instead of creating duplicates.
-
-**Must run last** because it destroys and recreates the kind cluster.
 
 **Resources created:**
 - `CloudflareGatewayParameters` with DNS zone config

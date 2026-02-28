@@ -49,8 +49,29 @@ REUSE_CLUSTER=1 RELOAD_CONTROLLER=1 TEST=test_gateway_lifecycle TEST_ZONE_NAME=m
 ```
 
 Available test names are in the `run_tests` call at the bottom of
-`hack/e2e-test.sh`. `test_cluster_recreation` must run last (it destroys the
-kind cluster). Environment variables and their defaults are documented in the
-header of `hack/e2e-lib.sh`.
+`hack/e2e-test.sh`. Environment variables and their defaults are documented in
+the header of `hack/e2e-lib.sh`.
+
+## CI parallelization
+
+In CI, each test runs as a separate GitHub Actions matrix job with
+`KIND_CLUSTER_NAME` set to the test name. This makes each test produce unique
+Cloudflare resource names (the tunnel name includes a SHA256 of
+`clusterName/namespace/gatewayName`), so all tests safely share the same
+Cloudflare account concurrently.
+
+## Multi-zone tests
+
+`test_multi_zone_dns` and `test_multi_gateway_overlapping_zones` require
+`TEST_ZONE_NAME_2` and `TEST_ZONE_NAME_3`. These can be subdomains of the
+same Cloudflare zone (e.g. `z2.example.com` and `z3.example.com` when
+`TEST_ZONE_NAME=dev.example.com`). If unset, the tests skip.
+
+```bash
+TEST=test_multi_zone_dns \
+  TEST_ZONE_NAME_2=z2.example.com \
+  TEST_ZONE_NAME_3=z3.example.com \
+  make test-e2e
+```
 
 Test cases are documented in `docs/tests/e2e.md`.

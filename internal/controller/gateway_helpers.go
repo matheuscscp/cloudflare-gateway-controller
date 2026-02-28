@@ -233,7 +233,7 @@ func (r *GatewayReconciler) getCGS(ctx context.Context, gw *gatewayv1.Gateway) (
 }
 
 // reconcileCGS creates or updates the CloudflareGatewayStatus resource state
-// (tunnels, DNS). Conditions are patched separately in patchGatewayStatus.
+// (tunnel, DNS). Conditions are patched separately in patchGatewayStatus.
 // Returns the CGS pointer (which may be newly created) so the caller can pass
 // it to patchGatewayStatus for condition mirroring.
 func (r *GatewayReconciler) reconcileCGS(
@@ -241,27 +241,18 @@ func (r *GatewayReconciler) reconcileCGS(
 	gw *gatewayv1.Gateway,
 	cgs *apiv1.CloudflareGatewayStatus,
 	entries []tunnelEntry,
-	zoneName string,
-	zoneID string,
 ) (*apiv1.CloudflareGatewayStatus, error) {
 	// Build desired status detail.
 	desired := apiv1.CloudflareGatewayStatusDetail{}
 
-	// Tunnels.
-	for _, e := range entries {
-		desired.Tunnels = append(desired.Tunnels, apiv1.TunnelStatus{
+	// Tunnel.
+	if len(entries) > 0 {
+		e := entries[0]
+		desired.Tunnel = &apiv1.TunnelStatus{
 			Name:           e.tunnelName,
 			ID:             e.tunnelID,
 			DeploymentName: e.deploymentName,
 			SecretName:     e.secretName,
-		})
-	}
-
-	// DNS zone info.
-	if zoneName != "" {
-		desired.DNS = &apiv1.DNSStatus{
-			ZoneName: zoneName,
-			ZoneID:   zoneID,
 		}
 	}
 
@@ -320,24 +311,6 @@ func (r *GatewayReconciler) reconcileCGS(
 		}
 	}
 	return cgs, nil
-}
-
-// cgsTunnels extracts the tunnel statuses from a CloudflareGatewayStatus.
-// Returns nil if the CGS is nil.
-func cgsTunnels(cgs *apiv1.CloudflareGatewayStatus) []apiv1.TunnelStatus {
-	if cgs == nil {
-		return nil
-	}
-	return cgs.Status.Tunnels
-}
-
-// cgsZoneInfo extracts the DNS zone name and ID from a CloudflareGatewayStatus.
-// Returns empty strings if the CGS is nil or has no DNS info.
-func cgsZoneInfo(cgs *apiv1.CloudflareGatewayStatus) (string, string) {
-	if cgs == nil || cgs.Status.DNS == nil {
-		return "", ""
-	}
-	return cgs.Status.DNS.ZoneName, cgs.Status.DNS.ZoneID
 }
 
 // infrastructureLabels returns the labels from the Gateway's infrastructure spec.

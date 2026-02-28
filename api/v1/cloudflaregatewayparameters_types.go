@@ -31,9 +31,9 @@ type CloudflareGatewayParametersSpec struct {
 	// +optional
 	DNS *DNSConfig `json:"dns,omitempty"`
 
-	// Tunnels configures Cloudflare tunnel settings.
+	// Tunnel configures Cloudflare tunnel settings.
 	// +optional
-	Tunnels *TunnelsConfig `json:"tunnels,omitempty"`
+	Tunnel *TunnelConfig `json:"tunnel,omitempty"`
 }
 
 // SecretRef is a reference to a Secret in the same namespace.
@@ -44,8 +44,9 @@ type SecretRef struct {
 
 // DNSConfig configures DNS CNAME record management.
 type DNSConfig struct {
-	// Zone configures the DNS zone for CNAME management.
-	Zone DNSZoneConfig `json:"zone"`
+	// Zones configures the DNS zones for CNAME management.
+	// +kubebuilder:validation:MinItems=1
+	Zones []DNSZoneConfig `json:"zones"`
 }
 
 // DNSZoneConfig identifies a Cloudflare DNS zone.
@@ -54,8 +55,8 @@ type DNSZoneConfig struct {
 	Name string `json:"name"`
 }
 
-// TunnelsConfig configures Cloudflare tunnel settings.
-type TunnelsConfig struct {
+// TunnelConfig configures Cloudflare tunnel settings.
+type TunnelConfig struct {
 	// Deployment configures the cloudflared Deployment.
 	// +optional
 	Deployment *DeploymentConfig `json:"deployment,omitempty"`

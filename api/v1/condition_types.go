@@ -9,6 +9,10 @@ const (
 	// whether the resource has been successfully reconciled.
 	ConditionReady = "Ready"
 
+	// ConditionDNSManagement reports whether DNS management is configured
+	// for the Gateway.
+	ConditionDNSManagement = "DNSManagement"
+
 	// ConditionDNSRecordsApplied is an HTTPRoute status.parents condition that
 	// reports whether DNS CNAME records have been applied for the route's hostnames.
 	ConditionDNSRecordsApplied = "DNSRecordsApplied"
@@ -21,4 +25,10 @@ const (
 	ReasonReconciliationFailed    = "ReconciliationFailed"
 	ReasonProgressingWithRetry    = "ProgressingWithRetry"
 	ReasonProgressing             = "Progressing"
+)
+
+// Reasons for the DNSManagement condition.
+const (
+	ReasonDNSManaged       = "Managed"
+	ReasonDNSNotConfigured = "NotConfigured"
 )

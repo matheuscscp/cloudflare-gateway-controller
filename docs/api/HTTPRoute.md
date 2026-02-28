@@ -132,8 +132,7 @@ permitted by a `ReferenceGrant`.
 #### DNS records applied
 
 Custom condition, not part of the Gateway API spec. Reports whether DNS CNAME
-records have been applied for
-the route's hostnames. This condition is only present when DNS is configured in
+records have been applied for the route's hostnames. This condition is only present when DNS is configured in
 the [CloudflareGatewayParameters](CloudflareGatewayParameters.md).
 
 When DNS records are applied successfully:
@@ -172,7 +171,7 @@ When the Gateway has a terminal failure:
 - `status: "False"`
 - `reason: ReconciliationFailed`
 
-When the Gateway is waiting for Deployments:
+When the Gateway is waiting for the Deployment:
 
 - `type: Ready`
 - `status: "Unknown"`
