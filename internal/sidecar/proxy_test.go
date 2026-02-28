@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -32,7 +33,7 @@ func TestProxy_HostnameRouting(t *testing.T) {
 	p := &sidecar.Proxy{}
 	setConfig(t, p, &sidecar.Config{
 		Routes: []sidecar.Route{
-			{Hostname: "app.example.com", Service: backend.URL},
+			{Hostname: "app.example.com", Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}}},
 		},
 	})
 
@@ -49,7 +50,7 @@ func TestProxy_NoMatch404(t *testing.T) {
 	p := &sidecar.Proxy{}
 	setConfig(t, p, &sidecar.Config{
 		Routes: []sidecar.Route{
-			{Hostname: "app.example.com", Service: "http://backend:8080"},
+			{Hostname: "app.example.com", Backends: []sidecar.Backend{{Service: "http://backend:8080", Weight: 1}}},
 		},
 	})
 
@@ -75,8 +76,8 @@ func TestProxy_LongestPathPrefixMatch(t *testing.T) {
 	p := &sidecar.Proxy{}
 	setConfig(t, p, &sidecar.Config{
 		Routes: []sidecar.Route{
-			{Hostname: "app.example.com", PathPrefix: "/", Service: rootBackend.URL},
-			{Hostname: "app.example.com", PathPrefix: "/api", Service: apiBackend.URL},
+			{Hostname: "app.example.com", PathPrefix: "/", Backends: []sidecar.Backend{{Service: rootBackend.URL, Weight: 1}}},
+			{Hostname: "app.example.com", PathPrefix: "/api", Backends: []sidecar.Backend{{Service: apiBackend.URL, Weight: 1}}},
 		},
 	})
 
@@ -120,7 +121,7 @@ func TestProxy_HostHeaderForwarded(t *testing.T) {
 	p := &sidecar.Proxy{}
 	setConfig(t, p, &sidecar.Config{
 		Routes: []sidecar.Route{
-			{Hostname: "app.example.com", Service: backend.URL},
+			{Hostname: "app.example.com", Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}}},
 		},
 	})
 
@@ -137,8 +138,8 @@ func TestParseServiceURLs_InvalidURL(t *testing.T) {
 
 	cfg := &sidecar.Config{
 		Routes: []sidecar.Route{
-			{Hostname: "app.example.com", Service: "http://valid:8080"},
-			{Hostname: "bad.example.com", Service: "://invalid"},
+			{Hostname: "app.example.com", Backends: []sidecar.Backend{{Service: "http://valid:8080", Weight: 1}}},
+			{Hostname: "bad.example.com", Backends: []sidecar.Backend{{Service: "://invalid", Weight: 1}}},
 		},
 	}
 	err := cfg.ParseServiceURLs()
@@ -159,7 +160,7 @@ func TestProxy_DisableKeepAlives(t *testing.T) {
 	p := &sidecar.Proxy{}
 	setConfig(t, p, &sidecar.Config{
 		Routes: []sidecar.Route{
-			{Hostname: "app.example.com", Service: backend.URL},
+			{Hostname: "app.example.com", Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}}},
 		},
 	})
 
@@ -184,7 +185,7 @@ func TestProxy_PathForwardedAsIs(t *testing.T) {
 	p := &sidecar.Proxy{}
 	setConfig(t, p, &sidecar.Config{
 		Routes: []sidecar.Route{
-			{Hostname: "app.example.com", PathPrefix: "/api", Service: backend.URL},
+			{Hostname: "app.example.com", PathPrefix: "/api", Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}}},
 		},
 	})
 
@@ -207,7 +208,7 @@ func TestProxy_HostWithPort(t *testing.T) {
 	p := &sidecar.Proxy{}
 	setConfig(t, p, &sidecar.Config{
 		Routes: []sidecar.Route{
-			{Hostname: "app.example.com", Service: backend.URL},
+			{Hostname: "app.example.com", Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}}},
 		},
 	})
 
@@ -218,4 +219,129 @@ func TestProxy_HostWithPort(t *testing.T) {
 
 	body, _ := io.ReadAll(rec.Body)
 	g.Expect(string(body)).To(Equal("ok"))
+}
+
+func TestProxy_SingleBackend(t *testing.T) {
+	g := NewWithT(t)
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("single"))
+	}))
+	defer backend.Close()
+
+	p := &sidecar.Proxy{}
+	setConfig(t, p, &sidecar.Config{
+		Routes: []sidecar.Route{
+			{Hostname: "app.example.com", Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}}},
+		},
+	})
+
+	for range 100 {
+		req := httptest.NewRequest("GET", "http://app.example.com/", nil)
+		rec := httptest.NewRecorder()
+		p.ServeHTTP(rec, req)
+		g.Expect(rec.Code).To(Equal(http.StatusOK))
+		g.Expect(rec.Body.String()).To(Equal("single"))
+	}
+}
+
+func TestProxy_WeightedBackends(t *testing.T) {
+	g := NewWithT(t)
+
+	var countA, countB atomic.Int32
+	backendA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		countA.Add(1)
+		_, _ = w.Write([]byte("a"))
+	}))
+	defer backendA.Close()
+
+	backendB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		countB.Add(1)
+		_, _ = w.Write([]byte("b"))
+	}))
+	defer backendB.Close()
+
+	p := &sidecar.Proxy{}
+	setConfig(t, p, &sidecar.Config{
+		Routes: []sidecar.Route{
+			{Hostname: "app.example.com", Backends: []sidecar.Backend{
+				{Service: backendA.URL, Weight: 80},
+				{Service: backendB.URL, Weight: 20},
+			}},
+		},
+	})
+
+	const totalRequests = 1000
+	for range totalRequests {
+		req := httptest.NewRequest("GET", "http://app.example.com/", nil)
+		rec := httptest.NewRecorder()
+		p.ServeHTTP(rec, req)
+		g.Expect(rec.Code).To(Equal(http.StatusOK))
+	}
+
+	a := int(countA.Load())
+	b := int(countB.Load())
+	g.Expect(a + b).To(Equal(totalRequests))
+	// Both backends should receive traffic
+	g.Expect(a).To(BeNumerically(">", 0))
+	g.Expect(b).To(BeNumerically(">", 0))
+	// Backend A should receive approximately 80% (±15% tolerance)
+	g.Expect(a).To(BeNumerically(">=", 650)) // 80% - 15% = 65%
+	g.Expect(a).To(BeNumerically("<=", 950)) // 80% + 15% = 95%
+}
+
+func TestProxy_ZeroWeightSkipped(t *testing.T) {
+	g := NewWithT(t)
+
+	var countA, countB atomic.Int32
+	backendA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		countA.Add(1)
+		_, _ = w.Write([]byte("a"))
+	}))
+	defer backendA.Close()
+
+	backendB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		countB.Add(1)
+		_, _ = w.Write([]byte("b"))
+	}))
+	defer backendB.Close()
+
+	p := &sidecar.Proxy{}
+	setConfig(t, p, &sidecar.Config{
+		Routes: []sidecar.Route{
+			{Hostname: "app.example.com", Backends: []sidecar.Backend{
+				{Service: backendA.URL, Weight: 0},
+				{Service: backendB.URL, Weight: 1},
+			}},
+		},
+	})
+
+	for range 100 {
+		req := httptest.NewRequest("GET", "http://app.example.com/", nil)
+		rec := httptest.NewRecorder()
+		p.ServeHTTP(rec, req)
+		g.Expect(rec.Code).To(Equal(http.StatusOK))
+		g.Expect(rec.Body.String()).To(Equal("b"))
+	}
+
+	g.Expect(int(countA.Load())).To(Equal(0))
+	g.Expect(int(countB.Load())).To(Equal(100))
+}
+
+func TestProxy_AllZeroWeights502(t *testing.T) {
+	g := NewWithT(t)
+
+	p := &sidecar.Proxy{}
+	setConfig(t, p, &sidecar.Config{
+		Routes: []sidecar.Route{
+			{Hostname: "app.example.com", Backends: []sidecar.Backend{
+				{Service: "http://backend:8080", Weight: 0},
+			}},
+		},
+	})
+
+	req := httptest.NewRequest("GET", "http://app.example.com/", nil)
+	rec := httptest.NewRecorder()
+	p.ServeHTTP(rec, req)
+	g.Expect(rec.Code).To(Equal(http.StatusBadGateway))
 }

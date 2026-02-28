@@ -1816,17 +1816,7 @@ spec:
       port: 80
 EOF
 
-    log "Waiting for HTTPS endpoint to be reachable at '$hostname'..."
-    for i in $(seq 1 60); do
-        if curl -sf "https://$hostname/" >/dev/null 2>&1; then break; fi
-        if [ "$i" = "60" ]; then
-            echo "Last curl attempt output:"
-            curl -sv "https://$hostname/" 2>&1 || true
-            fail "HTTPS endpoint not reachable at $hostname"
-        fi
-        sleep 5
-    done
-    pass "HTTPS endpoint reachable"
+    wait_for_https "https://$hostname/"
 
     log "Running load test..."
     "$CFGWCTL" test load \
@@ -1974,17 +1964,7 @@ spec:
       port: 80
 EOF
 
-    log "Waiting for HTTPS endpoint to be reachable at '$hostname'..."
-    for i in $(seq 1 60); do
-        if curl -sf "https://$hostname/" >/dev/null 2>&1; then break; fi
-        if [ "$i" = "60" ]; then
-            echo "Last curl attempt output:"
-            curl -sv "https://$hostname/" 2>&1 || true
-            fail "HTTPS endpoint not reachable at $hostname"
-        fi
-        sleep 5
-    done
-    pass "HTTPS endpoint reachable"
+    wait_for_https "https://$hostname/"
 
     log "Running traffic check (sidecar disabled)..."
     "$CFGWCTL" test load \
@@ -2004,6 +1984,192 @@ EOF
     kubectl delete service sd-backend -n "$TEST_NS" --ignore-not-found
 }
 
+test_traffic_splitting() {
+    local hostname="ts-${TS: -6}.${TEST_TRAFFIC_ZONE_NAME}"
+
+    log "Deploying 2 separate backends for traffic splitting..."
+
+    # Deploy ts-svc-a (1 replica)
+    kubectl apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ts-svc-a
+  namespace: $TEST_NS
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ts-svc-a
+  template:
+    metadata:
+      labels:
+        app: ts-svc-a
+    spec:
+      containers:
+      - name: server
+        image: $IMAGE
+        args: ["test", "serve"]
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /_healthz
+            port: 8080
+          initialDelaySeconds: 1
+          periodSeconds: 2
+EOF
+
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: ts-svc-a
+  namespace: $TEST_NS
+spec:
+  selector:
+    app: ts-svc-a
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+EOF
+
+    # Deploy ts-svc-b (1 replica)
+    kubectl apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ts-svc-b
+  namespace: $TEST_NS
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ts-svc-b
+  template:
+    metadata:
+      labels:
+        app: ts-svc-b
+    spec:
+      containers:
+      - name: server
+        image: $IMAGE
+        args: ["test", "serve"]
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /_healthz
+            port: 8080
+          initialDelaySeconds: 1
+          periodSeconds: 2
+EOF
+
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: ts-svc-b
+  namespace: $TEST_NS
+spec:
+  selector:
+    app: ts-svc-b
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+EOF
+
+    log "Waiting for ts-svc-a rollout..."
+    kubectl rollout status deployment/ts-svc-a -n "$TEST_NS" --timeout=120s \
+        || fail "ts-svc-a deployment did not become ready"
+    log "Waiting for ts-svc-b rollout..."
+    kubectl rollout status deployment/ts-svc-b -n "$TEST_NS" --timeout=120s \
+        || fail "ts-svc-b deployment did not become ready"
+    pass "Both traffic splitting deployments ready"
+
+    log "Creating Gateway 'ts-gw' (bare Secret)..."
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: ts-gw
+  namespace: $TEST_NS
+spec:
+  gatewayClassName: cloudflare
+  infrastructure:
+    parametersRef:
+      group: ""
+      kind: Secret
+      name: cloudflare-creds
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+EOF
+
+    retry 60 5 kubectl wait gateway/ts-gw -n "$TEST_NS" \
+        --for=condition=Programmed --timeout=5s \
+        || fail "ts-gw did not become Programmed"
+    pass "ts-gw is Programmed"
+
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: ts-route
+  namespace: $TEST_NS
+spec:
+  parentRefs:
+  - name: ts-gw
+  hostnames:
+  - "$hostname"
+  rules:
+  - backendRefs:
+    - name: ts-svc-a
+      port: 80
+      weight: 80
+    - name: ts-svc-b
+      port: 80
+      weight: 20
+EOF
+
+    wait_for_https "https://$hostname/"
+
+    log "Running traffic splitting load test (200 requests)..."
+    "$CFGWCTL" test load \
+        --url "https://$hostname/" \
+        --requests 200 \
+        --concurrency 5 \
+        --namespace "$TEST_NS" \
+        --backend "app=ts-svc-a:80" \
+        --backend "app=ts-svc-b:20" \
+        --tolerance 0.15 \
+        || fail "traffic splitting load test failed"
+    pass "Traffic splitting distribution check passed"
+
+    log "Cleaning up traffic splitting test..."
+    kubectl delete httproute ts-route -n "$TEST_NS"
+    kubectl delete gateway ts-gw -n "$TEST_NS"
+    retry 60 3 bash -c "! kubectl get gateway ts-gw -n '$TEST_NS' 2>/dev/null" \
+        || fail "ts-gw still exists"
+    kubectl delete deployment ts-svc-a -n "$TEST_NS" --ignore-not-found
+    kubectl delete deployment ts-svc-b -n "$TEST_NS" --ignore-not-found
+    kubectl delete service ts-svc-a -n "$TEST_NS" --ignore-not-found
+    kubectl delete service ts-svc-b -n "$TEST_NS" --ignore-not-found
+}
+
 # ─── Run ──────────────────────────────────────────────────────────────────────
 
 run_tests \
@@ -2020,4 +2186,5 @@ run_tests \
     test_multi_gateway_overlapping_zones \
     test_cluster_recreation \
     test_load_balancing \
-    test_sidecar_disabled
+    test_sidecar_disabled \
+    test_traffic_splitting

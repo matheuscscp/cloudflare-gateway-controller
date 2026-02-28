@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -28,6 +30,8 @@ func newTestLoadCmd() *cobra.Command {
 		podPort       int
 		maxCV         float64
 		kubeconfig    string
+		backends      []string
+		tolerance     float64
 	)
 
 	cmd := &cobra.Command{
@@ -84,7 +88,12 @@ func newTestLoadCmd() *cobra.Command {
 					requests, got, err5xx.Load(), other.Load())
 			}
 
-			// Phase 2: Pod distribution check (optional).
+			// Phase 2a: Weighted backend distribution check (optional).
+			if len(backends) > 0 {
+				return checkWeightedDistribution(ctx, namespace, backends, podPort, tolerance, kubeconfig)
+			}
+
+			// Phase 2b: Even pod distribution check (optional).
 			if namespace == "" || labelSelector == "" {
 				fmt.Println("\nSkipping pod distribution check (no --namespace/--label-selector)")
 				return nil
@@ -92,20 +101,9 @@ func newTestLoadCmd() *cobra.Command {
 
 			fmt.Printf("\nChecking pod distribution (namespace=%s, selector=%s)...\n", namespace, labelSelector)
 
-			loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
-			if kubeconfig != "" {
-				loadingRules.ExplicitPath = kubeconfig
-			}
-			config, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
-				loadingRules, &clientcmd.ConfigOverrides{},
-			).ClientConfig()
+			clientset, err := buildClientset(kubeconfig)
 			if err != nil {
-				return fmt.Errorf("loading kubeconfig: %w", err)
-			}
-
-			clientset, err := kubernetes.NewForConfig(config)
-			if err != nil {
-				return fmt.Errorf("creating kubernetes client: %w", err)
+				return err
 			}
 
 			pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
@@ -178,9 +176,145 @@ func newTestLoadCmd() *cobra.Command {
 	cmd.Flags().IntVar(&podPort, "pod-port", 8080, "pod port for /_count endpoint")
 	cmd.Flags().Float64Var(&maxCV, "max-cv", 0.5, "max coefficient of variation")
 	cmd.Flags().StringVar(&kubeconfig, "kubeconfig", "", "kubeconfig path (optional)")
+	cmd.Flags().StringArrayVar(&backends, "backend", nil,
+		"weighted backend for traffic splitting check: selector:weight (e.g. app=svc-a:80); repeatable")
+	cmd.Flags().Float64Var(&tolerance, "tolerance", 0.15,
+		"max deviation from expected share (0.15 = ±15%) for --backend checks")
 	cobra.CheckErr(cmd.MarkFlagRequired("url"))
 
 	return cmd
+}
+
+// backendSpec holds a parsed --backend flag value.
+type backendSpec struct {
+	selector string
+	weight   int
+}
+
+// parseBackendFlag parses "selector:weight" (e.g. "app=svc-a:80").
+func parseBackendFlag(s string) (backendSpec, error) {
+	idx := strings.LastIndex(s, ":")
+	if idx < 0 {
+		return backendSpec{}, fmt.Errorf("invalid --backend %q: expected selector:weight", s)
+	}
+	sel := s[:idx]
+	w, err := strconv.Atoi(s[idx+1:])
+	if err != nil {
+		return backendSpec{}, fmt.Errorf("invalid weight in --backend %q: %w", s, err)
+	}
+	if w < 0 {
+		return backendSpec{}, fmt.Errorf("negative weight in --backend %q", s)
+	}
+	return backendSpec{selector: sel, weight: w}, nil
+}
+
+// checkWeightedDistribution verifies that traffic was split across backend
+// groups according to the specified weights within the given tolerance.
+func checkWeightedDistribution(ctx context.Context, namespace string, backendFlags []string, podPort int, tolerance float64, kubeconfig string) error {
+	if namespace == "" {
+		return fmt.Errorf("--namespace is required when using --backend")
+	}
+
+	specs := make([]backendSpec, 0, len(backendFlags))
+	var totalWeight int
+	for _, b := range backendFlags {
+		spec, err := parseBackendFlag(b)
+		if err != nil {
+			return err
+		}
+		specs = append(specs, spec)
+		totalWeight += spec.weight
+	}
+	if totalWeight == 0 {
+		return fmt.Errorf("total weight must be > 0")
+	}
+
+	clientset, err := buildClientset(kubeconfig)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("\nChecking weighted backend distribution (namespace=%s)...\n", namespace)
+
+	type groupResult struct {
+		selector      string
+		weight        int
+		count         int64
+		expectedShare float64
+		actualShare   float64
+	}
+
+	var totalCount int64
+	results := make([]groupResult, len(specs))
+	for i, spec := range specs {
+		pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+			LabelSelector: spec.selector,
+		})
+		if err != nil {
+			return fmt.Errorf("listing pods for selector %q: %w", spec.selector, err)
+		}
+		if len(pods.Items) == 0 {
+			return fmt.Errorf("no pods found matching selector %q in namespace %q", spec.selector, namespace)
+		}
+
+		var groupCount int64
+		for _, pod := range pods.Items {
+			count, err := getPodCount(ctx, clientset, namespace, pod.Name, podPort)
+			if err != nil {
+				return fmt.Errorf("getting count from pod %s: %w", pod.Name, err)
+			}
+			groupCount += count
+		}
+		results[i] = groupResult{
+			selector:      spec.selector,
+			weight:        spec.weight,
+			count:         groupCount,
+			expectedShare: float64(spec.weight) / float64(totalWeight),
+		}
+		totalCount += groupCount
+	}
+
+	fmt.Printf("\nPer-backend request counts:\n")
+	for i := range results {
+		results[i].actualShare = float64(results[i].count) / float64(totalCount)
+		fmt.Printf("  %s (weight %d): %d requests (%.1f%% actual, %.1f%% expected)\n",
+			results[i].selector, results[i].weight, results[i].count,
+			results[i].actualShare*100, results[i].expectedShare*100)
+	}
+	fmt.Printf("  total: %d\n", totalCount)
+
+	// Verify each group received traffic and is within tolerance.
+	for _, r := range results {
+		if r.weight > 0 && r.count == 0 {
+			return fmt.Errorf("backend %q (weight %d) received 0 requests", r.selector, r.weight)
+		}
+		deviation := math.Abs(r.actualShare - r.expectedShare)
+		if deviation > tolerance {
+			return fmt.Errorf("backend %q: actual share %.1f%% deviates %.1f%% from expected %.1f%% (max tolerance %.1f%%)",
+				r.selector, r.actualShare*100, deviation*100, r.expectedShare*100, tolerance*100)
+		}
+	}
+
+	fmt.Println("\nWeighted distribution check PASSED")
+	return nil
+}
+
+func buildClientset(kubeconfig string) (kubernetes.Interface, error) {
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	if kubeconfig != "" {
+		loadingRules.ExplicitPath = kubeconfig
+	}
+	config, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+		loadingRules, &clientcmd.ConfigOverrides{},
+	).ClientConfig()
+	if err != nil {
+		return nil, fmt.Errorf("loading kubeconfig: %w", err)
+	}
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("creating kubernetes client: %w", err)
+	}
+	return clientset, nil
 }
 
 func getPodCount(ctx context.Context, clientset kubernetes.Interface, namespace, podName string, port int) (int64, error) {

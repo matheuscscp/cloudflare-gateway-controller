@@ -113,10 +113,15 @@ backend Service, bypassing kube-proxy and pinning all traffic to one pod.
 The sidecar receives all traffic from cloudflared on `localhost:8080`, routes requests
 by hostname and path prefix to the correct backend Service, and disables HTTP
 keep-alives on egress so every request opens a fresh connection through kube-proxy
-for proper pod-level load balancing.
+for proper pod-level load balancing. When an HTTPRoute rule has multiple `backendRefs`
+with `weight` fields, the sidecar distributes requests across backends according to
+their weights (traffic splitting).
 
 The sidecar is enabled by default. To disable it for a specific Gateway, set
-`tunnel.sidecar.enabled: false` in your CloudflareGatewayParameters.
+`tunnel.sidecar.enabled: false` in your CloudflareGatewayParameters. When disabled,
+cloudflared connects directly to backend Services with persistent connections,
+which means kube-proxy cannot effectively distribute traffic across pods. Traffic
+splitting (weighted `backendRefs`) is also not available.
 
 ## API Token Permissions
 

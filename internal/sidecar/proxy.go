@@ -4,6 +4,7 @@
 package sidecar
 
 import (
+	"math/rand/v2"
 	"net/http"
 	"net/http/httputil"
 	"strings"
@@ -28,8 +29,9 @@ func (p *Proxy) SetConfig(cfg *Config) {
 }
 
 // ServeHTTP implements http.Handler. It matches the request by hostname (exact)
-// then longest PathPrefix, and forwards the request to the matched backend with
-// DisableKeepAlives so each request opens a fresh TCP connection through kube-proxy.
+// then longest PathPrefix, picks a weighted backend, and forwards the request
+// with DisableKeepAlives so each request opens a fresh TCP connection through
+// kube-proxy.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	cfg := p.config.Load()
 	if cfg == nil {
@@ -44,16 +46,45 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	backend := pickBackend(route)
+	if backend == nil {
+		http.Error(w, "no available backend", http.StatusBadGateway)
+		return
+	}
+
 	proxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
-			req.URL.Scheme = route.serviceURL.Scheme
-			req.URL.Host = route.serviceURL.Host
+			req.URL.Scheme = backend.serviceURL.Scheme
+			req.URL.Host = backend.serviceURL.Host
 		},
 		Transport: &http.Transport{
 			DisableKeepAlives: true,
 		},
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+// pickBackend selects a backend from the route using weighted random selection.
+// Backends with weight 0 are never selected. Returns nil if no backend is
+// available (empty slice or all weights are 0).
+func pickBackend(route *Route) *Backend {
+	var totalWeight int32
+	for i := range route.Backends {
+		totalWeight += route.Backends[i].Weight
+	}
+	if totalWeight <= 0 {
+		return nil
+	}
+
+	r := rand.Int32N(totalWeight)
+	var cumulative int32
+	for i := range route.Backends {
+		cumulative += route.Backends[i].Weight
+		if r < cumulative {
+			return &route.Backends[i]
+		}
+	}
+	return nil // unreachable
 }
 
 // matchRoute finds the best matching route: exact hostname match, then

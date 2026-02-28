@@ -75,6 +75,7 @@ func (r *GatewayReconciler) reconcileSidecarConfigMap(ctx context.Context, gw *g
 
 // buildSidecarConfig converts valid HTTPRoutes into sidecar.Config routes.
 // This parallels buildIngressRules but produces sidecar.Route structs.
+// Each rule's backendRefs are emitted as weighted backends on the sidecar route.
 // Returns the sidecar config, a map of routes with denied backend refs, and
 // any transient error from ReferenceGrant checks.
 func buildSidecarConfig(ctx context.Context, r client.Reader, routes []*gatewayv1.HTTPRoute) (sidecar.Config, map[types.NamespacedName][]string, error) {
@@ -85,31 +86,43 @@ func buildSidecarConfig(ctx context.Context, r client.Reader, routes []*gatewayv
 			if len(rule.BackendRefs) == 0 {
 				continue
 			}
-			ref := rule.BackendRefs[0]
-			ns := route.Namespace
-			if ref.Namespace != nil {
-				ns = string(*ref.Namespace)
+			var backends []sidecar.Backend
+			denied := false
+			for _, ref := range rule.BackendRefs {
+				ns := route.Namespace
+				if ref.Namespace != nil {
+					ns = string(*ref.Namespace)
+				}
+				granted, err := backendReferenceGranted(ctx, r, route.Namespace, ns, string(ref.Name))
+				if err != nil {
+					return sidecar.Config{}, nil, fmt.Errorf("checking ReferenceGrant for backendRef %s/%s in HTTPRoute %s/%s: %w", ns, ref.Name, route.Namespace, route.Name, err)
+				}
+				if !granted {
+					key := types.NamespacedName{Namespace: route.Namespace, Name: route.Name}
+					routesWithDeniedRefs[key] = append(routesWithDeniedRefs[key], ns+"/"+string(ref.Name))
+					denied = true
+					continue
+				}
+				port := int32(80)
+				if ref.Port != nil {
+					port = *ref.Port
+				}
+				weight := int32(1)
+				if ref.Weight != nil {
+					weight = *ref.Weight
+				}
+				service := fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", string(ref.Name), ns, port)
+				backends = append(backends, sidecar.Backend{Service: service, Weight: weight})
 			}
-			granted, err := backendReferenceGranted(ctx, r, route.Namespace, ns, string(ref.Name))
-			if err != nil {
-				return sidecar.Config{}, nil, fmt.Errorf("checking ReferenceGrant for backendRef %s/%s in HTTPRoute %s/%s: %w", ns, ref.Name, route.Namespace, route.Name, err)
-			}
-			if !granted {
-				key := types.NamespacedName{Namespace: route.Namespace, Name: route.Name}
-				routesWithDeniedRefs[key] = append(routesWithDeniedRefs[key], ns+"/"+string(ref.Name))
+			if denied || len(backends) == 0 {
 				continue
 			}
-			port := int32(80)
-			if ref.Port != nil {
-				port = *ref.Port
-			}
-			service := fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", string(ref.Name), ns, port)
 			pathPrefix := pathFromMatches(rule.Matches)
 			for _, hostname := range route.Spec.Hostnames {
 				sidecarRoutes = append(sidecarRoutes, sidecar.Route{
 					Hostname:   string(hostname),
 					PathPrefix: pathPrefix,
-					Service:    service,
+					Backends:   backends,
 				})
 			}
 		}

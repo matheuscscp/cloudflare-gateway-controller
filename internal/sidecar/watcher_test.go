@@ -27,7 +27,9 @@ func TestWatcher_LoadsConfigFromConfigMap(t *testing.T) {
 
 	configData := `routes:
 - hostname: app.example.com
-  service: ` + backend.URL + `
+  backends:
+  - service: ` + backend.URL + `
+    weight: 1
 `
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -130,7 +132,9 @@ func TestWatcher_IgnoresInvalidServiceURL(t *testing.T) {
 		Data: map[string]string{
 			"config.yaml": `routes:
 - hostname: app.example.com
-  service: "://invalid"
+  backends:
+  - service: "://invalid"
+    weight: 1
 `,
 		},
 	}
