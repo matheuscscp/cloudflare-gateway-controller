@@ -18,6 +18,8 @@ func newTestCmd() *cobra.Command {
 
 	cmd.AddCommand(newTunnelCmd(&credentialsFile))
 	cmd.AddCommand(newDNSCmd(&credentialsFile))
+	cmd.AddCommand(newTestServeCmd())
+	cmd.AddCommand(newTestLoadCmd())
 
 	return cmd
 }

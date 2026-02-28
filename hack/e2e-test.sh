@@ -18,8 +18,9 @@
 #   REUSE_CONTROLLER   — if "1", skip controller install if already running
 #   RELOAD_CONTROLLER  — if "1", reload image and restart controller
 #   TEST               — if set, run only the named test function
-#   TEST_ZONE_NAME_2   — second DNS zone for multi-zone tests (optional; tests skipped if unset)
-#   TEST_ZONE_NAME_3   — third DNS zone for multi-zone tests (optional; tests skipped if unset)
+#   TEST_ZONE_NAME_2          — second DNS zone for multi-zone tests (optional; tests skipped if unset)
+#   TEST_ZONE_NAME_3          — third DNS zone for multi-zone tests (optional; tests skipped if unset)
+#   TEST_TRAFFIC_ZONE_NAME    — zone for traffic tests needing TLS (default: cloudflare-gateway-controller.dev)
 
 set -euo pipefail
 
@@ -27,6 +28,11 @@ set -euo pipefail
 KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-cfgw-e2e}"
 TEST_NS="${TEST_NS:-cfgw-e2e-test}"
 TEST_ZONE_NAME="${TEST_ZONE_NAME:-dev.cloudflare-gateway-controller.dev}"
+# Traffic tests need TLS-capable hostnames (*.zone). Cloudflare free Universal SSL
+# only covers single-level wildcards, so hostnames must be direct subdomains of
+# the Cloudflare zone (e.g. lb-123.cloudflare-gateway-controller.dev, NOT
+# lb-123.dev.cloudflare-gateway-controller.dev which is 4 levels).
+TEST_TRAFFIC_ZONE_NAME="${TEST_TRAFFIC_ZONE_NAME:-cloudflare-gateway-controller.dev}"
 
 # Source shared library.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -1709,6 +1715,295 @@ EOF
     kubectl delete service overlap-backend -n "$TEST_NS" --ignore-not-found
 }
 
+test_load_balancing() {
+    local hostname="lb-${TS: -6}.${TEST_TRAFFIC_ZONE_NAME}"
+
+    log "Deploying 10-replica test server for load balancing..."
+    kubectl apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lb-test
+  namespace: $TEST_NS
+spec:
+  replicas: 10
+  selector:
+    matchLabels:
+      app: lb-test
+  template:
+    metadata:
+      labels:
+        app: lb-test
+    spec:
+      containers:
+      - name: server
+        image: $IMAGE
+        args: ["test", "serve"]
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /_healthz
+            port: 8080
+          initialDelaySeconds: 1
+          periodSeconds: 2
+EOF
+
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: lb-backend
+  namespace: $TEST_NS
+spec:
+  selector:
+    app: lb-test
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+EOF
+
+    log "Waiting for lb-test rollout..."
+    kubectl rollout status deployment/lb-test -n "$TEST_NS" --timeout=120s \
+        || fail "lb-test deployment did not become ready"
+    pass "lb-test deployment ready"
+
+    log "Creating Gateway 'lb-gw' (bare Secret)..."
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: lb-gw
+  namespace: $TEST_NS
+spec:
+  gatewayClassName: cloudflare
+  infrastructure:
+    parametersRef:
+      group: ""
+      kind: Secret
+      name: cloudflare-creds
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+EOF
+
+    retry 60 5 kubectl wait gateway/lb-gw -n "$TEST_NS" \
+        --for=condition=Programmed --timeout=5s \
+        || fail "lb-gw did not become Programmed"
+    pass "lb-gw is Programmed"
+
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: lb-route
+  namespace: $TEST_NS
+spec:
+  parentRefs:
+  - name: lb-gw
+  hostnames:
+  - "$hostname"
+  rules:
+  - backendRefs:
+    - name: lb-backend
+      port: 80
+EOF
+
+    log "Waiting for HTTPS endpoint to be reachable at '$hostname'..."
+    for i in $(seq 1 60); do
+        if curl -sf "https://$hostname/" >/dev/null 2>&1; then break; fi
+        if [ "$i" = "60" ]; then
+            echo "Last curl attempt output:"
+            curl -sv "https://$hostname/" 2>&1 || true
+            fail "HTTPS endpoint not reachable at $hostname"
+        fi
+        sleep 5
+    done
+    pass "HTTPS endpoint reachable"
+
+    log "Running load test..."
+    "$CFGWCTL" test load \
+        --url "https://$hostname/" \
+        --requests 1000 \
+        --concurrency 10 \
+        --namespace "$TEST_NS" \
+        --label-selector app=lb-test \
+        --max-cv 0.5 \
+        || fail "load test failed"
+    pass "Load balancing distribution check passed"
+
+    log "Cleaning up load balancing test..."
+    kubectl delete httproute lb-route -n "$TEST_NS"
+    kubectl delete gateway lb-gw -n "$TEST_NS"
+    retry 60 3 bash -c "! kubectl get gateway lb-gw -n '$TEST_NS' 2>/dev/null" \
+        || fail "lb-gw still exists"
+    kubectl delete deployment lb-test -n "$TEST_NS" --ignore-not-found
+    kubectl delete service lb-backend -n "$TEST_NS" --ignore-not-found
+}
+
+test_sidecar_disabled() {
+    local hostname="sd-${TS: -6}.${TEST_TRAFFIC_ZONE_NAME}"
+
+    log "Deploying 1-replica test server for sidecar-disabled test..."
+    kubectl apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sd-test
+  namespace: $TEST_NS
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sd-test
+  template:
+    metadata:
+      labels:
+        app: sd-test
+    spec:
+      containers:
+      - name: server
+        image: $IMAGE
+        args: ["test", "serve"]
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /_healthz
+            port: 8080
+          initialDelaySeconds: 1
+          periodSeconds: 2
+EOF
+
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: sd-backend
+  namespace: $TEST_NS
+spec:
+  selector:
+    app: sd-test
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+EOF
+
+    log "Waiting for sd-test rollout..."
+    kubectl rollout status deployment/sd-test -n "$TEST_NS" --timeout=120s \
+        || fail "sd-test deployment did not become ready"
+    pass "sd-test deployment ready"
+
+    log "Creating CloudflareGatewayParameters 'sd-params' with sidecar disabled..."
+    kubectl apply -f - <<EOF
+apiVersion: cloudflare-gateway-controller.io/v1
+kind: CloudflareGatewayParameters
+metadata:
+  name: sd-params
+  namespace: $TEST_NS
+spec:
+  secretRef:
+    name: cloudflare-creds
+  tunnel:
+    sidecar:
+      enabled: false
+EOF
+
+    log "Creating Gateway 'sd-gw' referencing sd-params..."
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: sd-gw
+  namespace: $TEST_NS
+spec:
+  gatewayClassName: cloudflare
+  infrastructure:
+    parametersRef:
+      group: cloudflare-gateway-controller.io
+      kind: CloudflareGatewayParameters
+      name: sd-params
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+EOF
+
+    retry 60 5 kubectl wait gateway/sd-gw -n "$TEST_NS" \
+        --for=condition=Programmed --timeout=5s \
+        || fail "sd-gw did not become Programmed"
+    pass "sd-gw is Programmed"
+
+    log "Verifying Sidecar condition is False/Disabled..."
+    check_sidecar_disabled() {
+        local reason
+        reason=$(kubectl get gateway sd-gw -n "$TEST_NS" \
+            -o jsonpath='{.status.conditions[?(@.type=="Sidecar")].reason}')
+        [ "$reason" = "Disabled" ]
+    }
+    retry 30 2 check_sidecar_disabled || fail "Sidecar condition not Disabled"
+    pass "Sidecar condition is False/Disabled"
+
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: sd-route
+  namespace: $TEST_NS
+spec:
+  parentRefs:
+  - name: sd-gw
+  hostnames:
+  - "$hostname"
+  rules:
+  - backendRefs:
+    - name: sd-backend
+      port: 80
+EOF
+
+    log "Waiting for HTTPS endpoint to be reachable at '$hostname'..."
+    for i in $(seq 1 60); do
+        if curl -sf "https://$hostname/" >/dev/null 2>&1; then break; fi
+        if [ "$i" = "60" ]; then
+            echo "Last curl attempt output:"
+            curl -sv "https://$hostname/" 2>&1 || true
+            fail "HTTPS endpoint not reachable at $hostname"
+        fi
+        sleep 5
+    done
+    pass "HTTPS endpoint reachable"
+
+    log "Running traffic check (sidecar disabled)..."
+    "$CFGWCTL" test load \
+        --url "https://$hostname/" \
+        --requests 10 \
+        --concurrency 1 \
+        || fail "traffic check failed"
+    pass "Traffic flows end-to-end with sidecar disabled"
+
+    log "Cleaning up sidecar-disabled test..."
+    kubectl delete httproute sd-route -n "$TEST_NS"
+    kubectl delete gateway sd-gw -n "$TEST_NS"
+    retry 60 3 bash -c "! kubectl get gateway sd-gw -n '$TEST_NS' 2>/dev/null" \
+        || fail "sd-gw still exists"
+    kubectl delete cloudflaregatewayparameters sd-params -n "$TEST_NS" --ignore-not-found
+    kubectl delete deployment sd-test -n "$TEST_NS" --ignore-not-found
+    kubectl delete service sd-backend -n "$TEST_NS" --ignore-not-found
+}
+
 # ─── Run ──────────────────────────────────────────────────────────────────────
 
 run_tests \
@@ -1723,4 +2018,6 @@ run_tests \
     test_multiple_listeners_rejected \
     test_multi_zone_dns \
     test_multi_gateway_overlapping_zones \
-    test_cluster_recreation
+    test_cluster_recreation \
+    test_load_balancing \
+    test_sidecar_disabled
