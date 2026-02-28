@@ -10,6 +10,10 @@ import (
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:shortName=cgs
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Tunnel Name",type=string,JSONPath=`.status.tunnel.name`
+// +kubebuilder:printcolumn:name="Tunnel ID",type=string,JSONPath=`.status.tunnel.id`
+// +kubebuilder:printcolumn:name="DNS",type=string,JSONPath=`.status.conditions[?(@.type=="DNSManagement")].reason`
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 
 // CloudflareGatewayStatus stores the observable Cloudflare resource state
 // for a Gateway managed by this controller. The controller creates one CGS
@@ -31,13 +35,9 @@ type CloudflareGatewayStatusDetail struct {
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
-	// Tunnels lists all Cloudflare tunnels managed for this Gateway.
+	// Tunnel holds the Cloudflare tunnel managed for this Gateway.
 	// +optional
-	Tunnels []TunnelStatus `json:"tunnels,omitempty"`
-
-	// DNS holds the DNS zone info used for CNAME management.
-	// +optional
-	DNS *DNSStatus `json:"dns,omitempty"`
+	Tunnel *TunnelStatus `json:"tunnel,omitempty"`
 }
 
 // TunnelStatus records the state of a single Cloudflare tunnel and its
@@ -54,15 +54,6 @@ type TunnelStatus struct {
 
 	// SecretName is the name of the tunnel token Secret.
 	SecretName string `json:"secretName"`
-}
-
-// DNSStatus records the DNS zone used for CNAME management.
-type DNSStatus struct {
-	// ZoneName is the DNS zone name (e.g. "example.com").
-	ZoneName string `json:"zoneName"`
-
-	// ZoneID is the Cloudflare zone UUID.
-	ZoneID string `json:"zoneID"`
 }
 
 // +kubebuilder:object:root=true

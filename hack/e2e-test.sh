@@ -18,6 +18,8 @@
 #   REUSE_CONTROLLER   — if "1", skip controller install if already running
 #   RELOAD_CONTROLLER  — if "1", reload image and restart controller
 #   TEST               — if set, run only the named test function
+#   TEST_ZONE_NAME_2   — second DNS zone for multi-zone tests (optional; tests skipped if unset)
+#   TEST_ZONE_NAME_3   — third DNS zone for multi-zone tests (optional; tests skipped if unset)
 
 set -euo pipefail
 
@@ -54,8 +56,8 @@ spec:
   secretRef:
     name: cloudflare-creds
   dns:
-    zone:
-      name: "$TEST_ZONE_NAME"
+    zones:
+    - name: "$TEST_ZONE_NAME"
 EOF
 
     log "Creating Gateway 'test-gateway'..."
@@ -205,8 +207,8 @@ spec:
   secretRef:
     name: cloudflare-creds
   dns:
-    zone:
-      name: "$TEST_ZONE_NAME"
+    zones:
+    - name: "$TEST_ZONE_NAME"
 EOF
 
     log "Creating Gateway 'multi-route-gw'..."
@@ -528,7 +530,7 @@ metadata:
 spec:
   secretRef:
     name: cloudflare-creds
-  tunnels:
+  tunnel:
     deployment:
       patches:
       - op: add
@@ -589,8 +591,8 @@ spec:
   secretRef:
     name: cloudflare-creds
   dns:
-    zone:
-      name: "$TEST_ZONE_NAME"
+    zones:
+    - name: "$TEST_ZONE_NAME"
 EOF
 
     log "Creating Gateway 'disabled-gw'..."
@@ -714,8 +716,8 @@ spec:
   secretRef:
     name: cloudflare-creds
   dns:
-    zone:
-      name: "$TEST_ZONE_NAME"
+    zones:
+    - name: "$TEST_ZONE_NAME"
 EOF
 
     log "Creating Gateway 'zone-rm-gw'..."
@@ -833,8 +835,8 @@ spec:
   secretRef:
     name: cloudflare-creds
   dns:
-    zone:
-      name: "$TEST_ZONE_NAME"
+    zones:
+    - name: "$TEST_ZONE_NAME"
 EOF
 
     log "Creating Gateway 'recreate-gw'..."
@@ -952,8 +954,8 @@ spec:
   secretRef:
     name: cloudflare-creds
   dns:
-    zone:
-      name: "$TEST_ZONE_NAME"
+    zones:
+    - name: "$TEST_ZONE_NAME"
 EOF
 
     kubectl apply -f - <<EOF
@@ -1096,6 +1098,504 @@ EOF
         || fail "multi-listen-gw still exists"
 }
 
+test_multi_zone_dns() {
+    if [ -z "${TEST_ZONE_NAME_2:-}" ] || [ -z "${TEST_ZONE_NAME_3:-}" ]; then
+        log "Skipping test_multi_zone_dns: TEST_ZONE_NAME_2 and TEST_ZONE_NAME_3 are required"
+        return
+    fi
+
+    # Hostnames in each of the 3 zones + one hostname matching no zone.
+    local hostname_z1="mz1-${TS: -6}.${TEST_ZONE_NAME}"
+    local hostname_z2="mz2-${TS: -6}.${TEST_ZONE_NAME_2}"
+    local hostname_z3="mz3-${TS: -6}.${TEST_ZONE_NAME_3}"
+    local hostname_z1b="mz1b-${TS: -6}.${TEST_ZONE_NAME}"
+    local hostname_none="mz-${TS: -6}.unmanaged.example"
+
+    # --- Phase 1: Start with zones 1 and 2 ---
+    log "Creating CloudflareGatewayParameters 'multi-zone-params' with zones 1 and 2..."
+    kubectl apply -f - <<EOF
+apiVersion: cloudflare-gateway-controller.io/v1
+kind: CloudflareGatewayParameters
+metadata:
+  name: multi-zone-params
+  namespace: $TEST_NS
+spec:
+  secretRef:
+    name: cloudflare-creds
+  dns:
+    zones:
+    - name: "$TEST_ZONE_NAME"
+    - name: "$TEST_ZONE_NAME_2"
+EOF
+
+    log "Creating Gateway 'multi-zone-gw'..."
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: multi-zone-gw
+  namespace: $TEST_NS
+spec:
+  gatewayClassName: cloudflare
+  infrastructure:
+    parametersRef:
+      group: cloudflare-gateway-controller.io
+      kind: CloudflareGatewayParameters
+      name: multi-zone-params
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+EOF
+
+    retry 60 2 kubectl wait gateway/multi-zone-gw -n "$TEST_NS" \
+        --for=condition=Programmed --timeout=5s \
+        || fail "multi-zone-gw did not become Programmed"
+    pass "multi-zone-gw is Programmed"
+
+    local mz_tunnel_name mz_tunnel_id mz_tunnel_target
+    mz_tunnel_name=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "multi-zone-gw")
+    mz_tunnel_id=$(cfgwctl tunnel get-id --name "$mz_tunnel_name" | jq -r '.tunnelId')
+    [ -n "$mz_tunnel_id" ] && [ "$mz_tunnel_id" != "null" ] || fail "multi-zone tunnel not found"
+    mz_tunnel_target="${mz_tunnel_id}.cfargotunnel.com"
+
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: multi-zone-backend
+  namespace: $TEST_NS
+spec:
+  ports:
+  - port: 80
+    protocol: TCP
+EOF
+
+    log "Creating HTTPRoute with hostnames from zones 1, 2, 3, and an unmanaged domain..."
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: multi-zone-route
+  namespace: $TEST_NS
+spec:
+  parentRefs:
+  - name: multi-zone-gw
+  hostnames:
+  - "$hostname_z1"
+  - "$hostname_z1b"
+  - "$hostname_z2"
+  - "$hostname_z3"
+  - "$hostname_none"
+  rules:
+  - backendRefs:
+    - name: multi-zone-backend
+      port: 80
+EOF
+
+    # Resolve zone IDs.
+    local zone1_id zone2_id zone3_id
+    zone1_id=$(cfgwctl dns find-zone --hostname "$hostname_z1" | jq -r '.zoneId')
+    [ -n "$zone1_id" ] && [ "$zone1_id" != "null" ] || fail "zone 1 ID not found"
+    zone2_id=$(cfgwctl dns find-zone --hostname "$hostname_z2" | jq -r '.zoneId')
+    [ -n "$zone2_id" ] && [ "$zone2_id" != "null" ] || fail "zone 2 ID not found"
+    zone3_id=$(cfgwctl dns find-zone --hostname "$hostname_z3" | jq -r '.zoneId')
+    [ -n "$zone3_id" ] && [ "$zone3_id" != "null" ] || fail "zone 3 ID not found"
+
+    # Verify zone 1 CNAMEs created (both hostnames).
+    log "Waiting for DNS CNAMEs in zone 1..."
+    retry 60 3 bash -c "cfgwctl dns list-cnames --zone-id '$zone1_id' --target '$mz_tunnel_target' | jq -e '.hostnames[] | select(. == \"$hostname_z1\")' >/dev/null" \
+        || fail "DNS CNAME for $hostname_z1 not found"
+    retry 60 3 bash -c "cfgwctl dns list-cnames --zone-id '$zone1_id' --target '$mz_tunnel_target' | jq -e '.hostnames[] | select(. == \"$hostname_z1b\")' >/dev/null" \
+        || fail "DNS CNAME for $hostname_z1b not found"
+    pass "Zone 1 CNAMEs exist (2 hostnames)"
+
+    # Verify zone 2 CNAME created.
+    log "Waiting for DNS CNAME in zone 2..."
+    retry 60 3 bash -c "cfgwctl dns list-cnames --zone-id '$zone2_id' --target '$mz_tunnel_target' | jq -e '.hostnames[] | select(. == \"$hostname_z2\")' >/dev/null" \
+        || fail "DNS CNAME for $hostname_z2 not found"
+    pass "Zone 2 CNAME exists"
+
+    # Verify zone 3 hostname was NOT created (zone 3 not configured yet).
+    log "Verifying zone 3 hostname NOT created (zone 3 not in config)..."
+    ! cfgwctl dns list-cnames --zone-id "$zone3_id" --target "$mz_tunnel_target" \
+        | jq -e ".hostnames[] | select(. == \"$hostname_z3\")" >/dev/null 2>&1 \
+        || fail "DNS CNAME for $hostname_z3 should not exist yet"
+    pass "Zone 3 CNAME correctly absent"
+
+    # Verify DNSRecordsApplied condition reports skipped hostnames.
+    log "Verifying HTTPRoute DNS condition reports skipped hostnames..."
+    retry 30 2 bash -c "
+        kubectl get httproute multi-zone-route -n '$TEST_NS' -o json \
+            | jq -e '.status.parents[0].conditions[] | select(.type == \"DNSRecordsApplied\") | select(.message | contains(\"not in any configured zone\"))' >/dev/null
+    " || fail "DNSRecordsApplied condition does not mention skipped hostnames"
+    pass "DNS condition reports skipped hostnames"
+
+    # --- Phase 2: Add zone 3, remove zone 1 ---
+    log "Updating DNS config: remove zone 1, add zone 3..."
+    kubectl apply -f - <<EOF
+apiVersion: cloudflare-gateway-controller.io/v1
+kind: CloudflareGatewayParameters
+metadata:
+  name: multi-zone-params
+  namespace: $TEST_NS
+spec:
+  secretRef:
+    name: cloudflare-creds
+  dns:
+    zones:
+    - name: "$TEST_ZONE_NAME_2"
+    - name: "$TEST_ZONE_NAME_3"
+EOF
+
+    # Verify zone 1 CNAMEs cleaned up.
+    log "Verifying zone 1 CNAMEs removed after zone removal..."
+    retry 60 3 bash -c "! cfgwctl dns list-cnames --zone-id '$zone1_id' --target '$mz_tunnel_target' | jq -e '.hostnames[] | select(. == \"$hostname_z1\")' >/dev/null 2>&1" \
+        || fail "CNAME for $hostname_z1 still exists after zone 1 removed"
+    retry 60 3 bash -c "! cfgwctl dns list-cnames --zone-id '$zone1_id' --target '$mz_tunnel_target' | jq -e '.hostnames[] | select(. == \"$hostname_z1b\")' >/dev/null 2>&1" \
+        || fail "CNAME for $hostname_z1b still exists after zone 1 removed"
+    pass "Zone 1 CNAMEs cleaned up"
+
+    # Verify zone 2 CNAME still present.
+    log "Verifying zone 2 CNAME still intact..."
+    cfgwctl dns list-cnames --zone-id "$zone2_id" --target "$mz_tunnel_target" \
+        | jq -e ".hostnames[] | select(. == \"$hostname_z2\")" >/dev/null \
+        || fail "Zone 2 CNAME was incorrectly removed"
+    pass "Zone 2 CNAME unaffected"
+
+    # Verify zone 3 CNAME now created.
+    log "Waiting for zone 3 CNAME to be created..."
+    retry 60 3 bash -c "cfgwctl dns list-cnames --zone-id '$zone3_id' --target '$mz_tunnel_target' | jq -e '.hostnames[] | select(. == \"$hostname_z3\")' >/dev/null" \
+        || fail "DNS CNAME for $hostname_z3 not found"
+    pass "Zone 3 CNAME created after zone addition"
+
+    # --- Phase 3: Add zone 1 back (now all 3 zones) ---
+    log "Updating DNS config: add zone 1 back (all 3 zones)..."
+    kubectl apply -f - <<EOF
+apiVersion: cloudflare-gateway-controller.io/v1
+kind: CloudflareGatewayParameters
+metadata:
+  name: multi-zone-params
+  namespace: $TEST_NS
+spec:
+  secretRef:
+    name: cloudflare-creds
+  dns:
+    zones:
+    - name: "$TEST_ZONE_NAME"
+    - name: "$TEST_ZONE_NAME_2"
+    - name: "$TEST_ZONE_NAME_3"
+EOF
+
+    # Verify zone 1 CNAMEs re-created.
+    log "Waiting for zone 1 CNAMEs to be re-created..."
+    retry 60 3 bash -c "cfgwctl dns list-cnames --zone-id '$zone1_id' --target '$mz_tunnel_target' | jq -e '.hostnames[] | select(. == \"$hostname_z1\")' >/dev/null" \
+        || fail "CNAME for $hostname_z1 not re-created"
+    retry 60 3 bash -c "cfgwctl dns list-cnames --zone-id '$zone1_id' --target '$mz_tunnel_target' | jq -e '.hostnames[] | select(. == \"$hostname_z1b\")' >/dev/null" \
+        || fail "CNAME for $hostname_z1b not re-created"
+    pass "Zone 1 CNAMEs re-created"
+
+    # Verify all other CNAMEs still intact.
+    cfgwctl dns list-cnames --zone-id "$zone2_id" --target "$mz_tunnel_target" \
+        | jq -e ".hostnames[] | select(. == \"$hostname_z2\")" >/dev/null \
+        || fail "Zone 2 CNAME missing"
+    cfgwctl dns list-cnames --zone-id "$zone3_id" --target "$mz_tunnel_target" \
+        | jq -e ".hostnames[] | select(. == \"$hostname_z3\")" >/dev/null \
+        || fail "Zone 3 CNAME missing"
+    pass "All 3 zones have their CNAMEs"
+
+    # Cleanup.
+    log "Cleaning up multi-zone DNS test..."
+    kubectl delete httproute multi-zone-route -n "$TEST_NS"
+    kubectl delete gateway multi-zone-gw -n "$TEST_NS"
+    retry 60 3 bash -c "! kubectl get gateway multi-zone-gw -n '$TEST_NS' 2>/dev/null" \
+        || fail "multi-zone-gw still exists"
+    kubectl delete cloudflaregatewayparameters multi-zone-params -n "$TEST_NS" --ignore-not-found
+    kubectl delete service multi-zone-backend -n "$TEST_NS" --ignore-not-found
+}
+
+test_multi_gateway_overlapping_zones() {
+    if [ -z "${TEST_ZONE_NAME_2:-}" ] || [ -z "${TEST_ZONE_NAME_3:-}" ]; then
+        log "Skipping test_multi_gateway_overlapping_zones: TEST_ZONE_NAME_2 and TEST_ZONE_NAME_3 are required"
+        return
+    fi
+
+    # 3 Gateways with overlapping zone configurations:
+    #   gw-a: zones 1, 2, 3 (all zones)
+    #   gw-b: zones 1, 2    (subset)
+    #   gw-c: zones 2, 3    (overlaps with both)
+    # Each gateway has unique hostnames in each of its zones (no hostname overlap).
+
+    local ha_z1="ova1-${TS: -6}.${TEST_ZONE_NAME}"
+    local ha_z2="ova2-${TS: -6}.${TEST_ZONE_NAME_2}"
+    local ha_z3="ova3-${TS: -6}.${TEST_ZONE_NAME_3}"
+    local hb_z1="ovb1-${TS: -6}.${TEST_ZONE_NAME}"
+    local hb_z2="ovb2-${TS: -6}.${TEST_ZONE_NAME_2}"
+    local hc_z2="ovc2-${TS: -6}.${TEST_ZONE_NAME_2}"
+    local hc_z3="ovc3-${TS: -6}.${TEST_ZONE_NAME_3}"
+
+    log "Creating CloudflareGatewayParameters for 3 gateways with overlapping zones..."
+
+    # gw-a: all 3 zones
+    kubectl apply -f - <<EOF
+apiVersion: cloudflare-gateway-controller.io/v1
+kind: CloudflareGatewayParameters
+metadata:
+  name: overlap-params-a
+  namespace: $TEST_NS
+spec:
+  secretRef:
+    name: cloudflare-creds
+  dns:
+    zones:
+    - name: "$TEST_ZONE_NAME"
+    - name: "$TEST_ZONE_NAME_2"
+    - name: "$TEST_ZONE_NAME_3"
+EOF
+
+    # gw-b: zones 1, 2
+    kubectl apply -f - <<EOF
+apiVersion: cloudflare-gateway-controller.io/v1
+kind: CloudflareGatewayParameters
+metadata:
+  name: overlap-params-b
+  namespace: $TEST_NS
+spec:
+  secretRef:
+    name: cloudflare-creds
+  dns:
+    zones:
+    - name: "$TEST_ZONE_NAME"
+    - name: "$TEST_ZONE_NAME_2"
+EOF
+
+    # gw-c: zones 2, 3
+    kubectl apply -f - <<EOF
+apiVersion: cloudflare-gateway-controller.io/v1
+kind: CloudflareGatewayParameters
+metadata:
+  name: overlap-params-c
+  namespace: $TEST_NS
+spec:
+  secretRef:
+    name: cloudflare-creds
+  dns:
+    zones:
+    - name: "$TEST_ZONE_NAME_2"
+    - name: "$TEST_ZONE_NAME_3"
+EOF
+
+    # Create all 3 Gateways.
+    for gw_suffix in a b c; do
+        kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: overlap-gw-${gw_suffix}
+  namespace: $TEST_NS
+spec:
+  gatewayClassName: cloudflare
+  infrastructure:
+    parametersRef:
+      group: cloudflare-gateway-controller.io
+      kind: CloudflareGatewayParameters
+      name: overlap-params-${gw_suffix}
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+EOF
+    done
+
+    for gw_suffix in a b c; do
+        retry 60 2 kubectl wait "gateway/overlap-gw-${gw_suffix}" -n "$TEST_NS" \
+            --for=condition=Programmed --timeout=5s \
+            || fail "overlap-gw-${gw_suffix} did not become Programmed"
+    done
+    pass "All 3 overlap gateways Programmed"
+
+    # Resolve tunnel IDs and targets.
+    local gwa_tn gwa_tid gwa_tt
+    gwa_tn=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "overlap-gw-a")
+    gwa_tid=$(cfgwctl tunnel get-id --name "$gwa_tn" | jq -r '.tunnelId')
+    [ -n "$gwa_tid" ] && [ "$gwa_tid" != "null" ] || fail "gw-a tunnel not found"
+    gwa_tt="${gwa_tid}.cfargotunnel.com"
+
+    local gwb_tn gwb_tid gwb_tt
+    gwb_tn=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "overlap-gw-b")
+    gwb_tid=$(cfgwctl tunnel get-id --name "$gwb_tn" | jq -r '.tunnelId')
+    [ -n "$gwb_tid" ] && [ "$gwb_tid" != "null" ] || fail "gw-b tunnel not found"
+    gwb_tt="${gwb_tid}.cfargotunnel.com"
+
+    local gwc_tn gwc_tid gwc_tt
+    gwc_tn=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "overlap-gw-c")
+    gwc_tid=$(cfgwctl tunnel get-id --name "$gwc_tn" | jq -r '.tunnelId')
+    [ -n "$gwc_tid" ] && [ "$gwc_tid" != "null" ] || fail "gw-c tunnel not found"
+    gwc_tt="${gwc_tid}.cfargotunnel.com"
+
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: overlap-backend
+  namespace: $TEST_NS
+spec:
+  ports:
+  - port: 80
+    protocol: TCP
+EOF
+
+    # Create routes for each gateway.
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: overlap-route-a
+  namespace: $TEST_NS
+spec:
+  parentRefs:
+  - name: overlap-gw-a
+  hostnames:
+  - "$ha_z1"
+  - "$ha_z2"
+  - "$ha_z3"
+  rules:
+  - backendRefs:
+    - name: overlap-backend
+      port: 80
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: overlap-route-b
+  namespace: $TEST_NS
+spec:
+  parentRefs:
+  - name: overlap-gw-b
+  hostnames:
+  - "$hb_z1"
+  - "$hb_z2"
+  rules:
+  - backendRefs:
+    - name: overlap-backend
+      port: 80
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: overlap-route-c
+  namespace: $TEST_NS
+spec:
+  parentRefs:
+  - name: overlap-gw-c
+  hostnames:
+  - "$hc_z2"
+  - "$hc_z3"
+  rules:
+  - backendRefs:
+    - name: overlap-backend
+      port: 80
+EOF
+
+    # Resolve zone IDs.
+    local z1_id z2_id z3_id
+    z1_id=$(cfgwctl dns find-zone --hostname "$ha_z1" | jq -r '.zoneId')
+    z2_id=$(cfgwctl dns find-zone --hostname "$ha_z2" | jq -r '.zoneId')
+    z3_id=$(cfgwctl dns find-zone --hostname "$ha_z3" | jq -r '.zoneId')
+
+    # Verify all 7 DNS CNAMEs exist: gw-a has 3, gw-b has 2, gw-c has 2.
+    log "Waiting for gw-a DNS CNAMEs (3 hostnames across 3 zones)..."
+    retry 60 3 bash -c "cfgwctl dns list-cnames --zone-id '$z1_id' --target '$gwa_tt' | jq -e '.hostnames[] | select(. == \"$ha_z1\")' >/dev/null" \
+        || fail "gw-a zone1 CNAME not found"
+    retry 60 3 bash -c "cfgwctl dns list-cnames --zone-id '$z2_id' --target '$gwa_tt' | jq -e '.hostnames[] | select(. == \"$ha_z2\")' >/dev/null" \
+        || fail "gw-a zone2 CNAME not found"
+    retry 60 3 bash -c "cfgwctl dns list-cnames --zone-id '$z3_id' --target '$gwa_tt' | jq -e '.hostnames[] | select(. == \"$ha_z3\")' >/dev/null" \
+        || fail "gw-a zone3 CNAME not found"
+    pass "gw-a: 3 CNAMEs in 3 zones"
+
+    log "Waiting for gw-b DNS CNAMEs (2 hostnames across 2 zones)..."
+    retry 60 3 bash -c "cfgwctl dns list-cnames --zone-id '$z1_id' --target '$gwb_tt' | jq -e '.hostnames[] | select(. == \"$hb_z1\")' >/dev/null" \
+        || fail "gw-b zone1 CNAME not found"
+    retry 60 3 bash -c "cfgwctl dns list-cnames --zone-id '$z2_id' --target '$gwb_tt' | jq -e '.hostnames[] | select(. == \"$hb_z2\")' >/dev/null" \
+        || fail "gw-b zone2 CNAME not found"
+    pass "gw-b: 2 CNAMEs in 2 zones"
+
+    log "Waiting for gw-c DNS CNAMEs (2 hostnames across 2 zones)..."
+    retry 60 3 bash -c "cfgwctl dns list-cnames --zone-id '$z2_id' --target '$gwc_tt' | jq -e '.hostnames[] | select(. == \"$hc_z2\")' >/dev/null" \
+        || fail "gw-c zone2 CNAME not found"
+    retry 60 3 bash -c "cfgwctl dns list-cnames --zone-id '$z3_id' --target '$gwc_tt' | jq -e '.hostnames[] | select(. == \"$hc_z3\")' >/dev/null" \
+        || fail "gw-c zone3 CNAME not found"
+    pass "gw-c: 2 CNAMEs in 2 zones"
+
+    # --- Delete gw-b (zones 1,2) and verify gw-a and gw-c are unaffected ---
+    log "Deleting overlap-gw-b..."
+    kubectl delete httproute overlap-route-b -n "$TEST_NS"
+    kubectl delete gateway overlap-gw-b -n "$TEST_NS"
+    retry 60 3 bash -c "! kubectl get gateway overlap-gw-b -n '$TEST_NS' 2>/dev/null" \
+        || fail "overlap-gw-b still exists"
+    pass "overlap-gw-b deleted"
+
+    log "Verifying gw-b CNAMEs removed..."
+    retry 60 3 bash -c "! cfgwctl dns list-cnames --zone-id '$z1_id' --target '$gwb_tt' | jq -e '.hostnames[] | select(. == \"$hb_z1\")' >/dev/null 2>&1" \
+        || fail "gw-b zone1 CNAME still exists"
+    retry 60 3 bash -c "! cfgwctl dns list-cnames --zone-id '$z2_id' --target '$gwb_tt' | jq -e '.hostnames[] | select(. == \"$hb_z2\")' >/dev/null 2>&1" \
+        || fail "gw-b zone2 CNAME still exists"
+    pass "gw-b CNAMEs cleaned up"
+
+    log "Verifying gw-a and gw-c CNAMEs unaffected by gw-b deletion..."
+    cfgwctl dns list-cnames --zone-id "$z1_id" --target "$gwa_tt" | jq -e ".hostnames[] | select(. == \"$ha_z1\")" >/dev/null || fail "gw-a zone1 CNAME gone"
+    cfgwctl dns list-cnames --zone-id "$z2_id" --target "$gwa_tt" | jq -e ".hostnames[] | select(. == \"$ha_z2\")" >/dev/null || fail "gw-a zone2 CNAME gone"
+    cfgwctl dns list-cnames --zone-id "$z3_id" --target "$gwa_tt" | jq -e ".hostnames[] | select(. == \"$ha_z3\")" >/dev/null || fail "gw-a zone3 CNAME gone"
+    cfgwctl dns list-cnames --zone-id "$z2_id" --target "$gwc_tt" | jq -e ".hostnames[] | select(. == \"$hc_z2\")" >/dev/null || fail "gw-c zone2 CNAME gone"
+    cfgwctl dns list-cnames --zone-id "$z3_id" --target "$gwc_tt" | jq -e ".hostnames[] | select(. == \"$hc_z3\")" >/dev/null || fail "gw-c zone3 CNAME gone"
+    pass "gw-a and gw-c CNAMEs intact after gw-b deletion"
+
+    # --- Remove zone 3 from gw-a config → should clean up gw-a's zone3 CNAME only ---
+    log "Removing zone 3 from gw-a config..."
+    kubectl apply -f - <<EOF
+apiVersion: cloudflare-gateway-controller.io/v1
+kind: CloudflareGatewayParameters
+metadata:
+  name: overlap-params-a
+  namespace: $TEST_NS
+spec:
+  secretRef:
+    name: cloudflare-creds
+  dns:
+    zones:
+    - name: "$TEST_ZONE_NAME"
+    - name: "$TEST_ZONE_NAME_2"
+EOF
+
+    log "Verifying gw-a zone3 CNAME removed..."
+    retry 60 3 bash -c "! cfgwctl dns list-cnames --zone-id '$z3_id' --target '$gwa_tt' | jq -e '.hostnames[] | select(. == \"$ha_z3\")' >/dev/null 2>&1" \
+        || fail "gw-a zone3 CNAME still exists after zone removal"
+    pass "gw-a zone3 CNAME cleaned up"
+
+    log "Verifying gw-a zones 1,2 CNAMEs still intact..."
+    cfgwctl dns list-cnames --zone-id "$z1_id" --target "$gwa_tt" | jq -e ".hostnames[] | select(. == \"$ha_z1\")" >/dev/null || fail "gw-a zone1 CNAME gone"
+    cfgwctl dns list-cnames --zone-id "$z2_id" --target "$gwa_tt" | jq -e ".hostnames[] | select(. == \"$ha_z2\")" >/dev/null || fail "gw-a zone2 CNAME gone"
+    pass "gw-a zones 1,2 CNAMEs intact"
+
+    log "Verifying gw-c zone3 CNAME NOT affected by gw-a's zone removal..."
+    cfgwctl dns list-cnames --zone-id "$z3_id" --target "$gwc_tt" | jq -e ".hostnames[] | select(. == \"$hc_z3\")" >/dev/null \
+        || fail "gw-c zone3 CNAME was incorrectly removed by gw-a zone change"
+    cfgwctl dns list-cnames --zone-id "$z2_id" --target "$gwc_tt" | jq -e ".hostnames[] | select(. == \"$hc_z2\")" >/dev/null \
+        || fail "gw-c zone2 CNAME was incorrectly removed"
+    pass "gw-c CNAMEs completely unaffected"
+
+    # Cleanup.
+    log "Cleaning up multi-gateway overlapping zones test..."
+    kubectl delete httproute overlap-route-a overlap-route-c -n "$TEST_NS"
+    kubectl delete gateway overlap-gw-a overlap-gw-c -n "$TEST_NS"
+    retry 60 3 bash -c "! kubectl get gateway overlap-gw-a -n '$TEST_NS' 2>/dev/null" \
+        || fail "overlap-gw-a still exists"
+    retry 60 3 bash -c "! kubectl get gateway overlap-gw-c -n '$TEST_NS' 2>/dev/null" \
+        || fail "overlap-gw-c still exists"
+    kubectl delete cloudflaregatewayparameters overlap-params-a overlap-params-b overlap-params-c -n "$TEST_NS" --ignore-not-found
+    kubectl delete service overlap-backend -n "$TEST_NS" --ignore-not-found
+}
+
 # ─── Run ──────────────────────────────────────────────────────────────────────
 
 run_tests \
@@ -1107,4 +1607,6 @@ run_tests \
     test_disabled_reconciliation \
     test_dns_config_removal \
     test_multiple_listeners_rejected \
+    test_multi_zone_dns \
+    test_multi_gateway_overlapping_zones \
     test_cluster_recreation

@@ -50,17 +50,21 @@ spec:
               dns:
                 description: DNS configures DNS CNAME record management.
                 properties:
-                  zone:
-                    description: Zone configures the DNS zone for CNAME management.
-                    properties:
-                      name:
-                        description: Name is the DNS zone name (e.g. "example.com").
-                        type: string
-                    required:
-                    - name
-                    type: object
+                  zones:
+                    description: Zones configures the DNS zones for CNAME management.
+                    items:
+                      description: DNSZoneConfig identifies a Cloudflare DNS zone.
+                      properties:
+                        name:
+                          description: Name is the DNS zone name (e.g. "example.com").
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    minItems: 1
+                    type: array
                 required:
-                - zone
+                - zones
                 type: object
               secretRef:
                 description: |-
@@ -73,8 +77,8 @@ spec:
                 required:
                 - name
                 type: object
-              tunnels:
-                description: Tunnels configures Cloudflare tunnel settings.
+              tunnel:
+                description: Tunnel configures Cloudflare tunnel settings.
                 properties:
                   deployment:
                     description: Deployment configures the cloudflared Deployment.
@@ -137,7 +141,20 @@ spec:
     singular: cloudflaregatewaystatus
   scope: Namespaced
   versions:
-  - name: v1
+  - additionalPrinterColumns:
+    - jsonPath: .status.tunnel.name
+      name: Tunnel Name
+      type: string
+    - jsonPath: .status.tunnel.id
+      name: Tunnel ID
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="DNSManagement")].reason
+      name: DNS
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    name: v1
     schema:
       openAPIV3Schema:
         description: |-
@@ -229,46 +246,27 @@ spec:
                   - type
                   type: object
                 type: array
-              dns:
-                description: DNS holds the DNS zone info used for CNAME management.
+              tunnel:
+                description: Tunnel holds the Cloudflare tunnel managed for this Gateway.
                 properties:
-                  zoneID:
-                    description: ZoneID is the Cloudflare zone UUID.
+                  deploymentName:
+                    description: DeploymentName is the name of the cloudflared Deployment.
                     type: string
-                  zoneName:
-                    description: ZoneName is the DNS zone name (e.g. "example.com").
+                  id:
+                    description: ID is the Cloudflare tunnel UUID.
+                    type: string
+                  name:
+                    description: Name is the Cloudflare tunnel name.
+                    type: string
+                  secretName:
+                    description: SecretName is the name of the tunnel token Secret.
                     type: string
                 required:
-                - zoneID
-                - zoneName
+                - deploymentName
+                - id
+                - name
+                - secretName
                 type: object
-              tunnels:
-                description: Tunnels lists all Cloudflare tunnels managed for this
-                  Gateway.
-                items:
-                  description: |-
-                    TunnelStatus records the state of a single Cloudflare tunnel and its
-                    associated Kubernetes resources.
-                  properties:
-                    deploymentName:
-                      description: DeploymentName is the name of the cloudflared Deployment.
-                      type: string
-                    id:
-                      description: ID is the Cloudflare tunnel UUID.
-                      type: string
-                    name:
-                      description: Name is the Cloudflare tunnel name.
-                      type: string
-                    secretName:
-                      description: SecretName is the name of the tunnel token Secret.
-                      type: string
-                  required:
-                  - deploymentName
-                  - id
-                  - name
-                  - secretName
-                  type: object
-                type: array
             type: object
         type: object
     served: true

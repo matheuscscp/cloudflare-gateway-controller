@@ -95,7 +95,7 @@ Reasons for rejection:
 - `UnsupportedVersion`: The installed Gateway API CRD version is not compatible
   with this controller build.
 - `InvalidParameters`: `parametersRef` points to a resource that does not exist,
-  is not a `CloudflareGatewayParameters`, or is in a different namespace.
+  is not a `Secret`, or is in a different namespace.
 
 #### Supported version
 

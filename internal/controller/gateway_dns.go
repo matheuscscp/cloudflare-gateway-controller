@@ -15,136 +15,109 @@ import (
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
 )
 
-// reconcileDNS reconciles DNS CNAME records for the Gateway's zone. When
-// zoneName is empty, all CNAME records pointing to the tunnel across all
-// account zones are deleted. Returns a non-nil *string on failure (using
-// new(fmt.Sprintf(...)) to allocate the error message inline), which is
-// reported on each HTTPRoute's DNSRecordsApplied condition.
-func (r *GatewayReconciler) reconcileDNS(ctx context.Context, tc cloudflare.Client, gw *gatewayv1.Gateway, tunnelID, zoneName string, routes []*gatewayv1.HTTPRoute) ([]string, *string) {
+// reconcileDNS reconciles DNS CNAME records for the Gateway. It lists all
+// records pointing to the tunnel across all account zones, computes the
+// desired set from routes + configured zones, and diffs: creating missing
+// records and deleting stale ones. When zoneNames is empty, all records
+// are deleted.
+func (r *GatewayReconciler) reconcileDNS(
+	ctx context.Context, tc cloudflare.Client, gw *gatewayv1.Gateway,
+	tunnelID string, zoneNames []string,
+	routes []*gatewayv1.HTTPRoute,
+) ([]string, *string) {
 	l := log.FromContext(ctx)
+	tunnelTarget := cloudflare.TunnelTarget(tunnelID)
 
-	if zoneName == "" {
-		changes, err := r.cleanupAllDNS(ctx, tc, tunnelID)
+	// List all account zone IDs.
+	accountZoneIDs, err := tc.ListZoneIDs(ctx)
+	if err != nil {
+		return nil, new(fmt.Sprintf("Failed to list zone IDs: %v", err))
+	}
+
+	// List all existing records pointing to our tunnel across all zones.
+	type record struct {
+		hostname string
+		zoneID   string
+	}
+	var actual []record
+	for _, zoneID := range accountZoneIDs {
+		hostnames, err := tc.ListDNSCNAMEsByTarget(ctx, zoneID, tunnelTarget)
 		if err != nil {
-			return nil, new(fmt.Sprintf("Failed to clean up DNS records: %v", err))
+			return nil, new(fmt.Sprintf("Failed to list DNS CNAMEs in zone %q: %v", zoneID, err))
+		}
+		for _, h := range hostnames {
+			actual = append(actual, record{hostname: h, zoneID: zoneID})
+		}
+	}
+
+	// When no zones are configured, delete everything.
+	if len(zoneNames) == 0 {
+		var changes []string
+		for _, r := range actual {
+			if err := tc.DeleteDNSCNAME(ctx, r.zoneID, r.hostname); err != nil {
+				return changes, new(fmt.Sprintf("Failed to delete DNS CNAME for %q: %v", r.hostname, err))
+			}
+			changes = append(changes, fmt.Sprintf("deleted DNS CNAME for %s", r.hostname))
+			l.V(1).Info("Deleted DNS CNAME", "hostname", r.hostname, "zoneID", r.zoneID)
 		}
 		return changes, nil
 	}
 
-	zoneID, err := tc.FindZoneIDByHostname(ctx, zoneName)
-	if err != nil {
-		return nil, new(fmt.Sprintf("Failed to find zone ID for %q: %v", zoneName, err))
+	// Resolve each configured zone name to a zone ID.
+	zoneMap := make(map[string]string, len(zoneNames)) // zoneName -> zoneID
+	for _, zoneName := range zoneNames {
+		zoneID, err := tc.FindZoneIDByHostname(ctx, zoneName)
+		if err != nil {
+			return nil, new(fmt.Sprintf("Failed to find zone ID for %q: %v", zoneName, err))
+		}
+		zoneMap[zoneName] = zoneID
 	}
 
 	// Compute desired hostnames from all attached HTTPRoutes.
-	desired := make(map[string]struct{})
+	// Each desired hostname is mapped to the zone ID it should live in.
+	desired := make(map[string]string) // hostname -> zoneID
 	for _, route := range routes {
 		for _, h := range route.Spec.Hostnames {
 			hostname := string(h)
-			if hostnameInZone(hostname, zoneName) {
-				desired[hostname] = struct{}{}
+			for _, zoneName := range zoneNames {
+				if hostnameInZone(hostname, zoneName) {
+					desired[hostname] = zoneMap[zoneName]
+				}
 			}
 		}
 	}
 
-	// Query actual CNAME records pointing to our tunnel.
-	tunnelTarget := cloudflare.TunnelTarget(tunnelID)
-	actual, err := tc.ListDNSCNAMEsByTarget(ctx, zoneID, tunnelTarget)
-	if err != nil {
-		return nil, new(fmt.Sprintf("Failed to list DNS CNAMEs: %v", err))
-	}
 	actualSet := make(map[string]struct{}, len(actual))
-	for _, h := range actual {
-		actualSet[h] = struct{}{}
+	for _, r := range actual {
+		actualSet[r.hostname] = struct{}{}
 	}
 
-	// Create missing records.
 	dnsComment := apiv1.ResourceDescription(gw)
 	var dnsChanges []string
-	for h := range desired {
-		if _, ok := actualSet[h]; !ok {
-			if err := tc.EnsureDNSCNAME(ctx, zoneID, h, tunnelTarget, dnsComment); err != nil {
-				return dnsChanges, new(fmt.Sprintf("Failed to ensure DNS CNAME for %q: %v", h, err))
+
+	// Create missing records.
+	for hostname, zoneID := range desired {
+		if _, ok := actualSet[hostname]; !ok {
+			if err := tc.EnsureDNSCNAME(ctx, zoneID, hostname, tunnelTarget, dnsComment); err != nil {
+				return dnsChanges, new(fmt.Sprintf("Failed to ensure DNS CNAME for %q: %v", hostname, err))
 			}
-			dnsChanges = append(dnsChanges, fmt.Sprintf("created DNS CNAME for %s", h))
-			l.V(1).Info("Created DNS CNAME", "hostname", h)
+			dnsChanges = append(dnsChanges, fmt.Sprintf("created DNS CNAME for %s", hostname))
+			l.V(1).Info("Created DNS CNAME", "hostname", hostname, "zoneID", zoneID)
 		}
 	}
 
-	// Delete stale records.
-	for h := range actualSet {
-		if _, ok := desired[h]; !ok {
-			if err := tc.DeleteDNSCNAME(ctx, zoneID, h); err != nil {
-				return dnsChanges, new(fmt.Sprintf("Failed to delete stale DNS CNAME for %q: %v", h, err))
+	// Delete stale records: anything pointing to our tunnel that isn't desired.
+	for _, r := range actual {
+		if _, ok := desired[r.hostname]; !ok {
+			if err := tc.DeleteDNSCNAME(ctx, r.zoneID, r.hostname); err != nil {
+				return dnsChanges, new(fmt.Sprintf("Failed to delete stale DNS CNAME for %q: %v", r.hostname, err))
 			}
-			dnsChanges = append(dnsChanges, fmt.Sprintf("deleted DNS CNAME for %s", h))
-			l.V(1).Info("Deleted stale DNS CNAME", "hostname", h)
+			dnsChanges = append(dnsChanges, fmt.Sprintf("deleted DNS CNAME for %s", r.hostname))
+			l.V(1).Info("Deleted stale DNS CNAME", "hostname", r.hostname, "zoneID", r.zoneID)
 		}
 	}
 
 	return dnsChanges, nil
-}
-
-// cleanupAllDNS deletes all CNAME records pointing to the tunnel across all
-// account zones. This is used when DNS config is removed or during finalization.
-// Returns a change message for each deleted record.
-func (r *GatewayReconciler) cleanupAllDNS(ctx context.Context, tc cloudflare.Client, tunnelID string) ([]string, error) {
-	l := log.FromContext(ctx)
-	tunnelTarget := cloudflare.TunnelTarget(tunnelID)
-
-	zoneIDs, err := tc.ListZoneIDs(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("listing zones: %w", err)
-	}
-
-	var changes []string
-	for _, zoneID := range zoneIDs {
-		hostnames, err := tc.ListDNSCNAMEsByTarget(ctx, zoneID, tunnelTarget)
-		if err != nil {
-			return changes, fmt.Errorf("listing DNS CNAMEs in zone %s: %w", zoneID, err)
-		}
-		for _, h := range hostnames {
-			if err := tc.DeleteDNSCNAME(ctx, zoneID, h); err != nil {
-				return changes, fmt.Errorf("deleting DNS CNAME %q in zone %s: %w", h, zoneID, err)
-			}
-			changes = append(changes, fmt.Sprintf("deleted DNS CNAME for %s", h))
-			l.V(1).Info("Deleted DNS CNAME", "hostname", h, "zoneID", zoneID)
-		}
-	}
-
-	return changes, nil
-}
-
-// cleanupDNSInZone deletes all CNAME records pointing to the tunnel in a
-// specific zone. Used when the DNS zone changes to clean up records in the
-// old zone before creating them in the new one.
-func (r *GatewayReconciler) cleanupDNSInZone(ctx context.Context, tc cloudflare.Client, tunnelID, zoneName, zoneID string) ([]string, error) {
-	l := log.FromContext(ctx)
-
-	if zoneID == "" {
-		var err error
-		zoneID, err = tc.FindZoneIDByHostname(ctx, zoneName)
-		if err != nil {
-			return nil, fmt.Errorf("finding zone ID for %q: %w", zoneName, err)
-		}
-	}
-
-	tunnelTarget := cloudflare.TunnelTarget(tunnelID)
-	hostnames, err := tc.ListDNSCNAMEsByTarget(ctx, zoneID, tunnelTarget)
-	if err != nil {
-		return nil, fmt.Errorf("listing DNS CNAMEs in zone %s: %w", zoneName, err)
-	}
-
-	var changes []string
-	for _, h := range hostnames {
-		if err := tc.DeleteDNSCNAME(ctx, zoneID, h); err != nil {
-			return changes, fmt.Errorf("deleting DNS CNAME %q in zone %s: %w", h, zoneName, err)
-		}
-		changes = append(changes, fmt.Sprintf("deleted DNS CNAME for %s (zone changed)", h))
-		l.V(1).Info("Deleted DNS CNAME (zone changed)", "hostname", h, "zone", zoneName)
-	}
-
-	return changes, nil
 }
 
 // hostnameInZone reports whether a hostname is a direct (single-level)
