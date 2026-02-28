@@ -300,3 +300,64 @@ existing Cloudflare resources (tunnel, DNS CNAME) instead of creating duplicates
 13. Verify tunnel deleted by finalizer.
 14. Verify DNS CNAME deleted.
 15. Clean up `CloudflareGatewayParameters` and `Service`.
+
+## test_load_balancing
+
+Sends real HTTP traffic through the Cloudflare tunnel and verifies that the
+sidecar proxy distributes requests evenly across backend pods via kube-proxy.
+Uses `cfgwctl test serve` as the backend and `cfgwctl test load` as the
+load generator.
+
+**Resources created:**
+- 10-replica `Deployment` running `cfgwctl test serve` (selector `app=lb-test`)
+- `Service` `lb-backend` (port 80 → targetPort 8080)
+- `Gateway` with bare Secret (no CGP — sidecar enabled by default)
+- `HTTPRoute` with one hostname
+
+**Cloudflare resources:** 1 tunnel, 1 DNS CNAME record.
+
+**Pass criteria:**
+- All 1000 requests return 2xx (zero 5xx).
+- Every pod receives at least 1 request.
+- Coefficient of variation (CV = stddev / mean) of per-pod counts ≤ 0.5.
+
+**Steps:**
+
+1. Deploy 10-replica test server and `Service`.
+2. Wait for rollout.
+3. Create `Gateway` (bare Secret); wait for Programmed.
+4. Create `HTTPRoute`.
+5. Wait for HTTPS endpoint reachable.
+6. Run `cfgwctl test load` with 1000 requests, concurrency 10, and pod
+   distribution check (`--namespace`, `--label-selector`, `--max-cv 0.5`).
+7. Delete `HTTPRoute`, `Gateway` (wait for deletion), `Deployment`, `Service`.
+
+## test_sidecar_disabled
+
+Verifies end-to-end HTTP traffic through the tunnel when the sidecar reverse
+proxy is explicitly disabled. Cloudflared connects directly to backend Services.
+
+**Resources created:**
+- 1-replica `Deployment` running `cfgwctl test serve` (selector `app=sd-test`)
+- `Service` `sd-backend` (port 80 → targetPort 8080)
+- `CloudflareGatewayParameters` with `tunnel.sidecar.enabled: false`
+- `Gateway` referencing the parameters
+- `HTTPRoute` with one hostname
+
+**Cloudflare resources:** 1 tunnel, 1 DNS CNAME record.
+
+**Pass criteria:**
+- Sidecar condition is `status=False, reason=Disabled`.
+- 10 requests return 2xx (zero 5xx).
+
+**Steps:**
+
+1. Deploy 1-replica test server and `Service`.
+2. Create `CloudflareGatewayParameters` with sidecar disabled.
+3. Create `Gateway`; wait for Programmed.
+4. Verify Sidecar condition is `False/Disabled`.
+5. Create `HTTPRoute`.
+6. Wait for HTTPS endpoint reachable.
+7. Run `cfgwctl test load` with 10 requests, concurrency 1 (no pod distribution
+   check — just verify traffic flows).
+8. Delete `HTTPRoute`, `Gateway` (wait for deletion), CGP, `Deployment`, `Service`.
