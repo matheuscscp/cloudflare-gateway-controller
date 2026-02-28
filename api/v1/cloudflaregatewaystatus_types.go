@@ -38,22 +38,32 @@ type CloudflareGatewayStatusDetail struct {
 	// Tunnel holds the Cloudflare tunnel managed for this Gateway.
 	// +optional
 	Tunnel *TunnelStatus `json:"tunnel,omitempty"`
+
+	// Inventory lists all Kubernetes objects managed by this Gateway.
+	// +optional
+	Inventory []ResourceRef `json:"inventory,omitempty"`
 }
 
-// TunnelStatus records the state of a single Cloudflare tunnel and its
-// associated Kubernetes resources.
+// TunnelStatus records the state of the Cloudflare tunnel managed for
+// a Gateway.
 type TunnelStatus struct {
 	// Name is the Cloudflare tunnel name.
 	Name string `json:"name"`
 
 	// ID is the Cloudflare tunnel UUID.
 	ID string `json:"id"`
+}
 
-	// DeploymentName is the name of the cloudflared Deployment.
-	DeploymentName string `json:"deploymentName"`
+// ResourceRef identifies a Kubernetes object managed by a Gateway.
+type ResourceRef struct {
+	// APIVersion is the API group and version of the resource (e.g. "v1", "apps/v1").
+	APIVersion string `json:"apiVersion"`
 
-	// SecretName is the name of the tunnel token Secret.
-	SecretName string `json:"secretName"`
+	// Kind is the resource kind (e.g. "Deployment", "Secret").
+	Kind string `json:"kind"`
+
+	// Name is the resource name (same namespace as the Gateway).
+	Name string `json:"name"`
 }
 
 // +kubebuilder:object:root=true

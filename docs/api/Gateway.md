@@ -100,8 +100,8 @@ metadata:
 
 When reconciliation is disabled and the Gateway is deleted, the controller
 removes owner references from managed Kubernetes resources (Deployments,
-Secrets) instead of deleting Cloudflare resources, leaving tunnels and DNS
-records intact.
+Secrets, ConfigMaps, ServiceAccounts, Roles, RoleBindings) instead of
+deleting Cloudflare resources, leaving tunnels and DNS records intact.
 
 ### Reconciliation interval
 
@@ -115,8 +115,8 @@ metadata:
     cloudflare-gateway-controller.io/reconcileEvery: "5m"
 ```
 
-The default interval is `10m`. If the value cannot be parsed, the default is
-used.
+The default interval is `10m`. If the value cannot be parsed, the Gateway is
+rejected with `Accepted=False/InvalidParameters`.
 
 ### Cloudflare resource naming
 
@@ -128,18 +128,28 @@ without leaking Cloudflare resources — a reborn cluster with the same
 | Resource                | Name                                                        |
 |-------------------------|-------------------------------------------------------------|
 | Cloudflare Tunnel       | `gw-` + hex SHA256 of `clusterName/namespace/gatewayName` (67 chars) |
-| cloudflared Deployment  | `cloudflared-<gatewayName>`                                 |
-| Tunnel token Secret     | `cloudflared-token-<gatewayName>`                           |
+| cloudflared Deployment  | `gateway-<gatewayName>`                                     |
+| Tunnel token Secret     | `gateway-<gatewayName>`                                     |
+| Sidecar ConfigMap       | `gateway-<gatewayName>`                                     |
+| Sidecar ServiceAccount  | `gateway-<gatewayName>`                                     |
+| Sidecar Role            | `gateway-<gatewayName>`                                     |
+| Sidecar RoleBinding     | `gateway-<gatewayName>`                                     |
 
 `clusterName` comes from the Helm value `config.clusterName` (required).
+Sidecar resources are only created when the sidecar is enabled (default).
 
-Source: `TunnelName()`, `CloudflaredDeploymentName()`,
-`TunnelTokenSecretName()` in `api/v1/meta_types.go`.
+Source: `TunnelName()`, `GatewayResourceName()` in `api/v1/meta_types.go`.
 
 ## Validations
 
-The controller validates the Gateway spec on every reconciliation. If any
-validation fails, the Gateway is rejected with `Accepted=False`.
+The controller validates the Gateway spec and annotations on every
+reconciliation. If any validation fails, the Gateway is rejected with
+`Accepted=False`.
+
+### Annotations
+
+- The `reconcileEvery` annotation value must be a valid Go duration string.
+  Invalid values are rejected with `Accepted=False/InvalidParameters`.
 
 ### Listeners
 

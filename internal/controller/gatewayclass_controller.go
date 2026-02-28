@@ -66,8 +66,14 @@ func (r *GatewayClassReconciler) reconcile(ctx context.Context, gc *gatewayv1.Ga
 		return ctrl.Result{}, nil
 	}
 
-	supportedVersion, supportedVersionMessage := r.checkSupportedVersion(ctx)
-	validParams, validParamsMessage := r.checkParametersRef(ctx, gc)
+	supportedVersion, supportedVersionMessage, err := r.checkSupportedVersion(ctx)
+	if err != nil {
+		return r.reconcileError(ctx, gc, err)
+	}
+	validParams, validParamsMessage, err := r.checkParametersRef(ctx, gc)
+	if err != nil {
+		return r.reconcileError(ctx, gc, err)
+	}
 
 	acceptedStatus := metav1.ConditionTrue
 	acceptedReason := string(gatewayv1.GatewayClassReasonAccepted)
@@ -168,61 +174,103 @@ func (r *GatewayClassReconciler) reconcile(ctx context.Context, gc *gatewayv1.Ga
 // compatible with the version this binary was compiled against. The CRD must
 // have the same major version and a minor version >= the binary's, since semver
 // guarantees backwards compatibility within a major version. Returns false with
-// a human-readable reason if the versions are incompatible.
-func (r *GatewayClassReconciler) checkSupportedVersion(ctx context.Context) (bool, string) {
+// a human-readable reason if the versions are incompatible. Returns a non-nil
+// error for transient failures (e.g. API server unreachable) so the caller can
+// retry instead of marking the GatewayClass as terminally failed.
+func (r *GatewayClassReconciler) checkSupportedVersion(ctx context.Context) (bool, string, error) {
 	crd := &metav1.PartialObjectMetadata{}
 	crd.SetGroupVersionKind(apiextensionsv1.SchemeGroupVersion.WithKind(apiv1.KindCustomResourceDefinition))
 	if err := r.Get(ctx, types.NamespacedName{Name: apiv1.CRDGatewayClass}, crd); err != nil {
-		return false, fmt.Sprintf("Failed to get Gateway API CRD: %v", err)
+		if apierrors.IsNotFound(err) {
+			return false, fmt.Sprintf("Gateway API CRD %s not found", apiv1.CRDGatewayClass), nil
+		}
+		return false, "", fmt.Errorf("getting Gateway API CRD: %w", err)
 	}
 
 	bundleVersion, ok := crd.Annotations[apiv1.AnnotationBundleVersion]
 	if !ok {
-		return false, fmt.Sprintf("Gateway API CRD is missing %s annotation", apiv1.AnnotationBundleVersion)
+		return false, fmt.Sprintf("Gateway API CRD is missing %s annotation", apiv1.AnnotationBundleVersion), nil
 	}
 
 	crdVersion, err := semver.NewVersion(bundleVersion)
 	if err != nil {
-		return false, fmt.Sprintf("Failed to parse CRD bundle version %q: %v", bundleVersion, err)
+		return false, fmt.Sprintf("Failed to parse CRD bundle version %q: %v", bundleVersion, err), nil
 	}
 
 	if crdVersion.Major() != r.GatewayAPIVersion.Major() || crdVersion.Minor() < r.GatewayAPIVersion.Minor() {
 		return false, fmt.Sprintf("Gateway API CRD version %q is not compatible with binary version %q (need same major and minor >= %d)",
-			bundleVersion, r.GatewayAPIVersion.Original(), r.GatewayAPIVersion.Minor())
+			bundleVersion, r.GatewayAPIVersion.Original(), r.GatewayAPIVersion.Minor()), nil
 	}
 
-	return true, fmt.Sprintf("Gateway API CRD version %q is supported", bundleVersion)
+	return true, fmt.Sprintf("Gateway API CRD version %q is supported", bundleVersion), nil
 }
 
 // checkParametersRef validates the GatewayClass parametersRef. Returns false
 // with a human-readable reason if the reference is invalid, nonexistent, or
-// points to a malformed Secret.
-func (r *GatewayClassReconciler) checkParametersRef(ctx context.Context, gc *gatewayv1.GatewayClass) (bool, string) {
+// points to a malformed Secret. Returns a non-nil error for transient failures
+// (e.g. API server unreachable) so the caller can retry.
+func (r *GatewayClassReconciler) checkParametersRef(ctx context.Context, gc *gatewayv1.GatewayClass) (bool, string, error) {
 	ref := gc.Spec.ParametersRef
 	if ref == nil {
-		return true, "No parametersRef configured"
+		return true, "No parametersRef configured", nil
 	}
 
 	if string(ref.Kind) != apiv1.KindSecret || (ref.Group != "" && ref.Group != apiv1.GroupCore && ref.Group != gatewayv1.Group("")) {
-		return false, fmt.Sprintf("parametersRef must reference a core/v1 Secret, got %s/%s", ref.Group, ref.Kind)
+		return false, fmt.Sprintf("parametersRef must reference a core/v1 Secret, got %s/%s", ref.Group, ref.Kind), nil
 	}
 
 	if ref.Namespace == nil {
-		return false, "parametersRef must specify a namespace (Secret is a namespaced resource)"
+		return false, "parametersRef must specify a namespace (Secret is a namespaced resource)", nil
 	}
 
 	var secret corev1.Secret
 	secretKey := types.NamespacedName{Namespace: string(*ref.Namespace), Name: ref.Name}
 	if err := r.Get(ctx, secretKey, &secret); err != nil {
 		if apierrors.IsNotFound(err) {
-			return false, fmt.Sprintf("Secret %s/%s not found", *ref.Namespace, ref.Name)
+			return false, fmt.Sprintf("Secret %s/%s not found", *ref.Namespace, ref.Name), nil
 		}
-		return false, fmt.Sprintf("Failed to get Secret %s/%s: %v", *ref.Namespace, ref.Name, err)
+		return false, "", fmt.Errorf("getting Secret %s/%s: %w", *ref.Namespace, ref.Name, err)
 	}
 
 	if len(secret.Data["CLOUDFLARE_API_TOKEN"]) == 0 || len(secret.Data["CLOUDFLARE_ACCOUNT_ID"]) == 0 {
-		return false, fmt.Sprintf("Secret %s/%s must contain CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID", *ref.Namespace, ref.Name)
+		return false, fmt.Sprintf("Secret %s/%s must contain CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID", *ref.Namespace, ref.Name), nil
 	}
 
-	return true, "parametersRef is valid"
+	return true, "parametersRef is valid", nil
+}
+
+// reconcileError handles transient errors by best-effort patching
+// Ready=Unknown/ProgressingWithRetry on the GatewayClass status and emitting
+// a Warning event, then returning the error to controller-runtime for retry.
+func (r *GatewayClassReconciler) reconcileError(ctx context.Context, gc *gatewayv1.GatewayClass, reconcileErr error) (ctrl.Result, error) {
+	now := metav1.Now()
+	msg := reconcileErr.Error()
+
+	readyType := apiv1.ConditionReady
+	readyStatus := metav1.ConditionUnknown
+	readyReason := apiv1.ReasonProgressingWithRetry
+
+	// Always patch (even when the condition values haven't changed) so the
+	// resource version bumps and the timestamp updates, signalling to users
+	// that the controller is alive and actively retrying.
+	patch := client.MergeFrom(gc.DeepCopy())
+	gc.Status.Conditions = conditions.Upsert(gc.Status.Conditions, metav1.Condition{
+		Type:               readyType,
+		Status:             readyStatus,
+		ObservedGeneration: gc.Generation,
+		LastTransitionTime: now,
+		Reason:             readyReason,
+		Message:            msg,
+	})
+	if err := r.Status().Patch(ctx, gc, patch); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to patch GatewayClass status with error conditions",
+			"originalError", msg)
+	} else {
+		log.FromContext(ctx).V(1).Info("Patched GatewayClass status with error conditions")
+	}
+
+	r.Eventf(gc, nil, corev1.EventTypeWarning, readyReason,
+		apiv1.EventActionReconcile, "Reconciliation failed: %v", reconcileErr)
+
+	return ctrl.Result{}, reconcileErr
 }

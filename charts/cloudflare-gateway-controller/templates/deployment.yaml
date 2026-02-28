@@ -40,6 +40,11 @@ spec:
         {{- if .Values.config.cloudflaredImage }}
         - --cloudflared-image={{ .Values.config.cloudflaredImage }}
         {{- end }}
+        {{- if .Values.config.sidecar.enabled }}
+        - --sidecar-image={{ .Values.config.sidecar.image.repository | default .Values.image.repository }}:{{ .Values.config.sidecar.image.tag | default .Values.image.tag | default .Chart.AppVersion }}
+        {{- else }}
+        - --disable-sidecar
+        {{- end }}
         {{- range .Values.podArgs }}
         - {{ . }}
         {{- end }}

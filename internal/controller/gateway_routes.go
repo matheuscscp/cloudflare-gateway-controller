@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -92,6 +93,13 @@ func validateGateway(gw *gatewayv1.Gateway) *gatewayValidationError {
 				msg := fmt.Sprintf("Only HTTPRoute kind is supported in spec.listeners[0].allowedRoutes.kinds, got %s/%s", group, k.Kind)
 				return rejectedCond(gatewayv1.GatewayReasonListenersNotValid, msg)
 			}
+		}
+	}
+
+	if val, ok := gw.Annotations[apiv1.AnnotationReconcileEvery]; ok {
+		if _, err := time.ParseDuration(val); err != nil {
+			msg := fmt.Sprintf("Annotation %s has invalid duration %q", apiv1.AnnotationReconcileEvery, val)
+			return rejectedCond(gatewayv1.GatewayReasonInvalidParameters, msg)
 		}
 	}
 
@@ -533,6 +541,9 @@ func validateHTTPRoute(route *gatewayv1.HTTPRoute) []string {
 		if rule.SessionPersistence != nil {
 			issues = append(issues, fmt.Sprintf("spec.rules[%d].sessionPersistence is not supported", i))
 		}
+		if len(rule.BackendRefs) == 0 {
+			issues = append(issues, fmt.Sprintf("spec.rules[%d].backendRefs: at least one backend is required", i))
+		}
 		if len(rule.BackendRefs) > 1 {
 			issues = append(issues, fmt.Sprintf("spec.rules[%d].backendRefs: multiple backends are not supported; use a Kubernetes Service instead", i))
 		}
@@ -659,7 +670,10 @@ func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1
 	patched := false
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		if err := r.Get(ctx, routeKey, route); err != nil {
-			return client.IgnoreNotFound(err)
+			// NotFound must NOT be ignored: the route was deleted mid-reconciliation
+			// and the controller needs a fresh Reconcile() to clean up DNS records
+			// and tunnel ingress rules associated with this route.
+			return err
 		}
 
 		existing := findRouteParentStatus(route.Status.Parents, gw)
@@ -769,8 +783,8 @@ func buildRouteConditions(route *gatewayv1.HTTPRoute, deniedRefs []string, zoneN
 
 	if rc.dnsEnabled {
 		if dnsErr != nil {
-			rc.dnsStatus = metav1.ConditionFalse
-			rc.dnsReason = apiv1.ReasonReconciliationFailed
+			rc.dnsStatus = metav1.ConditionUnknown
+			rc.dnsReason = apiv1.ReasonProgressingWithRetry
 			rc.dnsMessage = *dnsErr
 		} else {
 			rc.dnsStatus = metav1.ConditionTrue

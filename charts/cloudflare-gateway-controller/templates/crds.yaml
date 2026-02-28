@@ -246,26 +246,42 @@ spec:
                   - type
                   type: object
                 type: array
+              inventory:
+                description: Inventory lists all Kubernetes objects managed by this
+                  Gateway.
+                items:
+                  description: ResourceRef identifies a Kubernetes object managed
+                    by a Gateway.
+                  properties:
+                    apiVersion:
+                      description: APIVersion is the API group and version of the
+                        resource (e.g. "v1", "apps/v1").
+                      type: string
+                    kind:
+                      description: Kind is the resource kind (e.g. "Deployment", "Secret").
+                      type: string
+                    name:
+                      description: Name is the resource name (same namespace as the
+                        Gateway).
+                      type: string
+                  required:
+                  - apiVersion
+                  - kind
+                  - name
+                  type: object
+                type: array
               tunnel:
                 description: Tunnel holds the Cloudflare tunnel managed for this Gateway.
                 properties:
-                  deploymentName:
-                    description: DeploymentName is the name of the cloudflared Deployment.
-                    type: string
                   id:
                     description: ID is the Cloudflare tunnel UUID.
                     type: string
                   name:
                     description: Name is the Cloudflare tunnel name.
                     type: string
-                  secretName:
-                    description: SecretName is the name of the tunnel token Secret.
-                    type: string
                 required:
-                - deploymentName
                 - id
                 - name
-                - secretName
                 type: object
             type: object
         type: object

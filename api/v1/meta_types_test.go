@@ -58,16 +58,10 @@ func TestTunnelName(t *testing.T) {
 	g.Expect(apiv1.TunnelName(gw)).To(Equal(name))
 }
 
-func TestCloudflaredDeploymentName(t *testing.T) {
+func TestGatewayResourceName(t *testing.T) {
 	g := NewWithT(t)
 	gw := testGateway()
-	g.Expect(apiv1.CloudflaredDeploymentName(gw)).To(Equal("cloudflared-my-gw"))
-}
-
-func TestTunnelTokenSecretName(t *testing.T) {
-	g := NewWithT(t)
-	gw := testGateway()
-	g.Expect(apiv1.TunnelTokenSecretName(gw)).To(Equal("cloudflared-token-my-gw"))
+	g.Expect(apiv1.GatewayResourceName(gw)).To(Equal("gateway-my-gw"))
 }
 
 func TestFinalizerGatewayClass(t *testing.T) {
@@ -81,6 +75,7 @@ func TestReconcileInterval(t *testing.T) {
 		name        string
 		annotations map[string]string
 		want        time.Duration
+		wantErr     bool
 	}{
 		{
 			name:        "nil annotations returns default",
@@ -107,11 +102,11 @@ func TestReconcileInterval(t *testing.T) {
 			want: 5 * time.Minute,
 		},
 		{
-			name: "invalid duration returns default",
+			name: "invalid duration returns error",
 			annotations: map[string]string{
 				apiv1.AnnotationReconcileEvery: "not-a-duration",
 			},
-			want: apiv1.DefaultReconcileInterval,
+			wantErr: true,
 		},
 		{
 			name: "disabled takes precedence over custom interval",
@@ -126,7 +121,13 @@ func TestReconcileInterval(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			g := NewWithT(t)
-			g.Expect(apiv1.ReconcileInterval(tt.annotations)).To(Equal(tt.want))
+			interval, err := apiv1.ReconcileInterval(tt.annotations)
+			if tt.wantErr {
+				g.Expect(err).To(HaveOccurred())
+			} else {
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(interval).To(Equal(tt.want))
+			}
 		})
 	}
 }

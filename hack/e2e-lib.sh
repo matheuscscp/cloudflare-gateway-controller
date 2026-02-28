@@ -17,6 +17,7 @@
 #   REUSE_CLUSTER        — if "1", reuse existing kind cluster
 #   REUSE_CONTROLLER     — if "1", skip controller install if already running
 #   RELOAD_CONTROLLER    — if "1", reload image and restart controller
+#   CONTROLLER_LOG_FILE  — path to controller log file (default: test-<cluster>-controller.log)
 #   TEST                 — if set, run only the named test function
 
 # Configuration defaults.

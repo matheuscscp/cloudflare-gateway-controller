@@ -19,12 +19,25 @@ import (
 
 // reconcileAllTunnelIngress builds and applies ingress rules for all tunnel
 // entries. Returns the denied refs map, change messages, and any error.
-func (r *GatewayReconciler) reconcileAllTunnelIngress(ctx context.Context, tc cloudflare.Client, entries []tunnelEntry, routes []*gatewayv1.HTTPRoute) (map[types.NamespacedName][]string, []string, error) {
+// When sidecar is enabled, sidecarDeniedRefs provides the denied refs computed
+// by reconcileSidecarConfigMap.
+func (r *GatewayReconciler) reconcileAllTunnelIngress(ctx context.Context, tc cloudflare.Client, entries []tunnelEntry, routes []*gatewayv1.HTTPRoute, sidecarDeniedRefs map[types.NamespacedName][]string) (map[types.NamespacedName][]string, []string, error) {
 	l := log.FromContext(ctx)
 
-	ingress, routesWithDeniedRefs, err := buildIngressRules(ctx, r.Client, routes)
-	if err != nil {
-		return nil, nil, err
+	var ingress []cloudflare.IngressRule
+	var routesWithDeniedRefs map[types.NamespacedName][]string
+
+	if r.sidecarEnabled() {
+		// When sidecar is enabled, use a single catch-all rule that forwards
+		// all traffic to the sidecar proxy on localhost:8080.
+		ingress = []cloudflare.IngressRule{{Service: buildSidecarIngressCatchAll()}}
+		routesWithDeniedRefs = sidecarDeniedRefs
+	} else {
+		var err error
+		ingress, routesWithDeniedRefs, err = buildIngressRules(ctx, r.Client, routes)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 	if len(routesWithDeniedRefs) > 0 {
 		l.V(1).Info("BackendRefs denied due to missing or failed ReferenceGrant checks", "routes", len(routesWithDeniedRefs))

@@ -32,12 +32,13 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
-	sigyaml "sigs.k8s.io/yaml"
+	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/conditions"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/controller"
+	"github.com/matheuscscp/cloudflare-gateway-controller/internal/sidecar"
 )
 
 // testGatewayAPIVersion must match the major.minor version of the
@@ -104,7 +105,7 @@ func setupRBAC(cfg *rest.Config, s *runtime.Scheme) *rest.Config {
 	}
 
 	var role rbacv1.ClusterRole
-	if err := sigyaml.Unmarshal([]byte(strings.Join(lines, "\n")), &role); err != nil {
+	if err := yaml.Unmarshal([]byte(strings.Join(lines, "\n")), &role); err != nil {
 		panic(fmt.Sprintf("failed to parse chart clusterrole.yaml: %v", err))
 	}
 
@@ -208,6 +209,7 @@ func TestMain(m *testing.M) {
 			return testMock, nil
 		},
 		CloudflaredImage: controller.DefaultCloudflaredImage,
+		SidecarImage:     "test-sidecar-image:latest",
 	}).SetupWithManager(mgr); err != nil {
 		panic(fmt.Sprintf("failed to setup Gateway controller: %v", err))
 	}
@@ -607,10 +609,11 @@ func findEvent(g Gomega, namespace, objectName, eventType, reason, action, noteS
 }
 
 // resetMockErrors resets all error injection fields and call-tracking state
-// on the shared mock at test cleanup. Tests that set mock errors MUST call
-// this to avoid leaking error state to subsequent tests.
+// on the shared mock. Called both eagerly (to clean up state from prior tests)
+// and on t.Cleanup (to avoid leaking state to subsequent tests).
+// Tests that set mock errors MUST call this.
 func resetMockErrors(t *testing.T) {
-	t.Cleanup(func() {
+	doReset := func() {
 		testMock.newClientErr = nil
 		testMock.getTunnelIDByNameErr = nil
 		testMock.createTunnelErr = nil
@@ -630,5 +633,30 @@ func resetMockErrors(t *testing.T) {
 		testMock.tunnels = nil
 		testMock.trackedTunnels = nil
 		testMock.tunnelIDFunc = nil
-	})
+		testMock.lastTunnelConfigID = ""
+		testMock.lastTunnelConfigIngress = nil
+	}
+	doReset()
+	t.Cleanup(doReset)
+}
+
+// getSidecarConfig reads the sidecar ConfigMap for a Gateway and returns
+// the parsed sidecar config.
+func getSidecarConfig(g Gomega, gw *gatewayv1.Gateway) sidecar.Config {
+	var cm corev1.ConfigMap
+	cmKey := ctrlclient.ObjectKey{Name: apiv1.GatewayResourceName(gw), Namespace: gw.Namespace}
+	g.Expect(testClient.Get(testCtx, cmKey, &cm)).To(Succeed())
+	data, ok := cm.Data["config.yaml"]
+	g.Expect(ok).To(BeTrue(), "config.yaml key not found in sidecar ConfigMap")
+	var cfg sidecar.Config
+	g.Expect(yaml.Unmarshal([]byte(data), &cfg)).To(Succeed())
+	return cfg
+}
+
+// expectCatchAllIngress asserts that the mock's lastTunnelConfigIngress is
+// the sidecar catch-all rule.
+func expectCatchAllIngress(g Gomega) {
+	g.Expect(testMock.lastTunnelConfigIngress).To(HaveLen(1))
+	g.Expect(testMock.lastTunnelConfigIngress[0].Service).To(Equal("http://localhost:8080"))
+	g.Expect(testMock.lastTunnelConfigIngress[0].Hostname).To(BeEmpty())
 }

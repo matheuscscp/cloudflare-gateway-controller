@@ -246,18 +246,31 @@ func (r *GatewayReconciler) reconcileCGS(
 	desired := apiv1.CloudflareGatewayStatusDetail{}
 
 	// Tunnel.
+	resourceName := apiv1.GatewayResourceName(gw)
 	if len(entries) > 0 {
 		e := entries[0]
 		desired.Tunnel = &apiv1.TunnelStatus{
-			Name:           e.tunnelName,
-			ID:             e.tunnelID,
-			DeploymentName: e.deploymentName,
-			SecretName:     e.secretName,
+			Name: e.tunnelName,
+			ID:   e.tunnelID,
 		}
 	}
 
+	// Inventory: all Kubernetes objects managed by this Gateway.
+	desired.Inventory = []apiv1.ResourceRef{
+		{APIVersion: "apps/v1", Kind: apiv1.KindDeployment, Name: resourceName},
+		{APIVersion: "v1", Kind: apiv1.KindSecret, Name: resourceName},
+	}
+	if r.sidecarEnabled() {
+		desired.Inventory = append(desired.Inventory,
+			apiv1.ResourceRef{APIVersion: "v1", Kind: apiv1.KindConfigMap, Name: resourceName},
+			apiv1.ResourceRef{APIVersion: "v1", Kind: apiv1.KindServiceAccount, Name: resourceName},
+			apiv1.ResourceRef{APIVersion: "rbac.authorization.k8s.io/v1", Kind: apiv1.KindRole, Name: resourceName},
+			apiv1.ResourceRef{APIVersion: "rbac.authorization.k8s.io/v1", Kind: apiv1.KindRoleBinding, Name: resourceName},
+		)
+	}
+
 	if cgs == nil || !cgs.DeletionTimestamp.IsZero() {
-		if cgs != nil {
+		if cgs != nil && controllerutil.ContainsFinalizer(cgs, apiv1.Finalizer) {
 			// CGS is being deleted (e.g. manually by the user). Remove the
 			// finalizer so it can be garbage-collected, then create a new one.
 			cgsPatch := client.MergeFrom(cgs.DeepCopy())

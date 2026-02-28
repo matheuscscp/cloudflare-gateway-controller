@@ -82,6 +82,7 @@ type GatewayReconciler struct {
 	ResourceManager     *ssa.ResourceManager
 	NewCloudflareClient cloudflare.ClientFactory
 	CloudflaredImage    string
+	SidecarImage        string
 }
 
 // gatewayReadiness holds the computed Programmed and Ready condition values
@@ -114,6 +115,10 @@ type tunnelEntry struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;get;list;watch;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // maxEventMessageLen is the maximum length of a Kubernetes Event message.
@@ -281,8 +286,8 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	// Compute desired tunnel entry.
 	entries := []tunnelEntry{{
 		tunnelName:     apiv1.TunnelName(gw),
-		deploymentName: apiv1.CloudflaredDeploymentName(gw),
-		secretName:     apiv1.TunnelTokenSecretName(gw),
+		deploymentName: apiv1.GatewayResourceName(gw),
+		secretName:     apiv1.GatewayResourceName(gw),
 	}}
 
 	// Ensure all tunnels exist.
@@ -299,6 +304,23 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	}
 	changes = append(changes, secretChanges...)
 
+	// Reconcile sidecar resources when sidecar is enabled.
+	var sidecarDeniedRefs map[types.NamespacedName][]string
+	if r.sidecarEnabled() {
+		var sidecarCMChanges []string
+		sidecarDeniedRefs, sidecarCMChanges, err = r.reconcileSidecarConfigMap(ctx, gw, validRoutes)
+		if err != nil {
+			return r.reconcileError(ctx, gw, err)
+		}
+		changes = append(changes, sidecarCMChanges...)
+
+		sidecarRBACChanges, err := r.reconcileSidecarRBAC(ctx, gw)
+		if err != nil {
+			return r.reconcileError(ctx, gw, err)
+		}
+		changes = append(changes, sidecarRBACChanges...)
+	}
+
 	// Apply cloudflared Deployments for all entries.
 	deployChanges, err := r.applyCloudflaredDeployments(ctx, gw, params, entries)
 	if err != nil {
@@ -312,11 +334,19 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	changes = append(changes, cleanupChanges...)
 	errs = append(errs, cleanupErrs...)
 
+	// Clean up sidecar resources when sidecar is disabled (handles the case
+	// where sidecar was previously enabled and is now turned off).
+	if !r.sidecarEnabled() {
+		sidecarCleanupChanges, sidecarCleanupErrs := r.cleanupStaleSidecarResources(ctx, gw)
+		changes = append(changes, sidecarCleanupChanges...)
+		errs = append(errs, sidecarCleanupErrs...)
+	}
+
 	// Build listener statuses using only valid routes.
 	desiredListeners := buildListenerStatuses(gw, countAttachedRoutes(validRoutes, gw))
 
 	// Reconcile tunnel ingress configuration.
-	routesWithDeniedRefs, configChanges, err := r.reconcileAllTunnelIngress(ctx, tc, entries, validRoutes)
+	routesWithDeniedRefs, configChanges, err := r.reconcileAllTunnelIngress(ctx, tc, entries, validRoutes, sidecarDeniedRefs)
 	if err != nil {
 		return r.reconcileError(ctx, gw, err)
 	}
@@ -351,8 +381,15 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		cgs = updatedCGS
 	}
 
+	// Compute requeue interval (validated by validateGateway, error is defensive).
+	requeueAfter, err := apiv1.ReconcileInterval(gw.Annotations)
+	if err != nil {
+		errs = append(errs, err.Error())
+		requeueAfter = apiv1.DefaultReconcileInterval
+	}
+
 	// Patch Gateway status and emit events
-	return r.patchGatewayStatus(ctx, gw, cgs, entries, desiredListeners, changes, errs, readiness, zoneNames)
+	return r.patchGatewayStatus(ctx, gw, cgs, entries, desiredListeners, changes, errs, readiness, zoneNames, requeueAfter)
 }
 
 // dnsResult holds the results of DNS reconciliation.
@@ -389,7 +426,7 @@ func (r *GatewayReconciler) reconcileDNSWithZoneChange(
 // state, checks whether a status patch is needed (conditions, listeners, or
 // resource changes), patches the status, and emits summary events/logs.
 // It also patches the CGS conditions to mirror the Gateway conditions.
-func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv1.Gateway, cgs *apiv1.CloudflareGatewayStatus, entries []tunnelEntry, desiredListeners []gatewayv1.ListenerStatus, changes, errs []string, readiness gatewayReadiness, zoneNames []string) (ctrl.Result, error) {
+func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv1.Gateway, cgs *apiv1.CloudflareGatewayStatus, entries []tunnelEntry, desiredListeners []gatewayv1.ListenerStatus, changes, errs []string, readiness gatewayReadiness, zoneNames []string, requeueAfter time.Duration) (ctrl.Result, error) {
 	l := log.FromContext(ctx)
 	now := metav1.Now()
 
@@ -467,7 +504,6 @@ func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv
 	// Force-patch when Progressing/ProgressingWithRetry so the resource
 	// version bumps, signalling to users that the controller is alive
 	// and making progress.
-	requeueAfter := apiv1.ReconcileInterval(gw.Annotations)
 	forcePatch := readiness.readyReason == apiv1.ReasonProgressing ||
 		readiness.readyReason == apiv1.ReasonProgressingWithRetry
 

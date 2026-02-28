@@ -49,8 +49,25 @@ status:
   tunnel:
     name: gateway-abc123
     id: "f47ac10b-58cc-4372-a567-0e02b2c3d479"
-    deploymentName: cloudflared-my-gateway
-    secretName: cloudflared-token-my-gateway
+  inventory:
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: gateway-my-gateway
+    - apiVersion: v1
+      kind: Secret
+      name: gateway-my-gateway
+    - apiVersion: v1
+      kind: ConfigMap
+      name: gateway-my-gateway
+    - apiVersion: v1
+      kind: ServiceAccount
+      name: gateway-my-gateway
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      name: gateway-my-gateway
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      name: gateway-my-gateway
 ```
 
 **1.** List all CloudflareGatewayStatus objects:
@@ -87,12 +104,22 @@ details.
 ### Tunnel
 
 The `.status.tunnel` field records the Cloudflare tunnel managed for this
-Gateway and its associated Kubernetes resources.
+Gateway.
 
 The tunnel entry has the following fields:
 
 - `name`: Cloudflare tunnel name.
 - `id`: Cloudflare tunnel UUID.
-- `deploymentName`: Name of the cloudflared Deployment in the Gateway's
-  namespace.
-- `secretName`: Name of the tunnel token Secret in the Gateway's namespace.
+
+### Inventory
+
+The `.status.inventory` field lists all Kubernetes objects managed by this
+Gateway. Each entry has the following fields:
+
+- `apiVersion`: API group and version (e.g. `apps/v1`, `v1`).
+- `kind`: Resource kind (e.g. `Deployment`, `Secret`).
+- `name`: Resource name (same namespace as the Gateway).
+
+The inventory always includes the cloudflared Deployment and tunnel token
+Secret. When the sidecar is enabled (default), it also includes the sidecar
+ConfigMap, ServiceAccount, Role, and RoleBinding.
