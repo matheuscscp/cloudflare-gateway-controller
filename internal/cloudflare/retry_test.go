@@ -77,25 +77,6 @@ func TestWithRetry_RetriesTransientErrors(t *testing.T) {
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(calls).To(Equal(2))
 	})
-	t.Run("retry2", func(t *testing.T) {
-		t.Parallel()
-		g := NewWithT(t)
-		calls := 0
-		inner := newMockRetryClient()
-		inner.getPoolByNameFn = func() (string, *cloudflare.PoolConfig, error) {
-			calls++
-			if calls <= 1 {
-				return "", nil, io.ErrUnexpectedEOF
-			}
-			return "pool-id", &cloudflare.PoolConfig{Name: "pool-1"}, nil
-		}
-		c := cloudflare.WithRetryMaxRetries(inner, 1)
-		id, cfg, err := c.GetPoolByName(context.Background(), "pool-1")
-		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(id).To(Equal("pool-id"))
-		g.Expect(cfg.Name).To(Equal("pool-1"))
-		g.Expect(calls).To(Equal(2))
-	})
 }
 
 func TestWithRetry_DoesNotRetryPermanentErrors(t *testing.T) {
@@ -144,23 +125,6 @@ func TestWithRetry_RespectsContextCancellation(t *testing.T) {
 		g.Expect(err).To(MatchError(context.Canceled))
 		g.Expect(calls).To(Equal(1))
 	})
-	t.Run("retry2", func(t *testing.T) {
-		g := NewWithT(t)
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-		calls := 0
-		inner := newMockRetryClient()
-		inner.getPoolByNameFn = func() (string, *cloudflare.PoolConfig, error) {
-			calls++
-			return "", nil, io.ErrUnexpectedEOF
-		}
-		c := cloudflare.WithRetry(inner)
-		id, cfg, err := c.GetPoolByName(ctx, "pool-1")
-		g.Expect(err).To(MatchError(context.Canceled))
-		g.Expect(id).To(BeEmpty())
-		g.Expect(cfg).To(BeNil())
-		g.Expect(calls).To(Equal(1))
-	})
 }
 
 func TestWithRetry_ExhaustsRetries(t *testing.T) {
@@ -184,18 +148,6 @@ func TestWithRetry_ExhaustsRetries(t *testing.T) {
 		c := cloudflare.WithRetryMaxRetries(inner, 0)
 		err := c.DeleteTunnel(context.Background(), "tunnel-id")
 		g.Expect(err).To(MatchError(io.ErrUnexpectedEOF))
-	})
-	t.Run("retry2", func(t *testing.T) {
-		g := NewWithT(t)
-		inner := newMockRetryClient()
-		inner.getPoolByNameFn = func() (string, *cloudflare.PoolConfig, error) {
-			return "", nil, io.ErrUnexpectedEOF
-		}
-		c := cloudflare.WithRetryMaxRetries(inner, 0)
-		id, cfg, err := c.GetPoolByName(context.Background(), "pool-1")
-		g.Expect(err).To(MatchError(io.ErrUnexpectedEOF))
-		g.Expect(id).To(BeEmpty())
-		g.Expect(cfg).To(BeNil())
 	})
 }
 
@@ -266,64 +218,6 @@ func TestWithRetry_DelegatesAllMethods(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(hostnames).To(Equal([]string{"app.example.com"}))
 	g.Expect(inner.calls["ListDNSCNAMEsByTarget"]).To(Equal(1))
-
-	// Monitor operations.
-	monitorID, err := c.CreateMonitor(ctx, "my-monitor", "test desc", cloudflare.MonitorConfig{Type: "https"})
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(monitorID).To(Equal("monitor-id"))
-	g.Expect(inner.calls["CreateMonitor"]).To(Equal(1))
-
-	monitorID, err = c.GetMonitorByName(ctx, "my-monitor")
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(monitorID).To(Equal("monitor-id"))
-	g.Expect(inner.calls["GetMonitorByName"]).To(Equal(1))
-
-	err = c.UpdateMonitor(ctx, "monitor-id", "my-monitor", "test desc", cloudflare.MonitorConfig{Type: "https"})
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(inner.calls["UpdateMonitor"]).To(Equal(1))
-
-	err = c.DeleteMonitor(ctx, "monitor-id")
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(inner.calls["DeleteMonitor"]).To(Equal(1))
-
-	// Pool operations.
-	poolID, err := c.CreatePool(ctx, cloudflare.PoolConfig{Name: "pool-1"})
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(poolID).To(Equal("pool-id"))
-	g.Expect(inner.calls["CreatePool"]).To(Equal(1))
-
-	poolID, poolCfg, err := c.GetPoolByName(ctx, "pool-1")
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(poolID).To(Equal("pool-id"))
-	g.Expect(poolCfg.Name).To(Equal("pool-1"))
-	g.Expect(inner.calls["GetPoolByName"]).To(Equal(1))
-
-	err = c.UpdatePool(ctx, "pool-id", cloudflare.PoolConfig{Name: "pool-1"})
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(inner.calls["UpdatePool"]).To(Equal(1))
-
-	err = c.DeletePool(ctx, "pool-id")
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(inner.calls["DeletePool"]).To(Equal(1))
-
-	pools, err := c.ListPoolsByPrefix(ctx, "pool-")
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(pools).To(Equal([]cloudflare.LoadBalancerPool{{ID: "p1", Name: "pool-1"}}))
-	g.Expect(inner.calls["ListPoolsByPrefix"]).To(Equal(1))
-
-	// Load Balancer operations.
-	err = c.EnsureLoadBalancer(ctx, "zone-1", "app.example.com", []string{"pool-1"}, "random", "none", "test desc", map[string]float64{"pool-1": 1.0})
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(inner.calls["EnsureLoadBalancer"]).To(Equal(1))
-
-	err = c.DeleteLoadBalancer(ctx, "zone-1", "app.example.com")
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(inner.calls["DeleteLoadBalancer"]).To(Equal(1))
-
-	lbHostnames, err := c.ListLoadBalancerHostnames(ctx, "zone-1")
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(lbHostnames).To(Equal([]string{"app.example.com"}))
-	g.Expect(inner.calls["ListLoadBalancerHostnames"]).To(Equal(1))
 }
 
 // mockRetryClient implements cloudflare.Client with configurable overrides
@@ -332,9 +226,8 @@ type mockRetryClient struct {
 	calls map[string]int
 
 	// Overrides for retry behavior tests (nil = use default).
-	deleteTunnelFn  func() error
-	listZoneIDsFn   func() ([]string, error)
-	getPoolByNameFn func() (string, *cloudflare.PoolConfig, error)
+	deleteTunnelFn func() error
+	listZoneIDsFn  func() ([]string, error)
 }
 
 func newMockRetryClient() *mockRetryClient {
@@ -409,68 +302,5 @@ func (m *mockRetryClient) DeleteDNSCNAME(_ context.Context, _, _ string) error {
 
 func (m *mockRetryClient) ListDNSCNAMEsByTarget(_ context.Context, _, _ string) ([]string, error) {
 	m.calls["ListDNSCNAMEsByTarget"]++
-	return []string{"app.example.com"}, nil
-}
-
-func (m *mockRetryClient) CreateMonitor(_ context.Context, _, _ string, _ cloudflare.MonitorConfig) (string, error) {
-	m.calls["CreateMonitor"]++
-	return "monitor-id", nil
-}
-
-func (m *mockRetryClient) GetMonitorByName(_ context.Context, _ string) (string, error) {
-	m.calls["GetMonitorByName"]++
-	return "monitor-id", nil
-}
-
-func (m *mockRetryClient) UpdateMonitor(_ context.Context, _, _, _ string, _ cloudflare.MonitorConfig) error {
-	m.calls["UpdateMonitor"]++
-	return nil
-}
-
-func (m *mockRetryClient) DeleteMonitor(_ context.Context, _ string) error {
-	m.calls["DeleteMonitor"]++
-	return nil
-}
-
-func (m *mockRetryClient) CreatePool(_ context.Context, _ cloudflare.PoolConfig) (string, error) {
-	m.calls["CreatePool"]++
-	return "pool-id", nil
-}
-
-func (m *mockRetryClient) GetPoolByName(_ context.Context, _ string) (string, *cloudflare.PoolConfig, error) {
-	m.calls["GetPoolByName"]++
-	if m.getPoolByNameFn != nil {
-		return m.getPoolByNameFn()
-	}
-	return "pool-id", &cloudflare.PoolConfig{Name: "pool-1"}, nil
-}
-
-func (m *mockRetryClient) UpdatePool(_ context.Context, _ string, _ cloudflare.PoolConfig) error {
-	m.calls["UpdatePool"]++
-	return nil
-}
-
-func (m *mockRetryClient) DeletePool(_ context.Context, _ string) error {
-	m.calls["DeletePool"]++
-	return nil
-}
-
-func (m *mockRetryClient) ListPoolsByPrefix(_ context.Context, _ string) ([]cloudflare.LoadBalancerPool, error) {
-	m.calls["ListPoolsByPrefix"]++
-	return []cloudflare.LoadBalancerPool{{ID: "p1", Name: "pool-1"}}, nil
-}
-
-func (m *mockRetryClient) EnsureLoadBalancer(_ context.Context, _, _ string, _ []string, _, _, _ string, _ map[string]float64) error {
-	m.calls["EnsureLoadBalancer"]++
-	return nil
-}
-
-func (m *mockRetryClient) DeleteLoadBalancer(_ context.Context, _, _ string) error {
-	m.calls["DeleteLoadBalancer"]++
-	return nil
-}
-
-func (m *mockRetryClient) ListLoadBalancerHostnames(_ context.Context, _ string) ([]string, error) {
-	m.calls["ListLoadBalancerHostnames"]++
 	return []string{"app.example.com"}, nil
 }

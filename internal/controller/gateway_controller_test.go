@@ -155,14 +155,13 @@ func TestGatewayReconciler_AcceptedAndProgrammed(t *testing.T) {
 	// Finalizer prevents accidental deletion.
 	g.Expect(cgs.Finalizers).To(ContainElement(apiv1.Finalizer))
 
-	// Tunnel status lists one tunnel (simple mode).
+	// Tunnel status lists one tunnel.
 	g.Expect(cgs.Status.Tunnels).To(HaveLen(1))
 	g.Expect(cgs.Status.Tunnels[0].ID).To(Equal("test-tunnel-id"))
 	g.Expect(cgs.Status.Tunnels[0].DeploymentName).To(Equal("cloudflared-" + gw.Name))
 	g.Expect(cgs.Status.Tunnels[0].SecretName).To(Equal("cloudflared-token-" + gw.Name))
 
-	// No LB or DNS (simple mode without DNS zone).
-	g.Expect(cgs.Status.LoadBalancer).To(BeNil())
+	// No DNS (no DNS zone configured).
 	g.Expect(cgs.Status.DNS).To(BeNil())
 
 	// CGS conditions mirror Gateway conditions.
@@ -946,7 +945,7 @@ func TestGatewayReconciler_DeploymentPatches(t *testing.T) {
 
 	params := createTestParameters(g, "test-gw-deploy-patches-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
 		Tunnels: &apiv1.TunnelsConfig{
-			Cloudflared: &apiv1.CloudflaredConfig{
+			Deployment: &apiv1.DeploymentConfig{
 				Patches: []apiv1.JSONPatchOperation{
 					{
 						Op:    "add",
@@ -1014,7 +1013,7 @@ func TestGatewayReconciler_DeploymentPatchesMultiple(t *testing.T) {
 
 	params := createTestParameters(g, "test-gw-patches-multi-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
 		Tunnels: &apiv1.TunnelsConfig{
-			Cloudflared: &apiv1.CloudflaredConfig{
+			Deployment: &apiv1.DeploymentConfig{
 				Patches: []apiv1.JSONPatchOperation{
 					{
 						Op:    "add",
@@ -1088,7 +1087,7 @@ func TestGatewayReconciler_DeploymentPatchesResourceRequests(t *testing.T) {
 
 	params := createTestParameters(g, "test-gw-patches-resources-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
 		Tunnels: &apiv1.TunnelsConfig{
-			Cloudflared: &apiv1.CloudflaredConfig{
+			Deployment: &apiv1.DeploymentConfig{
 				Patches: []apiv1.JSONPatchOperation{
 					{
 						Op:    "add",
@@ -1158,7 +1157,7 @@ func TestGatewayReconciler_DeploymentPatchesInvalidYAML(t *testing.T) {
 
 	params := createTestParameters(g, "test-gw-patches-invalid-yaml-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
 		Tunnels: &apiv1.TunnelsConfig{
-			Cloudflared: &apiv1.CloudflaredConfig{
+			Deployment: &apiv1.DeploymentConfig{
 				Patches: []apiv1.JSONPatchOperation{
 					{
 						Op:    "replace",
@@ -1228,7 +1227,7 @@ func TestGatewayReconciler_DeploymentPatchesInvalidOps(t *testing.T) {
 
 	params := createTestParameters(g, "test-gw-patches-invalid-ops-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
 		Tunnels: &apiv1.TunnelsConfig{
-			Cloudflared: &apiv1.CloudflaredConfig{
+			Deployment: &apiv1.DeploymentConfig{
 				Patches: []apiv1.JSONPatchOperation{
 					{
 						Op:    "replace",

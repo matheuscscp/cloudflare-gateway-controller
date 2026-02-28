@@ -410,8 +410,8 @@ func (r *GatewayReconciler) buildCloudflaredDeployment(gw *gatewayv1.Gateway, pa
 	// Apply RFC 6902 JSON Patch operations from CloudflareGatewayParameters if present.
 	// These errors are terminal because the CRD is a watched object and
 	// retrying won't fix invalid user input.
-	if params != nil && params.Spec.Tunnels != nil && params.Spec.Tunnels.Cloudflared != nil && len(params.Spec.Tunnels.Cloudflared.Patches) > 0 {
-		patchJSON, err := json.Marshal(params.Spec.Tunnels.Cloudflared.Patches)
+	if params != nil && params.Spec.Tunnels != nil && params.Spec.Tunnels.Deployment != nil && len(params.Spec.Tunnels.Deployment.Patches) > 0 {
+		patchJSON, err := json.Marshal(params.Spec.Tunnels.Deployment.Patches)
 		if err != nil {
 			return nil, reconcile.TerminalError(fmt.Errorf("marshaling deployment patches: %w", err))
 		}
@@ -425,57 +425,12 @@ func (r *GatewayReconciler) buildCloudflaredDeployment(gw *gatewayv1.Gateway, pa
 		}
 	}
 
-	// Apply AZ placement AFTER user patches so AZ affinity always wins.
-	if e.azName != "" {
-		azCfg := findAZConfig(params, e.azName)
-		if azCfg != nil {
-			data, err = applyAZPlacement(data, azCfg)
-			if err != nil {
-				return nil, fmt.Errorf("applying AZ placement for %q: %w", e.azName, err)
-			}
-		}
-	}
-
 	obj := &unstructured.Unstructured{}
 	if err := obj.UnmarshalJSON(data); err != nil {
 		return nil, fmt.Errorf("unmarshaling deployment: %w", err)
 	}
 	obj.SetGroupVersionKind(appsv1.SchemeGroupVersion.WithKind(apiv1.KindDeployment))
 	return obj, nil
-}
-
-// applyAZPlacement applies AZ placement configuration to the Deployment JSON
-// by unmarshaling, modifying the pod spec, and re-marshaling.
-func applyAZPlacement(data []byte, az *apiv1.AvailabilityZone) ([]byte, error) {
-	var deploy appsv1.Deployment
-	if err := json.Unmarshal(data, &deploy); err != nil {
-		return nil, fmt.Errorf("unmarshaling deployment for AZ placement: %w", err)
-	}
-	podSpec := &deploy.Spec.Template.Spec
-
-	switch {
-	case az.Zone != "":
-		// Shorthand: set node affinity on topology.kubernetes.io/zone.
-		podSpec.Affinity = &corev1.Affinity{
-			NodeAffinity: &corev1.NodeAffinity{
-				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
-					NodeSelectorTerms: []corev1.NodeSelectorTerm{{
-						MatchExpressions: []corev1.NodeSelectorRequirement{{
-							Key:      "topology.kubernetes.io/zone",
-							Operator: corev1.NodeSelectorOpIn,
-							Values:   []string{az.Zone},
-						}},
-					}},
-				},
-			},
-		}
-	case len(az.NodeSelector) > 0:
-		podSpec.NodeSelector = az.NodeSelector
-	case az.Affinity != nil:
-		podSpec.Affinity = az.Affinity
-	}
-
-	return json.Marshal(deploy)
 }
 
 // buildCloudflaredDeploymentApply builds the apply configuration for the
@@ -486,12 +441,6 @@ func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gatewa
 		"app.kubernetes.io/name":       "cloudflared",
 		"app.kubernetes.io/managed-by": apiv1.ShortControllerName,
 		"app.kubernetes.io/instance":   gw.Name,
-	}
-	if e.azName != "" {
-		selectorLabels[apiv1.Group+"/az"] = e.azName
-	}
-	if e.serviceName != "" {
-		selectorLabels[apiv1.Group+"/service"] = e.serviceName
 	}
 	templateLabels := maps.Clone(selectorLabels)
 

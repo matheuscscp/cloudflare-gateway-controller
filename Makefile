@@ -19,7 +19,7 @@ GO_TEST_ARGS ?=
 IMG ?= cloudflare-gateway-controller:dev
 
 .PHONY: all
-all: test lint build build-cfgwctl ## Run all build and test targets.
+all: tidy lint test ## Run basic validation targets.
 
 ##@ Development
 
@@ -44,7 +44,7 @@ tidy: fmt ## Run go mod tidy and go fmt.
 .PHONY: test
 test: envtest ## Run all unit tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
-	go test $(shell go list ./... | grep -v -e '^github.com/matheuscscp/cloudflare-gateway-controller$$' -e '/cmd/') $(GO_TEST_ARGS) -coverprofile cover.out
+	go test $(shell go list ./... | grep -v '/cmd/') $(GO_TEST_ARGS) -coverprofile cover.out
 
 .PHONY: lint
 lint: vet golangci-lint ## Run go vet, golangci and helm linters.
@@ -59,10 +59,6 @@ lint-fix: golangci-lint ## Run golangci linters and perform fixes.
 
 .PHONY: build
 build: ## Build the binary.
-	CGO_ENABLED=0 go build -o ./bin/cloudflare-gateway-controller .
-
-.PHONY: build-cfgwctl
-build-cfgwctl: ## Build the cfgwctl CLI binary.
 	CGO_ENABLED=0 go build -o ./bin/cfgwctl ./cmd/cfgwctl
 
 .PHONY: docker-build
@@ -70,28 +66,16 @@ docker-build: ## Build the controller Docker image locally.
 	docker buildx build -t $(IMG) --load .
 
 .PHONY: test-e2e
-test-e2e: build-cfgwctl ## Run simple topology e2e tests against a kind cluster.
+test-e2e: build ## Run e2e tests against a kind cluster.
 	hack/e2e-test.sh 2>&1 | stdbuf -oL tee test-e2e.log
-
-.PHONY: test-e2e-ha
-test-e2e-ha: build-cfgwctl ## Run HighAvailability topology e2e tests.
-	hack/e2e-test-ha.sh 2>&1 | stdbuf -oL tee test-e2e-ha.log
-
-.PHONY: test-e2e-ts
-test-e2e-ts: build-cfgwctl ## Run TrafficSplitting topology e2e tests.
-	hack/e2e-test-ts.sh 2>&1 | stdbuf -oL tee test-e2e-ts.log
-
-.PHONY: test-e2e-ts-az
-test-e2e-ts-az: build-cfgwctl ## Run TrafficSplitting with AZs e2e tests.
-	hack/e2e-test-ts-az.sh 2>&1 | stdbuf -oL tee test-e2e-ts-az.log
 
 .PHONY: run
 run: ## Run the controller locally against the current kubeconfig cluster.
-	go run ./main.go --enable-leader-election=false 2>&1 | stdbuf -oL tee run.log
+	go run ./cmd/cfgwctl controller --enable-leader-election=false 2>&1 | stdbuf -oL tee run.log
 
 .PHONY: run-debug
 run-debug: ## Run the controller locally with debug logging (verbosity level 1).
-	go run ./main.go --enable-leader-election=false --log-level=debug 2>&1 | stdbuf -oL tee run.log
+	go run ./cmd/cfgwctl controller --enable-leader-election=false --log-level=debug 2>&1 | stdbuf -oL tee run.log
 
 ##@ Dependencies
 

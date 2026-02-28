@@ -2,7 +2,7 @@
 # Copyright 2026 Matheus Pimenta.
 # SPDX-License-Identifier: AGPL-3.0
 #
-# End-to-end test script for the simple (no load balancer) topology.
+# End-to-end test script.
 # Creates a kind cluster, installs the controller via Helm, and validates
 # the full reconciliation loop against a real Cloudflare account.
 #
@@ -529,7 +529,7 @@ spec:
   secretRef:
     name: cloudflare-creds
   tunnels:
-    cloudflared:
+    deployment:
       patches:
       - op: add
         path: /spec/template/metadata/labels/e2e-patch

@@ -1463,7 +1463,7 @@ func TestGatewayReconciler_HTTPRouteMultipleBackendRefs(t *testing.T) {
 		g.Expect(accepted).NotTo(BeNil())
 		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
 		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.RouteReasonUnsupportedValue)))
-		g.Expect(accepted.Message).To(ContainSubstring("traffic splitting"))
+		g.Expect(accepted.Message).To(ContainSubstring("multiple backends are not supported"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 

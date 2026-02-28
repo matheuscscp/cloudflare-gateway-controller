@@ -92,24 +92,12 @@ type gatewayReadiness struct {
 	programmedReason, programmedMsg string
 }
 
-// lbMode represents the load balancer topology mode.
-type lbMode int
-
-const (
-	lbModeNone          lbMode = iota // Simple: 1 tunnel, CNAMEs
-	lbModePerAZ                       // HighAvailability: 1 tunnel per AZ, full ingress
-	lbModePerBackendRef               // TrafficSplitting: 1 tunnel per service [× AZ]
-)
-
 // tunnelEntry represents one desired tunnel and its associated Kubernetes resources.
 type tunnelEntry struct {
-	tunnelName       string // Cloudflare tunnel name (deterministic hash)
-	deploymentName   string // cloudflared Deployment name
-	secretName       string // tunnel token Secret name
-	azName           string // AZ name ("" if no AZ)
-	serviceNamespace string // Service namespace ("" if not per-backendRef)
-	serviceName      string // Service name ("" if not per-backendRef)
-	tunnelID         string // filled after ensureTunnels
+	tunnelName     string // Cloudflare tunnel name (deterministic hash)
+	deploymentName string // cloudflared Deployment name
+	secretName     string // tunnel token Secret name
+	tunnelID       string // filled after ensureTunnels
 }
 
 // +kubebuilder:rbac:groups=cloudflare-gateway-controller.io,resources=cloudflaregatewayparameters,verbs=get;list;watch
@@ -197,10 +185,9 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 // reconcile orchestrates the main reconciliation loop for a Gateway:
 // ensure GatewayClass finalizer, validate, list HTTPRoutes, read credentials,
-// create Cloudflare client, detect LB mode, filter and validate routes,
-// compute desired tunnels, ensure tunnels and associated Secrets/Deployments,
-// clean up stale resources, reconcile tunnel ingress and DNS, check readiness,
-// update HTTPRoute and Gateway statuses.
+// create Cloudflare client, filter and validate routes, ensure tunnel and
+// associated Secret/Deployment, clean up stale resources, reconcile tunnel
+// ingress and DNS, check readiness, update HTTPRoute and Gateway statuses.
 func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway, gc *gatewayv1.GatewayClass) (ctrl.Result, error) {
 	// Ensure GatewayClass finalizer
 	if err := r.ensureGatewayClassFinalizer(ctx, gc, gw); err != nil {
@@ -261,12 +248,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	var changes []string
 	var errs []string
 
-	// Detect LB topology mode.
-	mode := detectLBMode(params)
-
-	// Filter HTTPRoutes by parentRef and allowedRoutes. Done before tunnel
-	// operations because per-backendRef mode needs the valid routes to
-	// discover which Services need tunnels.
+	// Filter HTTPRoutes by parentRef and allowedRoutes.
 	gatewayRoutes, deniedRoutes, staleRoutes, err := listGatewayRoutes(ctx, r.Client, &allRoutes, gw)
 	if err != nil {
 		return r.reconcileError(ctx, gw, err)
@@ -287,7 +269,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	// Set Accepted=False/UnsupportedValue on routes that use unsupported features.
 	var validRoutes []*gatewayv1.HTTPRoute
 	for _, route := range gatewayRoutes {
-		if issues := validateHTTPRoute(route, mode); len(issues) > 0 {
+		if issues := validateHTTPRoute(route); len(issues) > 0 {
 			if err := r.updateInvalidRouteStatus(ctx, gw, route, issues); err != nil {
 				errs = append(errs, fmt.Sprintf("failed to update invalid HTTPRoute %s/%s status: %v", route.Namespace, route.Name, err))
 			}
@@ -296,8 +278,12 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		validRoutes = append(validRoutes, route)
 	}
 
-	// Compute desired tunnel entries based on mode.
-	entries := computeDesiredTunnels(gw, mode, params, validRoutes)
+	// Compute desired tunnel entry.
+	entries := []tunnelEntry{{
+		tunnelName:     apiv1.TunnelName(gw),
+		deploymentName: apiv1.CloudflaredDeploymentName(gw),
+		secretName:     apiv1.TunnelTokenSecretName(gw),
+	}}
 
 	// Ensure all tunnels exist.
 	tunnelChanges, err := r.ensureTunnels(ctx, tc, entries)
@@ -335,34 +321,34 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	// Build listener statuses using only valid routes.
 	desiredListeners := buildListenerStatuses(gw, countAttachedRoutes(validRoutes, gw))
 
-	// Reconcile tunnel ingress configuration for all entries.
-	routesWithDeniedRefs, configChanges, err := r.reconcileAllTunnelIngress(ctx, tc, mode, entries, validRoutes)
+	// Reconcile tunnel ingress configuration.
+	routesWithDeniedRefs, configChanges, err := r.reconcileAllTunnelIngress(ctx, tc, entries, validRoutes)
 	if err != nil {
 		return r.reconcileError(ctx, gw, err)
 	}
 	changes = append(changes, configChanges...)
 
-	// Reconcile DNS or Load Balancer depending on mode, handling zone changes.
+	// Reconcile DNS, handling zone changes.
 	var zoneName string
 	if params != nil && params.Spec.DNS != nil {
 		zoneName = params.Spec.DNS.Zone.Name
 	}
-	dnsLB := r.reconcileDNSOrLB(ctx, tc, gw, params, cgs, mode, entries, validRoutes, zoneName)
-	changes = append(changes, dnsLB.changes...)
-	errs = append(errs, dnsLB.errs...)
+	dnsResult := r.reconcileDNSWithZoneChange(ctx, tc, gw, cgs, entries, validRoutes, zoneName)
+	changes = append(changes, dnsResult.changes...)
+	errs = append(errs, dnsResult.errs...)
 
 	// Check readiness of all cloudflared Deployments.
 	readiness := r.checkAllDeploymentsReadiness(ctx, gw, entries)
 
 	// Update HTTPRoute status.parents for allowed routes (after DNS and
 	// Deployment checks so we can report DNS status and Gateway readiness).
-	errs = append(errs, r.updateRouteStatuses(ctx, gw, validRoutes, routesWithDeniedRefs, zoneName, dnsLB.dnsErr,
+	errs = append(errs, r.updateRouteStatuses(ctx, gw, validRoutes, routesWithDeniedRefs, zoneName, dnsResult.dnsErr,
 		readiness.readyStatus, readiness.readyReason, readiness.readyMsg)...)
 
-	// Reconcile the CloudflareGatewayStatus resource state (tunnels, LB, DNS).
+	// Reconcile the CloudflareGatewayStatus resource state (tunnels, DNS).
 	// Done before the Gateway status patch so CGS reflects the latest state
 	// even if the status patch fails.
-	if updatedCGS, err := r.reconcileCGS(ctx, gw, cgs, entries, zoneName, dnsLB.lbState); err != nil {
+	if updatedCGS, err := r.reconcileCGS(ctx, gw, cgs, entries, zoneName, dnsResult.zoneID); err != nil {
 		errs = append(errs, fmt.Sprintf("failed to reconcile CloudflareGatewayStatus: %v", err))
 	} else {
 		cgs = updatedCGS
@@ -372,96 +358,49 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	return r.patchGatewayStatus(ctx, gw, cgs, entries, desiredListeners, changes, errs, readiness)
 }
 
-// dnsLBResult holds the results of DNS/LB reconciliation.
-type dnsLBResult struct {
-	lbState lbReconcileState
+// dnsResult holds the results of DNS reconciliation.
+type dnsResult struct {
+	zoneID  string
 	dnsErr  *string
 	changes []string
 	errs    []string
 }
 
-// reconcileDNSOrLB reconciles DNS or Load Balancer resources depending on the
-// LB mode, handling zone changes between the previous CGS state and current
-// parameters.
-func (r *GatewayReconciler) reconcileDNSOrLB(
+// reconcileDNSWithZoneChange reconciles DNS CNAME records, handling zone changes
+// between the previous CGS state and current parameters.
+func (r *GatewayReconciler) reconcileDNSWithZoneChange(
 	ctx context.Context, tc cloudflare.Client,
-	gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters,
-	cgs *apiv1.CloudflareGatewayStatus, mode lbMode,
+	gw *gatewayv1.Gateway,
+	cgs *apiv1.CloudflareGatewayStatus,
 	entries []tunnelEntry, validRoutes []*gatewayv1.HTTPRoute,
 	zoneName string,
-) dnsLBResult {
-	var res dnsLBResult
+) dnsResult {
+	var res dnsResult
 
-	// Detect zone changes from CGS state — used to clean up DNS/LB
-	// resources in the old zone before reconciling in the new one.
+	// Detect zone changes from CGS state — used to clean up DNS
+	// records in the old zone before reconciling in the new one.
 	cgsZoneName, cgsZoneID := cgsZoneInfo(cgs)
 	zoneChanged := cgsZoneName != "" && cgsZoneName != zoneName
 
-	if mode == lbModeNone {
-		// If zone changed to a different non-empty zone, clean up DNS
-		// CNAMEs in the old zone first. When zone is removed entirely
-		// (zoneName==""), reconcileDNS handles cleanup via cleanupAllDNS.
-		if zoneChanged && zoneName != "" && len(entries) > 0 {
-			oldDNSChanges, oldDNSErr := r.cleanupDNSInZone(ctx, tc, entries[0].tunnelID, cgsZoneName, cgsZoneID)
-			res.changes = append(res.changes, oldDNSChanges...)
-			if oldDNSErr != nil {
-				res.errs = append(res.errs, fmt.Sprintf("failed to clean up DNS in old zone %s: %v", cgsZoneName, oldDNSErr))
-			}
+	// If zone changed to a different non-empty zone, clean up DNS
+	// CNAMEs in the old zone first. When zone is removed entirely
+	// (zoneName==""), reconcileDNS handles cleanup via cleanupAllDNS.
+	if zoneChanged && zoneName != "" && len(entries) > 0 {
+		oldDNSChanges, oldDNSErr := r.cleanupDNSInZone(ctx, tc, entries[0].tunnelID, cgsZoneName, cgsZoneID)
+		res.changes = append(res.changes, oldDNSChanges...)
+		if oldDNSErr != nil {
+			res.errs = append(res.errs, fmt.Sprintf("failed to clean up DNS in old zone %s: %v", cgsZoneName, oldDNSErr))
 		}
-		var tunnelID string
-		if len(entries) > 0 {
-			tunnelID = entries[0].tunnelID
-		}
-		dnsChanges, dnsErr := r.reconcileDNS(ctx, tc, gw, tunnelID, zoneName, validRoutes)
-		res.changes = append(res.changes, dnsChanges...)
-		res.dnsErr = dnsErr
-		if dnsErr != nil {
-			res.errs = append(res.errs, *dnsErr)
-		}
-		// Clean up stale LB resources if switching FROM LB mode.
-		// Only attempt cleanup if CGS indicates the gateway was in LB mode.
-		if cgs != nil && cgs.Status.LoadBalancer != nil {
-			cleanupZoneName := cgsZoneName
-			cleanupZoneID := cgsZoneID
-			if cleanupZoneName == "" && zoneName != "" {
-				// Fallback to current params if CGS has no zone info (first reconcile
-				// or CGS not yet populated).
-				cleanupZoneName = zoneName
-			}
-			lbCleanupChanges, lbCleanupErrs := r.cleanupAllLBResources(ctx, tc, gw, cleanupZoneName, cleanupZoneID, cgs.Status.LoadBalancer.Hostnames, cgs.Status.LoadBalancer.Pools)
-			res.changes = append(res.changes, lbCleanupChanges...)
-			res.errs = append(res.errs, lbCleanupErrs...)
-		}
-	} else {
-		// If zone changed, clean up LB resources in the old zone before
-		// reconciling in the new zone.
-		if zoneChanged {
-			oldZoneID := cgsZoneID
-			if oldZoneID == "" {
-				if id, err := tc.FindZoneIDByHostname(ctx, cgsZoneName); err != nil {
-					res.errs = append(res.errs, fmt.Sprintf("failed to find old zone ID for LB cleanup: %v", err))
-				} else {
-					oldZoneID = id
-				}
-			}
-			if oldZoneID != "" {
-				oldLBChanges, oldLBErrs := r.cleanupAllLBResources(ctx, tc, gw, cgsZoneName, oldZoneID, cgsLBHostnames(cgs), cgsLBPools(cgs))
-				res.changes = append(res.changes, oldLBChanges...)
-				res.errs = append(res.errs, oldLBErrs...)
-			}
-		}
-		var lbChanges, lbErrs []string
-		res.lbState, lbChanges, lbErrs = r.reconcileLoadBalancer(ctx, tc, gw, params, mode, entries, validRoutes, cgsLBHostnames(cgs), cgsLBPools(cgs))
-		res.changes = append(res.changes, lbChanges...)
-		res.errs = append(res.errs, lbErrs...)
-		// Clean up stale DNS if switching FROM simple mode.
-		if len(entries) > 0 {
-			dnsCleanupChanges, dnsCleanupErr := r.cleanupAllDNS(ctx, tc, entries[0].tunnelID)
-			res.changes = append(res.changes, dnsCleanupChanges...)
-			if dnsCleanupErr != nil {
-				res.errs = append(res.errs, fmt.Sprintf("failed to clean up DNS: %v", dnsCleanupErr))
-			}
-		}
+	}
+	var tunnelID string
+	if len(entries) > 0 {
+		tunnelID = entries[0].tunnelID
+	}
+	dnsChanges, dnsErr := r.reconcileDNS(ctx, tc, gw, tunnelID, zoneName, validRoutes)
+	res.changes = append(res.changes, dnsChanges...)
+	res.dnsErr = dnsErr
+	if dnsErr != nil {
+		res.errs = append(res.errs, *dnsErr)
 	}
 	return res
 }
@@ -864,29 +803,6 @@ func (r *GatewayReconciler) finalizeEnabled(ctx context.Context, gw *gatewayv1.G
 	var changes []string
 	for i := range deployList.Items {
 		changes = append(changes, fmt.Sprintf("deleted cloudflared Deployment %s", deployList.Items[i].Name))
-	}
-
-	// Clean up LB resources before tunnels (LBs reference pools, pools reference monitor).
-	// Only attempt cleanup if the gateway was in LB mode (CGS has LB state). This
-	// prevents a simple-topology gateway from deleting external LBs in its zone.
-	// When switching from LB to simple mode, the regular reconciliation loop already
-	// cleans up LB resources and sets CGS.LoadBalancer = nil, so finalization can skip.
-	if cgs != nil && cgs.Status.LoadBalancer != nil {
-		cleanupZoneName, cleanupZoneID := cgsZoneInfo(cgs)
-		if cleanupZoneName == "" && params != nil && params.Spec.DNS != nil {
-			cleanupZoneName = params.Spec.DNS.Zone.Name
-		}
-		if cleanupZoneName != "" && cleanupZoneID == "" {
-			cleanupZoneID, err = tc.FindZoneIDByHostname(ctx, cleanupZoneName)
-			if err != nil {
-				return changes, fmt.Errorf("finding zone ID for LB cleanup: %w", err)
-			}
-		}
-		lbCleanupChanges, lbCleanupErrs := r.cleanupAllLBResources(ctx, tc, gw, cleanupZoneName, cleanupZoneID, cgs.Status.LoadBalancer.Hostnames, cgs.Status.LoadBalancer.Pools)
-		changes = append(changes, lbCleanupChanges...)
-		if len(lbCleanupErrs) > 0 {
-			return changes, fmt.Errorf("cleaning up LB resources: %s", strings.Join(lbCleanupErrs, "; "))
-		}
 	}
 
 	// Delete all tunnels owned by this Gateway using CGS-tracked tunnel state.

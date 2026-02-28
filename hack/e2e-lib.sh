@@ -39,6 +39,7 @@ PHASE_START=$TS
 _CREATED_CLUSTER=0
 _LOG_STREAM_PID=""
 CONTROLLER_LOG_FILE="${CONTROLLER_LOG_FILE:-test-${KIND_CLUSTER_NAME}-controller.log}"
+: > "$CONTROLLER_LOG_FILE"
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
@@ -83,7 +84,7 @@ retry() {
 }
 
 # cfgwctl shorthand. Exported so bash -c subshells can use it.
-cfgwctl() { "$CFGWCTL" --credentials-file "$CREDENTIALS_FILE" "$@"; }
+cfgwctl() { "$CFGWCTL" test --credentials-file "$CREDENTIALS_FILE" "$@"; }
 export -f cfgwctl
 export CFGWCTL CREDENTIALS_FILE
 
@@ -156,7 +157,7 @@ register_cleanup() {
 start_controller_log_stream() {
     log "Streaming controller logs to '$CONTROLLER_LOG_FILE'..."
     kubectl logs -n "$CONTROLLER_NS" -l app.kubernetes.io/name="$RELEASE_NAME" \
-        -f --tail=-1 >"$CONTROLLER_LOG_FILE" 2>&1 &
+        -f --tail=-1 >>"$CONTROLLER_LOG_FILE" 2>&1 &
     _LOG_STREAM_PID=$!
 }
 

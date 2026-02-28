@@ -99,62 +99,7 @@ func validateGateway(gw *gatewayv1.Gateway) *gatewayValidationError {
 }
 
 // validateParameters checks that the CloudflareGatewayParameters spec is valid.
-// This mirrors the CEL XValidation rules for defense-in-depth (CEL may not
-// run if the CRD version is older).
-func validateParameters(params *apiv1.CloudflareGatewayParameters) *gatewayValidationError {
-	if params == nil {
-		return nil
-	}
-
-	rejectedCond := func(msg string) *gatewayValidationError {
-		return &gatewayValidationError{
-			err: reconcile.TerminalError(fmt.Errorf("%s", strings.ToLower(msg[:1])+msg[1:])),
-			cond: metav1.Condition{
-				Type:    string(gatewayv1.GatewayConditionAccepted),
-				Status:  metav1.ConditionFalse,
-				Reason:  string(gatewayv1.GatewayReasonInvalidParameters),
-				Message: msg,
-			},
-		}
-	}
-
-	hasAZs := params.Spec.Tunnels != nil && len(params.Spec.Tunnels.AvailabilityZones) > 0
-	hasLB := params.Spec.LoadBalancer != nil
-
-	// AZs require LB.
-	if hasAZs && !hasLB {
-		return rejectedCond("loadBalancer is required when tunnels.availabilityZones is set")
-	}
-
-	// HighAvailability requires AZs.
-	if hasLB && params.Spec.LoadBalancer.Topology == apiv1.LoadBalancerTopologyHighAvailability && !hasAZs {
-		return rejectedCond("tunnels.availabilityZones is required when loadBalancer.topology is HighAvailability")
-	}
-
-	// LB requires DNS.
-	if hasLB && params.Spec.DNS == nil {
-		return rejectedCond("dns is required when loadBalancer is set")
-	}
-
-	// Validate each AZ has exactly one placement option.
-	if hasAZs {
-		for i, az := range params.Spec.Tunnels.AvailabilityZones {
-			count := 0
-			if az.Zone != "" {
-				count++
-			}
-			if len(az.NodeSelector) > 0 {
-				count++
-			}
-			if az.Affinity != nil {
-				count++
-			}
-			if count != 1 {
-				return rejectedCond(fmt.Sprintf("tunnels.availabilityZones[%d] (%q): exactly one of zone, nodeSelector, or affinity must be set", i, az.Name))
-			}
-		}
-	}
-
+func validateParameters(_ *apiv1.CloudflareGatewayParameters) *gatewayValidationError {
 	return nil
 }
 
@@ -531,10 +476,8 @@ func (r *GatewayReconciler) updateDeniedRouteStatus(ctx context.Context, gw *gat
 }
 
 // validateHTTPRoute checks that the HTTPRoute only uses features supported by
-// the current topology. In simple/per-AZ modes, multiple backendRefs per rule
-// are not supported. In per-backendRef (TrafficSplitting) mode they are
-// expected. Returns a list of unsupported feature descriptions, or nil if valid.
-func validateHTTPRoute(route *gatewayv1.HTTPRoute, mode lbMode) []string {
+// Cloudflare tunnels. Returns a list of unsupported feature descriptions, or nil if valid.
+func validateHTTPRoute(route *gatewayv1.HTTPRoute) []string {
 	var issues []string
 	for i, ref := range route.Spec.ParentRefs {
 		if ref.Port != nil {
@@ -554,8 +497,8 @@ func validateHTTPRoute(route *gatewayv1.HTTPRoute, mode lbMode) []string {
 		if rule.SessionPersistence != nil {
 			issues = append(issues, fmt.Sprintf("spec.rules[%d].sessionPersistence is not supported", i))
 		}
-		if len(rule.BackendRefs) > 1 && mode != lbModePerBackendRef {
-			issues = append(issues, fmt.Sprintf("spec.rules[%d].backendRefs: traffic splitting (multiple backends) is not supported without loadBalancer.topology=TrafficSplitting; use a Kubernetes Service instead", i))
+		if len(rule.BackendRefs) > 1 {
+			issues = append(issues, fmt.Sprintf("spec.rules[%d].backendRefs: multiple backends are not supported; use a Kubernetes Service instead", i))
 		}
 		for j, ref := range rule.BackendRefs {
 			if len(ref.Filters) > 0 {

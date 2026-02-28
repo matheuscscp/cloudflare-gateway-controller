@@ -96,25 +96,6 @@ func retry1[T any](ctx context.Context, maxRetries int, fn func() (T, error)) (T
 	return zero, lastErr
 }
 
-func retry2[T1, T2 any](ctx context.Context, maxRetries int, fn func() (T1, T2, error)) (T1, T2, error) {
-	var zero1 T1
-	var zero2 T2
-	var lastErr error
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		r1, r2, err := fn()
-		if err == nil || !IsTransient(err) {
-			return r1, r2, err
-		}
-		lastErr = err
-		if attempt < maxRetries {
-			if !waitRetry(ctx, attempt) {
-				return zero1, zero2, ctx.Err()
-			}
-		}
-	}
-	return zero1, zero2, lastErr
-}
-
 // --- Tunnel operations ---
 
 func (r *retryClient) CreateTunnel(ctx context.Context, name string) (string, error) {
@@ -194,83 +175,5 @@ func (r *retryClient) DeleteDNSCNAME(ctx context.Context, zoneID, hostname strin
 func (r *retryClient) ListDNSCNAMEsByTarget(ctx context.Context, zoneID, target string) ([]string, error) {
 	return retry1(ctx, r.maxRetries, func() ([]string, error) {
 		return r.inner.ListDNSCNAMEsByTarget(ctx, zoneID, target)
-	})
-}
-
-// --- Load Balancer Monitor operations ---
-
-func (r *retryClient) CreateMonitor(ctx context.Context, name, description string, config MonitorConfig) (string, error) {
-	return retry1(ctx, r.maxRetries, func() (string, error) {
-		return r.inner.CreateMonitor(ctx, name, description, config)
-	})
-}
-
-func (r *retryClient) GetMonitorByName(ctx context.Context, name string) (string, error) {
-	return retry1(ctx, r.maxRetries, func() (string, error) {
-		return r.inner.GetMonitorByName(ctx, name)
-	})
-}
-
-func (r *retryClient) UpdateMonitor(ctx context.Context, monitorID, name, description string, config MonitorConfig) error {
-	return retry0(ctx, r.maxRetries, func() error {
-		return r.inner.UpdateMonitor(ctx, monitorID, name, description, config)
-	})
-}
-
-func (r *retryClient) DeleteMonitor(ctx context.Context, monitorID string) error {
-	return retry0(ctx, r.maxRetries, func() error {
-		return r.inner.DeleteMonitor(ctx, monitorID)
-	})
-}
-
-// --- Load Balancer Pool operations ---
-
-func (r *retryClient) CreatePool(ctx context.Context, config PoolConfig) (string, error) {
-	return retry1(ctx, r.maxRetries, func() (string, error) {
-		return r.inner.CreatePool(ctx, config)
-	})
-}
-
-func (r *retryClient) GetPoolByName(ctx context.Context, name string) (string, *PoolConfig, error) {
-	return retry2(ctx, r.maxRetries, func() (string, *PoolConfig, error) {
-		return r.inner.GetPoolByName(ctx, name)
-	})
-}
-
-func (r *retryClient) UpdatePool(ctx context.Context, poolID string, config PoolConfig) error {
-	return retry0(ctx, r.maxRetries, func() error {
-		return r.inner.UpdatePool(ctx, poolID, config)
-	})
-}
-
-func (r *retryClient) DeletePool(ctx context.Context, poolID string) error {
-	return retry0(ctx, r.maxRetries, func() error {
-		return r.inner.DeletePool(ctx, poolID)
-	})
-}
-
-func (r *retryClient) ListPoolsByPrefix(ctx context.Context, prefix string) ([]LoadBalancerPool, error) {
-	return retry1(ctx, r.maxRetries, func() ([]LoadBalancerPool, error) {
-		return r.inner.ListPoolsByPrefix(ctx, prefix)
-	})
-}
-
-// --- Load Balancer operations ---
-
-func (r *retryClient) EnsureLoadBalancer(ctx context.Context, zoneID, hostname string, poolIDs []string, steeringPolicy, sessionAffinity, description string, poolWeights map[string]float64) error {
-	return retry0(ctx, r.maxRetries, func() error {
-		return r.inner.EnsureLoadBalancer(ctx, zoneID, hostname, poolIDs, steeringPolicy, sessionAffinity, description, poolWeights)
-	})
-}
-
-func (r *retryClient) DeleteLoadBalancer(ctx context.Context, zoneID, hostname string) error {
-	return retry0(ctx, r.maxRetries, func() error {
-		return r.inner.DeleteLoadBalancer(ctx, zoneID, hostname)
-	})
-}
-
-func (r *retryClient) ListLoadBalancerHostnames(ctx context.Context, zoneID string) ([]string, error) {
-	return retry1(ctx, r.maxRetries, func() ([]string, error) {
-		return r.inner.ListLoadBalancerHostnames(ctx, zoneID)
 	})
 }

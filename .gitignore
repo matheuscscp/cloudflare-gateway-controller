@@ -9,7 +9,6 @@ config/
 *.dll
 *.so
 *.dylib
-/cloudflare-gateway-controller
 /cfgwctl
 
 # Test binary, built with `go test -c`

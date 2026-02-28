@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"slices"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -145,127 +144,6 @@ func readCredentialsFromGatewayClass(ctx context.Context, r client.Reader, gc *g
 	}, nil
 }
 
-// detectLBMode determines the load balancer topology mode from the parameters.
-func detectLBMode(params *apiv1.CloudflareGatewayParameters) lbMode {
-	if params == nil || params.Spec.LoadBalancer == nil {
-		return lbModeNone
-	}
-	switch params.Spec.LoadBalancer.Topology {
-	case apiv1.LoadBalancerTopologyHighAvailability:
-		return lbModePerAZ
-	case apiv1.LoadBalancerTopologyTrafficSplitting:
-		return lbModePerBackendRef
-	default:
-		return lbModeNone
-	}
-}
-
-// computeDesiredTunnels produces the list of desired tunnel entries based on
-// the LB mode, parameters, and valid routes. In simple mode a single entry
-// is returned; in per-AZ mode one entry per AZ; in per-backendRef mode one
-// entry per unique Service (times per AZ if AZs are configured).
-func computeDesiredTunnels(gw *gatewayv1.Gateway, mode lbMode, params *apiv1.CloudflareGatewayParameters, validRoutes []*gatewayv1.HTTPRoute) []tunnelEntry {
-	switch mode {
-	case lbModePerAZ:
-		azs := params.Spec.Tunnels.AvailabilityZones
-		entries := make([]tunnelEntry, 0, len(azs))
-		for _, az := range azs {
-			entries = append(entries, tunnelEntry{
-				tunnelName:     apiv1.TunnelNameForAZ(gw, az.Name),
-				deploymentName: apiv1.CloudflaredDeploymentNameForAZ(gw, az.Name),
-				secretName:     apiv1.TunnelTokenSecretNameForAZ(gw, az.Name),
-				azName:         az.Name,
-			})
-		}
-		return entries
-	case lbModePerBackendRef:
-		services := collectUniqueServices(validRoutes)
-		hasAZs := params.Spec.Tunnels != nil && len(params.Spec.Tunnels.AvailabilityZones) > 0
-		var entries []tunnelEntry
-		for _, svc := range services {
-			if hasAZs {
-				for _, az := range params.Spec.Tunnels.AvailabilityZones {
-					entries = append(entries, tunnelEntry{
-						tunnelName:       apiv1.TunnelNameForServiceAZ(gw, svc.Namespace, svc.Name, az.Name),
-						deploymentName:   apiv1.CloudflaredDeploymentNameForServiceAZ(gw, svc.Name, az.Name),
-						secretName:       apiv1.TunnelTokenSecretNameForServiceAZ(gw, svc.Name, az.Name),
-						azName:           az.Name,
-						serviceNamespace: svc.Namespace,
-						serviceName:      svc.Name,
-					})
-				}
-			} else {
-				entries = append(entries, tunnelEntry{
-					tunnelName:       apiv1.TunnelNameForService(gw, svc.Namespace, svc.Name),
-					deploymentName:   apiv1.CloudflaredDeploymentNameForService(gw, svc.Name),
-					secretName:       apiv1.TunnelTokenSecretNameForService(gw, svc.Name),
-					serviceNamespace: svc.Namespace,
-					serviceName:      svc.Name,
-				})
-			}
-		}
-		return entries
-	default:
-		return []tunnelEntry{{
-			tunnelName:     apiv1.TunnelName(gw),
-			deploymentName: apiv1.CloudflaredDeploymentName(gw),
-			secretName:     apiv1.TunnelTokenSecretName(gw),
-		}}
-	}
-}
-
-// collectUniqueServices extracts unique namespace-qualified Service references
-// from the backendRefs of valid HTTPRoutes, sorted deterministically. The
-// namespace defaults to the route's namespace when not specified on the ref.
-func collectUniqueServices(routes []*gatewayv1.HTTPRoute) []types.NamespacedName {
-	seen := make(map[types.NamespacedName]struct{})
-	var services []types.NamespacedName
-	for _, route := range routes {
-		for _, rule := range route.Spec.Rules {
-			for _, ref := range rule.BackendRefs {
-				ns := route.Namespace
-				if ref.Namespace != nil {
-					ns = string(*ref.Namespace)
-				}
-				key := types.NamespacedName{Namespace: ns, Name: string(ref.Name)}
-				if _, ok := seen[key]; !ok {
-					seen[key] = struct{}{}
-					services = append(services, key)
-				}
-			}
-		}
-	}
-	slices.SortFunc(services, func(a, b types.NamespacedName) int {
-		if a.Namespace != b.Namespace {
-			if a.Namespace < b.Namespace {
-				return -1
-			}
-			return 1
-		}
-		if a.Name < b.Name {
-			return -1
-		}
-		if a.Name > b.Name {
-			return 1
-		}
-		return 0
-	})
-	return services
-}
-
-// findAZConfig looks up the AvailabilityZone config by name from the parameters.
-func findAZConfig(params *apiv1.CloudflareGatewayParameters, azName string) *apiv1.AvailabilityZone {
-	if params == nil || params.Spec.Tunnels == nil {
-		return nil
-	}
-	for i := range params.Spec.Tunnels.AvailabilityZones {
-		if params.Spec.Tunnels.AvailabilityZones[i].Name == azName {
-			return &params.Spec.Tunnels.AvailabilityZones[i]
-		}
-	}
-	return nil
-}
-
 // ensureGatewayClassFinalizer adds the GatewayClass finalizer if not already present,
 // preventing the GatewayClass from being deleted while Gateways reference it.
 // If the Gateway's gatewayClassName was changed, the stale finalizer on the
@@ -355,7 +233,7 @@ func (r *GatewayReconciler) getCGS(ctx context.Context, gw *gatewayv1.Gateway) (
 }
 
 // reconcileCGS creates or updates the CloudflareGatewayStatus resource state
-// (tunnels, LB, DNS). Conditions are patched separately in patchGatewayStatus.
+// (tunnels, DNS). Conditions are patched separately in patchGatewayStatus.
 // Returns the CGS pointer (which may be newly created) so the caller can pass
 // it to patchGatewayStatus for condition mirroring.
 func (r *GatewayReconciler) reconcileCGS(
@@ -364,7 +242,7 @@ func (r *GatewayReconciler) reconcileCGS(
 	cgs *apiv1.CloudflareGatewayStatus,
 	entries []tunnelEntry,
 	zoneName string,
-	lbState lbReconcileState,
+	zoneID string,
 ) (*apiv1.CloudflareGatewayStatus, error) {
 	// Build desired status detail.
 	desired := apiv1.CloudflareGatewayStatusDetail{}
@@ -372,13 +250,10 @@ func (r *GatewayReconciler) reconcileCGS(
 	// Tunnels.
 	for _, e := range entries {
 		desired.Tunnels = append(desired.Tunnels, apiv1.TunnelStatus{
-			Name:             e.tunnelName,
-			ID:               e.tunnelID,
-			DeploymentName:   e.deploymentName,
-			SecretName:       e.secretName,
-			AZName:           e.azName,
-			ServiceNamespace: e.serviceNamespace,
-			ServiceName:      e.serviceName,
+			Name:           e.tunnelName,
+			ID:             e.tunnelID,
+			DeploymentName: e.deploymentName,
+			SecretName:     e.secretName,
 		})
 	}
 
@@ -386,17 +261,7 @@ func (r *GatewayReconciler) reconcileCGS(
 	if zoneName != "" {
 		desired.DNS = &apiv1.DNSStatus{
 			ZoneName: zoneName,
-			ZoneID:   lbState.zoneID,
-		}
-	}
-
-	// LB state.
-	if lbState.monitorID != "" {
-		desired.LoadBalancer = &apiv1.LoadBalancerStatus{
-			MonitorID:   lbState.monitorID,
-			MonitorName: lbState.monitorName,
-			Pools:       lbState.pools,
-			Hostnames:   lbState.hostnames,
+			ZoneID:   zoneID,
 		}
 	}
 
@@ -464,24 +329,6 @@ func cgsTunnels(cgs *apiv1.CloudflareGatewayStatus) []apiv1.TunnelStatus {
 		return nil
 	}
 	return cgs.Status.Tunnels
-}
-
-// cgsLBHostnames extracts the LB hostnames from a CloudflareGatewayStatus.
-// Returns nil if the CGS is nil or has no LB state.
-func cgsLBHostnames(cgs *apiv1.CloudflareGatewayStatus) []string {
-	if cgs == nil || cgs.Status.LoadBalancer == nil {
-		return nil
-	}
-	return cgs.Status.LoadBalancer.Hostnames
-}
-
-// cgsLBPools extracts the LB pool statuses from a CloudflareGatewayStatus.
-// Returns nil if the CGS is nil or has no LB state.
-func cgsLBPools(cgs *apiv1.CloudflareGatewayStatus) []apiv1.PoolStatus {
-	if cgs == nil || cgs.Status.LoadBalancer == nil {
-		return nil
-	}
-	return cgs.Status.LoadBalancer.Pools
 }
 
 // cgsZoneInfo extracts the DNS zone name and ID from a CloudflareGatewayStatus.

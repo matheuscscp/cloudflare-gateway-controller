@@ -308,18 +308,6 @@ type mockCloudflareClient struct {
 	zoneIDs                 []string          // zone IDs returned by ListZoneIDs
 	listDNSCNAMEsByTarget   []string          // hostnames returned by ListDNSCNAMEsByTarget
 
-	// Load Balancer tracking
-	monitors         map[string]string                // monitor name -> ID
-	monitorCounter   int                              // auto-increment counter
-	poolsByName      map[string]string                // pool name -> ID
-	poolConfigs      map[string]cloudflare.PoolConfig // pool ID -> config
-	poolCounter      int                              // auto-increment counter
-	ensureLBCalls    []mockEnsureLBCall               // EnsureLoadBalancer call log
-	deleteLBCalls    []string                         // DeleteLoadBalancer hostname log
-	deletePoolIDs    []string                         // DeletePool ID log
-	deleteMonitorIDs []string                         // DeleteMonitor ID log
-	lbHostnames      []string                         // ListLoadBalancerHostnames return value
-
 	// Error injection fields — set these to make mock methods return errors.
 	newClientErr                error
 	getTunnelIDByNameErr        error
@@ -335,33 +323,12 @@ type mockCloudflareClient struct {
 	ensureDNSErr                error
 	deleteDNSErr                error
 	listDNSCNAMEsByTargetErr    error
-	createMonitorErr            error
-	getMonitorByNameErr         error
-	updateMonitorErr            error
-	deleteMonitorErr            error
-	createPoolErr               error
-	getPoolByNameErr            error
-	updatePoolErr               error
-	deletePoolErr               error
-	listPoolsByPrefixErr        error
-	ensureLBErr                 error
-	deleteLBErr                 error
-	listLBHostnamesErr          error
 }
 
 type mockDNSCall struct {
 	ZoneID   string
 	Hostname string
 	Target   string
-}
-
-type mockEnsureLBCall struct {
-	ZoneID          string
-	Hostname        string
-	PoolIDs         []string
-	SteeringPolicy  string
-	SessionAffinity string
-	PoolWeights     map[string]float64
 }
 
 func (m *mockCloudflareClient) CreateTunnel(_ context.Context, name string) (string, error) {
@@ -505,136 +472,6 @@ func (m *mockCloudflareClient) ListDNSCNAMEsByTarget(_ context.Context, _, _ str
 		return nil, m.listDNSCNAMEsByTargetErr
 	}
 	return m.listDNSCNAMEsByTarget, nil
-}
-
-// --- Load Balancer mock methods ---
-
-func (m *mockCloudflareClient) CreateMonitor(_ context.Context, name, _ string, _ cloudflare.MonitorConfig) (string, error) {
-	if m.createMonitorErr != nil {
-		return "", m.createMonitorErr
-	}
-	m.monitorCounter++
-	id := fmt.Sprintf("monitor-id-%d", m.monitorCounter)
-	if m.monitors == nil {
-		m.monitors = make(map[string]string)
-	}
-	m.monitors[name] = id
-	return id, nil
-}
-
-func (m *mockCloudflareClient) GetMonitorByName(_ context.Context, name string) (string, error) {
-	if m.getMonitorByNameErr != nil {
-		return "", m.getMonitorByNameErr
-	}
-	if m.monitors != nil {
-		return m.monitors[name], nil
-	}
-	return "", nil
-}
-
-func (m *mockCloudflareClient) UpdateMonitor(_ context.Context, _, _, _ string, _ cloudflare.MonitorConfig) error {
-	if m.updateMonitorErr != nil {
-		return m.updateMonitorErr
-	}
-	return nil
-}
-
-func (m *mockCloudflareClient) DeleteMonitor(_ context.Context, monitorID string) error {
-	if m.deleteMonitorErr != nil {
-		return m.deleteMonitorErr
-	}
-	m.deleteMonitorIDs = append(m.deleteMonitorIDs, monitorID)
-	return nil
-}
-
-func (m *mockCloudflareClient) CreatePool(_ context.Context, config cloudflare.PoolConfig) (string, error) {
-	if m.createPoolErr != nil {
-		return "", m.createPoolErr
-	}
-	m.poolCounter++
-	id := fmt.Sprintf("pool-id-%d", m.poolCounter)
-	if m.poolsByName == nil {
-		m.poolsByName = make(map[string]string)
-	}
-	m.poolsByName[config.Name] = id
-	if m.poolConfigs == nil {
-		m.poolConfigs = make(map[string]cloudflare.PoolConfig)
-	}
-	m.poolConfigs[id] = config
-	return id, nil
-}
-
-func (m *mockCloudflareClient) GetPoolByName(_ context.Context, name string) (string, *cloudflare.PoolConfig, error) {
-	if m.getPoolByNameErr != nil {
-		return "", nil, m.getPoolByNameErr
-	}
-	if m.poolsByName != nil {
-		if id, ok := m.poolsByName[name]; ok {
-			if cfg, ok := m.poolConfigs[id]; ok {
-				return id, &cfg, nil
-			}
-			return id, nil, nil
-		}
-	}
-	return "", nil, nil
-}
-
-func (m *mockCloudflareClient) UpdatePool(_ context.Context, _ string, _ cloudflare.PoolConfig) error {
-	if m.updatePoolErr != nil {
-		return m.updatePoolErr
-	}
-	return nil
-}
-
-func (m *mockCloudflareClient) DeletePool(_ context.Context, poolID string) error {
-	if m.deletePoolErr != nil {
-		return m.deletePoolErr
-	}
-	m.deletePoolIDs = append(m.deletePoolIDs, poolID)
-	return nil
-}
-
-func (m *mockCloudflareClient) ListPoolsByPrefix(_ context.Context, prefix string) ([]cloudflare.LoadBalancerPool, error) {
-	if m.listPoolsByPrefixErr != nil {
-		return nil, m.listPoolsByPrefixErr
-	}
-	var result []cloudflare.LoadBalancerPool
-	for name, id := range m.poolsByName {
-		if strings.HasPrefix(name, prefix) {
-			result = append(result, cloudflare.LoadBalancerPool{ID: id, Name: name})
-		}
-	}
-	return result, nil
-}
-
-func (m *mockCloudflareClient) EnsureLoadBalancer(_ context.Context, zoneID, hostname string, poolIDs []string, steeringPolicy, sessionAffinity, _ string, poolWeights map[string]float64) error {
-	if m.ensureLBErr != nil {
-		return m.ensureLBErr
-	}
-	m.ensureLBCalls = append(m.ensureLBCalls, mockEnsureLBCall{
-		ZoneID:          zoneID,
-		Hostname:        hostname,
-		PoolIDs:         poolIDs,
-		SteeringPolicy:  steeringPolicy,
-		SessionAffinity: sessionAffinity,
-		PoolWeights:     poolWeights,
-	})
-	return nil
-}
-
-func (m *mockCloudflareClient) DeleteLoadBalancer(_ context.Context, _, hostname string) error {
-	if m.deleteLBErr != nil {
-		return m.deleteLBErr
-	}
-	m.deleteLBCalls = append(m.deleteLBCalls, hostname)
-	return nil
-}
-
-func (m *mockCloudflareClient) ListLoadBalancerHostnames(_ context.Context, _ string) ([]string, error) {
-	if m.listLBHostnamesErr != nil {
-		return nil, m.listLBHostnamesErr
-	}
-	return m.lbHostnames, nil
 }
 
 func createTestNamespace(g Gomega) *corev1.Namespace {
@@ -793,31 +630,5 @@ func resetMockErrors(t *testing.T) {
 		testMock.tunnels = nil
 		testMock.trackedTunnels = nil
 		testMock.tunnelIDFunc = nil
-
-		// LB error injection
-		testMock.createMonitorErr = nil
-		testMock.getMonitorByNameErr = nil
-		testMock.updateMonitorErr = nil
-		testMock.deleteMonitorErr = nil
-		testMock.createPoolErr = nil
-		testMock.getPoolByNameErr = nil
-		testMock.updatePoolErr = nil
-		testMock.deletePoolErr = nil
-		testMock.listPoolsByPrefixErr = nil
-		testMock.ensureLBErr = nil
-		testMock.deleteLBErr = nil
-		testMock.listLBHostnamesErr = nil
-
-		// LB tracking state
-		testMock.monitors = nil
-		testMock.monitorCounter = 0
-		testMock.poolsByName = nil
-		testMock.poolConfigs = nil
-		testMock.poolCounter = 0
-		testMock.ensureLBCalls = nil
-		testMock.deleteLBCalls = nil
-		testMock.deletePoolIDs = nil
-		testMock.deleteMonitorIDs = nil
-		testMock.lbHostnames = nil
 	})
 }
