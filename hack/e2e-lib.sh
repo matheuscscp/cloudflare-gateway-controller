@@ -258,13 +258,18 @@ create_test_namespace() {
 # ensure_gatewayclass creates the GatewayClass and waits for it to be Ready.
 ensure_gatewayclass() {
     log "Ensuring GatewayClass 'cloudflare'..."
-    kubectl apply -f - <<'EOF'
+    kubectl apply -f - <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass
 metadata:
   name: cloudflare
 spec:
   controllerName: cloudflare-gateway-controller.io/controller
+  parametersRef:
+    group: ""
+    kind: Secret
+    name: cloudflare-creds
+    namespace: $TEST_NS
 EOF
     retry 60 3 kubectl wait gatewayclass/cloudflare --for=condition=Ready --timeout=5s \
         || fail "GatewayClass did not become Ready"

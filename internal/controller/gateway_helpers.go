@@ -24,15 +24,16 @@ import (
 )
 
 // readParameters resolves the CloudflareGatewayParameters from the Gateway's
-// infrastructure.parametersRef. Returns nil if no CloudflareGatewayParameters
-// is referenced (i.e. only a Secret is used or no parametersRef is set).
+// infrastructure.parametersRef. Returns nil if no parametersRef is set.
+// Returns a terminal error if parametersRef is set but does not reference a
+// CloudflareGatewayParameters.
 func readParameters(ctx context.Context, r client.Reader, gw *gatewayv1.Gateway) (*apiv1.CloudflareGatewayParameters, error) {
 	if gw.Spec.Infrastructure == nil || gw.Spec.Infrastructure.ParametersRef == nil {
 		return nil, nil
 	}
 	ref := gw.Spec.Infrastructure.ParametersRef
 	if string(ref.Kind) != apiv1.KindCloudflareGatewayParameters || ref.Group != gatewayv1.Group(apiv1.Group) {
-		return nil, nil
+		return nil, reconcile.TerminalError(fmt.Errorf("infrastructure parametersRef must reference a CloudflareGatewayParameters"))
 	}
 	var params apiv1.CloudflareGatewayParameters
 	if err := r.Get(ctx, types.NamespacedName{
@@ -49,35 +50,20 @@ func readParameters(ctx context.Context, r client.Reader, gw *gatewayv1.Gateway)
 
 // readCredentials reads the Cloudflare API credentials from:
 //  1. CloudflareGatewayParameters spec.secretRef (if params has one), or
-//  2. Gateway infrastructure.parametersRef (if it directly references a Secret), or
-//  3. GatewayClass parametersRef (must be a Secret).
+//  2. GatewayClass parametersRef (must be a Secret).
 //
-// If infrastructure.parametersRef is set but references an unsupported kind,
-// an error is returned. Cross-namespace references from GatewayClass are
-// validated against ReferenceGrants.
+// Cross-namespace references from GatewayClass are validated against
+// ReferenceGrants.
 func readCredentials(ctx context.Context, r client.Reader, gc *gatewayv1.GatewayClass, gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters) (cloudflare.ClientConfig, error) {
 	var secretNamespace, secretName string
 
 	switch {
 	case params != nil && params.Spec.SecretRef != nil:
-		// 1. CloudflareGatewayParameters with secretRef.
+		// CloudflareGatewayParameters with secretRef.
 		secretNamespace = params.Namespace
 		secretName = params.Spec.SecretRef.Name
-	case gw.Spec.Infrastructure != nil && gw.Spec.Infrastructure.ParametersRef != nil:
-		// infrastructure.parametersRef is set — must be a Secret or a CGP (handled above).
-		ref := gw.Spec.Infrastructure.ParametersRef
-		if string(ref.Kind) == apiv1.KindSecret && (ref.Group == "" || ref.Group == apiv1.GroupCore) {
-			// 2. Gateway infrastructure.parametersRef pointing to a Secret.
-			secretNamespace = gw.Namespace
-			secretName = ref.Name
-		} else if string(ref.Kind) == apiv1.KindCloudflareGatewayParameters && ref.Group == gatewayv1.Group(apiv1.Group) {
-			// CGP without secretRef — fall through to GatewayClass.
-			return readCredentialsFromGatewayClass(ctx, r, gc, gw)
-		} else {
-			return cloudflare.ClientConfig{}, reconcile.TerminalError(fmt.Errorf("infrastructure parametersRef must reference a core/v1 Secret or a CloudflareGatewayParameters"))
-		}
 	default:
-		// 3. GatewayClass parametersRef (Secret).
+		// No CGP or CGP without secretRef — fall through to GatewayClass.
 		return readCredentialsFromGatewayClass(ctx, r, gc, gw)
 	}
 

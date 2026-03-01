@@ -17,9 +17,12 @@ good state, meeting all the necessary requirements and quality standards.
   commands than necessary for the tasks in this project that rely on it,
   such as the E2E tests and the Cloudflare resource cleanup script.
 - **Coverage Target**: The coverage target is as close to 100% as possible
-  for the packages listed in the `make test` output. When performing this
-  check, the agent should look at the uncovered lines and determine if
-  they can bring the coverage up.
+  for the packages listed in the `make test` output, except the `api/v1`
+  package which has mostly generated code (the non-generated code in this
+  package should still be covered well!). When performing this check, the
+  agent should look at the uncovered lines and determine if they can bring
+  the coverage up. No need to touch `preflight.go` or `preflight_test.go`.
+  VPA unit tests are not needed, we already have an E2E test for VPA.
 - **Good Controller Requirements**: The controller always meets the
   requirements outlined in the good controller guide at `docs/dev/`.
 

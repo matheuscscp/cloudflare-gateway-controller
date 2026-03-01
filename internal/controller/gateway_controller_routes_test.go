@@ -166,9 +166,9 @@ func TestGatewayReconciler_HTTPRouteCrossNamespaceAllowAll(t *testing.T) {
 			GatewayClassName: gatewayv1.ObjectName(gc.Name),
 			Listeners: []gatewayv1.Listener{
 				{
-					Name:     "http",
-					Protocol: gatewayv1.HTTPProtocolType,
-					Port:     80,
+					Name:     "https",
+					Protocol: gatewayv1.HTTPSProtocolType,
+					Port:     443,
 					AllowedRoutes: &gatewayv1.AllowedRoutes{
 						Namespaces: &gatewayv1.RouteNamespaces{
 							From: &fromAll,
@@ -386,9 +386,9 @@ func TestGatewayReconciler_HTTPRouteCrossNamespaceSelector(t *testing.T) {
 			GatewayClassName: gatewayv1.ObjectName(gc.Name),
 			Listeners: []gatewayv1.Listener{
 				{
-					Name:     "http",
-					Protocol: gatewayv1.HTTPProtocolType,
-					Port:     80,
+					Name:     "https",
+					Protocol: gatewayv1.HTTPSProtocolType,
+					Port:     443,
 					AllowedRoutes: &gatewayv1.AllowedRoutes{
 						Namespaces: &gatewayv1.RouteNamespaces{
 							From: &fromSelector,
@@ -586,9 +586,9 @@ func TestGatewayReconciler_DeletionWithHTTPRoutes(t *testing.T) {
 			},
 			Listeners: []gatewayv1.Listener{
 				{
-					Name:     "http",
-					Protocol: gatewayv1.HTTPProtocolType,
-					Port:     80,
+					Name:     "https",
+					Protocol: gatewayv1.HTTPSProtocolType,
+					Port:     443,
 				},
 			},
 		},
@@ -1305,7 +1305,7 @@ func TestGatewayReconciler_HTTPRouteUnsupportedFeatures(t *testing.T) {
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: gatewayv1.ObjectName(gc.Name),
 			Listeners: []gatewayv1.Listener{
-				{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80},
+				{Name: "https", Protocol: gatewayv1.HTTPSProtocolType, Port: 443},
 			},
 		},
 	}
@@ -1407,7 +1407,7 @@ func TestGatewayReconciler_HTTPRouteMultipleBackendRefs(t *testing.T) {
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: gatewayv1.ObjectName(gc.Name),
 			Listeners: []gatewayv1.Listener{
-				{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80},
+				{Name: "https", Protocol: gatewayv1.HTTPSProtocolType, Port: 443},
 			},
 		},
 	}
@@ -1530,7 +1530,7 @@ func TestGatewayReconciler_HTTPRouteMultipleBackendRefsSidecarDisabled(t *testin
 				ParametersRef: parametersRef(params.Name),
 			},
 			Listeners: []gatewayv1.Listener{
-				{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80},
+				{Name: "https", Protocol: gatewayv1.HTTPSProtocolType, Port: 443},
 			},
 		},
 	}
@@ -1620,7 +1620,7 @@ func TestGatewayReconciler_HTTPRouteNonServiceBackend(t *testing.T) {
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: gatewayv1.ObjectName(gc.Name),
 			Listeners: []gatewayv1.Listener{
-				{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80},
+				{Name: "https", Protocol: gatewayv1.HTTPSProtocolType, Port: 443},
 			},
 		},
 	}
@@ -1818,7 +1818,7 @@ func TestGatewayReconciler_HTTPRouteSessionPersistenceSidecarDisabled(t *testing
 				ParametersRef: parametersRef(params.Name),
 			},
 			Listeners: []gatewayv1.Listener{
-				{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80},
+				{Name: "https", Protocol: gatewayv1.HTTPSProtocolType, Port: 443},
 			},
 		},
 	}
@@ -2044,5 +2044,117 @@ func TestGatewayReconciler_HTTPRouteSessionPersistenceIdleTimeoutHeader(t *testi
 		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
 		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.RouteReasonUnsupportedValue)))
 		g.Expect(accepted.Message).To(ContainSubstring("sessionPersistence.idleTimeout is not supported for header-based sessions"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+// TestGatewayReconciler_HTTPRouteUnsupportedFeaturesExtended covers additional
+// validateHTTPRoute paths: timeouts, retry, queryParams, backendRef filters,
+// non-PathPrefix path type, and parentRef port.
+func TestGatewayReconciler_HTTPRouteUnsupportedFeaturesExtended(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-route-ext", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	gw := createTestGateway(g, "test-gw-route-ext", ns.Name, gc.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+	waitForGatewayProgrammed(g, gw)
+
+	// Create route with all remaining unsupported features.
+	exactMatch := gatewayv1.PathMatchExact
+	timeout := gatewayv1.Duration("5s")
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-route-ext",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{
+						Name: gatewayv1.ObjectName(gw.Name),
+						Port: new(gatewayv1.PortNumber(80)),
+					},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"ext.example.com"},
+			Rules: []gatewayv1.HTTPRouteRule{
+				{
+					Timeouts: &gatewayv1.HTTPRouteTimeouts{
+						Request: &timeout,
+					},
+					Retry: &gatewayv1.HTTPRouteRetry{
+						Codes: []gatewayv1.HTTPRouteRetryStatusCode{503},
+					},
+					Matches: []gatewayv1.HTTPRouteMatch{
+						{
+							Path: &gatewayv1.HTTPPathMatch{
+								Type:  &exactMatch,
+								Value: new(string),
+							},
+							QueryParams: []gatewayv1.HTTPQueryParamMatch{
+								{Name: "key", Value: "val"},
+							},
+						},
+					},
+					BackendRefs: []gatewayv1.HTTPBackendRef{
+						{
+							BackendRef: gatewayv1.BackendRef{
+								BackendObjectReference: gatewayv1.BackendObjectReference{
+									Name: "my-svc", Port: new(gatewayv1.PortNumber(80)),
+								},
+							},
+							Filters: []gatewayv1.HTTPRouteFilter{
+								{Type: gatewayv1.HTTPRouteFilterRequestHeaderModifier, RequestHeaderModifier: &gatewayv1.HTTPHeaderFilter{
+									Set: []gatewayv1.HTTPHeader{{Name: "X-Custom", Value: "val"}},
+								}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	*route.Spec.Rules[0].Matches[0].Path.Value = "/exact"
+	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.HTTPRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Verify route gets Accepted=False with all unsupported features reported.
+	routeKey := client.ObjectKeyFromObject(route)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.HTTPRoute
+		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(HaveLen(1))
+		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.RouteReasonUnsupportedValue)))
+		g.Expect(accepted.Message).To(ContainSubstring("parentRefs[0].port is not supported"))
+		g.Expect(accepted.Message).To(ContainSubstring("timeouts is not supported"))
+		g.Expect(accepted.Message).To(ContainSubstring("retry is not supported"))
+		g.Expect(accepted.Message).To(ContainSubstring("queryParams is not supported"))
+		g.Expect(accepted.Message).To(ContainSubstring("path.type \"Exact\" is not supported"))
+		g.Expect(accepted.Message).To(ContainSubstring("backendRefs[0].filters is not supported"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }

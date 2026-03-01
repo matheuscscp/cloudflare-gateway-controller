@@ -126,6 +126,8 @@ Gateway. Each entry has the following fields:
 - `kind`: Resource kind (e.g. `Deployment`, `Secret`).
 - `name`: Resource name (same namespace as the Gateway).
 
-The inventory always includes the cloudflared Deployment and tunnel token
+The inventory always includes the cloudflared Deployment(s) and tunnel token
 Secret. When the sidecar is enabled (default), it also includes the sidecar
-ConfigMap, ServiceAccount, Role, and RoleBinding.
+ConfigMap, ServiceAccount, Role, and RoleBinding. When autoscaling is enabled
+(via [CloudflareGatewayParameters](CloudflareGatewayParameters.md#cloudflared-container-configuration)),
+it also includes VerticalPodAutoscaler resources for each replica Deployment.

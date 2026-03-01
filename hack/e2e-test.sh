@@ -89,9 +89,9 @@ spec:
       kind: CloudflareGatewayParameters
       name: test-params
   listeners:
-  - name: http
-    protocol: HTTP
-    port: 80
+  - name: https
+    protocol: HTTPS
+    port: 443
 EOF
 
     log "Waiting for Gateway to be Programmed..."
@@ -234,9 +234,9 @@ spec:
       kind: CloudflareGatewayParameters
       name: multi-route-params
   listeners:
-  - name: http
-    protocol: HTTP
-    port: 80
+  - name: https
+    protocol: HTTPS
+    port: 443
 EOF
 
     retry 60 2 kubectl wait gateway/multi-route-gw -n "$TEST_NS" \
@@ -360,15 +360,10 @@ metadata:
   namespace: $TEST_NS
 spec:
   gatewayClassName: cloudflare
-  infrastructure:
-    parametersRef:
-      group: ""
-      kind: Secret
-      name: cloudflare-creds
   listeners:
-  - name: http
-    protocol: HTTP
-    port: 80
+  - name: https
+    protocol: HTTPS
+    port: 443
 EOF
 
     retry 60 2 kubectl wait gateway/path-gw -n "$TEST_NS" \
@@ -442,7 +437,7 @@ EOF
 test_dns_default_all_zones() {
     local dns_def_hostname="dd-${TS: -6}.${TEST_ZONE_NAME}"
 
-    log "Creating Gateway 'dns-def-gw' without CloudflareGatewayParameters (bare Secret)..."
+    log "Creating Gateway 'dns-def-gw' without CloudflareGatewayParameters..."
     kubectl apply -f - <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
@@ -451,15 +446,10 @@ metadata:
   namespace: $TEST_NS
 spec:
   gatewayClassName: cloudflare
-  infrastructure:
-    parametersRef:
-      group: ""
-      kind: Secret
-      name: cloudflare-creds
   listeners:
-  - name: http
-    protocol: HTTP
-    port: 80
+  - name: https
+    protocol: HTTPS
+    port: 443
 EOF
 
     retry 60 2 kubectl wait gateway/dns-def-gw -n "$TEST_NS" \
@@ -568,9 +558,9 @@ spec:
       kind: CloudflareGatewayParameters
       name: no-dns-params
   listeners:
-  - name: http
-    protocol: HTTP
-    port: 80
+  - name: https
+    protocol: HTTPS
+    port: 443
 EOF
 
     retry 60 2 kubectl wait gateway/no-dns-gw -n "$TEST_NS" \
@@ -672,9 +662,9 @@ spec:
       kind: CloudflareGatewayParameters
       name: patched-params
   listeners:
-  - name: http
-    protocol: HTTP
-    port: 80
+  - name: https
+    protocol: HTTPS
+    port: 443
 EOF
 
     retry 60 2 kubectl wait gateway/patched-gw -n "$TEST_NS" \
@@ -729,9 +719,9 @@ spec:
       kind: CloudflareGatewayParameters
       name: disabled-params
   listeners:
-  - name: http
-    protocol: HTTP
-    port: 80
+  - name: https
+    protocol: HTTPS
+    port: 443
 EOF
 
     retry 60 2 kubectl wait gateway/disabled-gw -n "$TEST_NS" \
@@ -854,9 +844,9 @@ spec:
       kind: CloudflareGatewayParameters
       name: zone-rm-params
   listeners:
-  - name: http
-    protocol: HTTP
-    port: 80
+  - name: https
+    protocol: HTTPS
+    port: 443
 EOF
 
     retry 60 2 kubectl wait gateway/zone-rm-gw -n "$TEST_NS" \
@@ -974,9 +964,9 @@ spec:
       kind: CloudflareGatewayParameters
       name: recreate-params
   listeners:
-  - name: http
-    protocol: HTTP
-    port: 80
+  - name: https
+    protocol: HTTPS
+    port: 443
 EOF
 
     retry 60 2 kubectl wait gateway/recreate-gw -n "$TEST_NS" \
@@ -1092,9 +1082,9 @@ spec:
       kind: CloudflareGatewayParameters
       name: recreate-params
   listeners:
-  - name: http
-    protocol: HTTP
-    port: 80
+  - name: https
+    protocol: HTTPS
+    port: 443
 EOF
 
     retry 60 2 kubectl wait gateway/recreate-gw -n "$TEST_NS" \
@@ -1190,18 +1180,13 @@ metadata:
   namespace: $TEST_NS
 spec:
   gatewayClassName: cloudflare
-  infrastructure:
-    parametersRef:
-      group: ""
-      kind: Secret
-      name: cloudflare-creds
   listeners:
-  - name: http
-    protocol: HTTP
-    port: 80
   - name: https
-    protocol: HTTP
-    port: 8080
+    protocol: HTTPS
+    port: 443
+  - name: https2
+    protocol: HTTPS
+    port: 8443
 EOF
 
     log "Verifying Gateway is rejected with Accepted=False..."
@@ -1263,9 +1248,9 @@ spec:
       kind: CloudflareGatewayParameters
       name: multi-zone-params
   listeners:
-  - name: http
-    protocol: HTTP
-    port: 80
+  - name: https
+    protocol: HTTPS
+    port: 443
 EOF
 
     retry 60 2 kubectl wait gateway/multi-zone-gw -n "$TEST_NS" \
@@ -1521,9 +1506,9 @@ spec:
       kind: CloudflareGatewayParameters
       name: overlap-params-${gw_suffix}
   listeners:
-  - name: http
-    protocol: HTTP
-    port: 80
+  - name: https
+    protocol: HTTPS
+    port: 443
 EOF
     done
 
@@ -1784,15 +1769,10 @@ metadata:
   namespace: $TEST_NS
 spec:
   gatewayClassName: cloudflare
-  infrastructure:
-    parametersRef:
-      group: ""
-      kind: Secret
-      name: cloudflare-creds
   listeners:
-  - name: http
-    protocol: HTTP
-    port: 80
+  - name: https
+    protocol: HTTPS
+    port: 443
 EOF
 
     retry 60 5 kubectl wait gateway/lb-gw -n "$TEST_NS" \
@@ -1929,9 +1909,9 @@ spec:
       kind: CloudflareGatewayParameters
       name: sd-params
   listeners:
-  - name: http
-    protocol: HTTP
-    port: 80
+  - name: https
+    protocol: HTTPS
+    port: 443
 EOF
 
     retry 60 5 kubectl wait gateway/sd-gw -n "$TEST_NS" \
@@ -2111,15 +2091,10 @@ metadata:
   namespace: $TEST_NS
 spec:
   gatewayClassName: cloudflare
-  infrastructure:
-    parametersRef:
-      group: ""
-      kind: Secret
-      name: cloudflare-creds
   listeners:
-  - name: http
-    protocol: HTTP
-    port: 80
+  - name: https
+    protocol: HTTPS
+    port: 443
 EOF
 
     retry 60 5 kubectl wait gateway/ts-gw -n "$TEST_NS" \
@@ -2298,15 +2273,10 @@ metadata:
   namespace: $TEST_NS
 spec:
   gatewayClassName: cloudflare
-  infrastructure:
-    parametersRef:
-      group: ""
-      kind: Secret
-      name: cloudflare-creds
   listeners:
-  - name: http
-    protocol: HTTP
-    port: 80
+  - name: https
+    protocol: HTTPS
+    port: 443
 EOF
 
     retry 60 5 kubectl wait gateway/sp-gw -n "$TEST_NS" \
@@ -2391,9 +2361,9 @@ spec:
       kind: CloudflareGatewayParameters
       name: replicas-params
   listeners:
-  - name: http
-    protocol: HTTP
-    port: 80
+  - name: https
+    protocol: HTTPS
+    port: 443
 EOF
 
     retry 60 2 kubectl wait gateway/replicas-gw -n "$TEST_NS" \
@@ -2471,9 +2441,9 @@ spec:
       kind: CloudflareGatewayParameters
       name: vpa-params
   listeners:
-  - name: http
-    protocol: HTTP
-    port: 80
+  - name: https
+    protocol: HTTPS
+    port: 443
 EOF
 
     retry 60 2 kubectl wait gateway/vpa-gw -n "$TEST_NS" \

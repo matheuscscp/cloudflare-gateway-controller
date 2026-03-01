@@ -49,9 +49,9 @@ func TestGatewayReconciler_DNSReconciliation(t *testing.T) {
 			},
 			Listeners: []gatewayv1.Listener{
 				{
-					Name:     "http",
-					Protocol: gatewayv1.HTTPProtocolType,
-					Port:     80,
+					Name:     "https",
+					Protocol: gatewayv1.HTTPSProtocolType,
+					Port:     443,
 				},
 			},
 		},
@@ -166,9 +166,9 @@ func TestGatewayReconciler_DNSStaleCleanup(t *testing.T) {
 			},
 			Listeners: []gatewayv1.Listener{
 				{
-					Name:     "http",
-					Protocol: gatewayv1.HTTPProtocolType,
-					Port:     80,
+					Name:     "https",
+					Protocol: gatewayv1.HTTPSProtocolType,
+					Port:     443,
 				},
 			},
 		},
@@ -226,9 +226,9 @@ func TestGatewayReconciler_DNSSkippedHostnames(t *testing.T) {
 			},
 			Listeners: []gatewayv1.Listener{
 				{
-					Name:     "http",
-					Protocol: gatewayv1.HTTPProtocolType,
-					Port:     80,
+					Name:     "https",
+					Protocol: gatewayv1.HTTPSProtocolType,
+					Port:     443,
 				},
 			},
 		},
@@ -335,9 +335,9 @@ func TestGatewayReconciler_DNSZoneRemovalCleanup(t *testing.T) {
 			},
 			Listeners: []gatewayv1.Listener{
 				{
-					Name:     "http",
-					Protocol: gatewayv1.HTTPProtocolType,
-					Port:     80,
+					Name:     "https",
+					Protocol: gatewayv1.HTTPSProtocolType,
+					Port:     443,
 				},
 			},
 		},
@@ -466,9 +466,9 @@ func TestGatewayReconciler_DNSMultipleHostnamesMixed(t *testing.T) {
 			},
 			Listeners: []gatewayv1.Listener{
 				{
-					Name:     "http",
-					Protocol: gatewayv1.HTTPProtocolType,
-					Port:     80,
+					Name:     "https",
+					Protocol: gatewayv1.HTTPSProtocolType,
+					Port:     443,
 				},
 			},
 		},
@@ -594,9 +594,9 @@ func TestGatewayReconciler_DNSMultiZoneWithParentChild(t *testing.T) {
 			},
 			Listeners: []gatewayv1.Listener{
 				{
-					Name:     "http",
-					Protocol: gatewayv1.HTTPProtocolType,
-					Port:     80,
+					Name:     "https",
+					Protocol: gatewayv1.HTTPSProtocolType,
+					Port:     443,
 				},
 			},
 		},
@@ -734,9 +734,9 @@ func TestGatewayReconciler_DNSAllZones(t *testing.T) {
 			},
 			Listeners: []gatewayv1.Listener{
 				{
-					Name:     "http",
-					Protocol: gatewayv1.HTTPProtocolType,
-					Port:     80,
+					Name:     "https",
+					Protocol: gatewayv1.HTTPSProtocolType,
+					Port:     443,
 				},
 			},
 		},
@@ -861,9 +861,9 @@ func TestGatewayReconciler_DNSDisabledViaEmptyZones(t *testing.T) {
 			},
 			Listeners: []gatewayv1.Listener{
 				{
-					Name:     "http",
-					Protocol: gatewayv1.HTTPProtocolType,
-					Port:     80,
+					Name:     "https",
+					Protocol: gatewayv1.HTTPSProtocolType,
+					Port:     443,
 				},
 			},
 		},
@@ -982,9 +982,9 @@ func TestGatewayReconciler_DNSAllZonesSkipsUnresolvable(t *testing.T) {
 			},
 			Listeners: []gatewayv1.Listener{
 				{
-					Name:     "http",
-					Protocol: gatewayv1.HTTPProtocolType,
-					Port:     80,
+					Name:     "https",
+					Protocol: gatewayv1.HTTPSProtocolType,
+					Port:     443,
 				},
 			},
 		},

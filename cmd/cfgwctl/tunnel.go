@@ -15,7 +15,6 @@ func newTunnelCmd(credentialsFile *string) *cobra.Command {
 		newTunnelGetIDCmd(credentialsFile),
 		newTunnelDeleteCmd(credentialsFile),
 		newTunnelCleanupConnectionsCmd(credentialsFile),
-		newTunnelGetConfigCmd(credentialsFile),
 	)
 	return cmd
 }
@@ -98,36 +97,6 @@ func newTunnelCleanupConnectionsCmd(credentialsFile *string) *cobra.Command {
 				return err
 			}
 			return c.CleanupTunnelConnections(cmd.Context(), tunnelID)
-		},
-	}
-	cmd.Flags().StringVar(&tunnelID, "tunnel-id", "", "tunnel ID")
-	cobra.CheckErr(cmd.MarkFlagRequired("tunnel-id"))
-	return cmd
-}
-
-func newTunnelGetConfigCmd(credentialsFile *string) *cobra.Command {
-	var tunnelID string
-	cmd := &cobra.Command{
-		Use:   "get-config",
-		Short: "Get a tunnel's ingress configuration",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := newClient(*credentialsFile)
-			if err != nil {
-				return err
-			}
-			rules, err := c.GetTunnelConfiguration(cmd.Context(), tunnelID)
-			if err != nil {
-				return err
-			}
-			out := make([]ingressRuleOutput, len(rules))
-			for i, r := range rules {
-				out[i] = ingressRuleOutput{
-					Hostname: r.Hostname,
-					Service:  r.Service,
-					Path:     r.Path,
-				}
-			}
-			return printJSON(out)
 		},
 	}
 	cmd.Flags().StringVar(&tunnelID, "tunnel-id", "", "tunnel ID")
