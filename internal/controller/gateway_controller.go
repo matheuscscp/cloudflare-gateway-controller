@@ -117,6 +117,7 @@ type tunnelState struct {
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // maxEventMessageLen is the maximum length of a Kubernetes Event message.
@@ -325,11 +326,32 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	}
 	changes = append(changes, deployChanges...)
 
+	// Reconcile VPAs when autoscaling is enabled for at least one container.
+	if autoscalingEnabled(params) {
+		vpaChanges, err := r.reconcileVPAs(ctx, gw, params, replicas)
+		if err != nil {
+			return r.reconcileError(ctx, gw, err)
+		}
+		changes = append(changes, vpaChanges...)
+	}
+
 	// Clean up stale Kubernetes resources (Deployments, Secrets) that are no
 	// longer desired. Tunnel names are deterministic, so no previous state needed.
 	cleanupChanges, cleanupErrs := r.cleanupStaleTunnelResources(ctx, gw, resourceName, replicas)
 	changes = append(changes, cleanupChanges...)
 	errs = append(errs, cleanupErrs...)
+
+	// Build set of desired Deployment names for VPA cleanup.
+	desiredDeployNames := make(map[string]struct{}, len(replicas))
+	if autoscalingEnabled(params) {
+		for _, rep := range replicas {
+			desiredDeployNames[apiv1.GatewayReplicaName(gw, rep.Name)] = struct{}{}
+		}
+	}
+	// Clean up stale VPAs. When autoscaling is off, desired set is empty → all VPAs deleted.
+	vpaCleanupChanges, vpaCleanupErrs := r.cleanupStaleVPAs(ctx, gw, desiredDeployNames)
+	changes = append(changes, vpaCleanupChanges...)
+	errs = append(errs, vpaCleanupErrs...)
 
 	// Clean up sidecar resources when sidecar is disabled (handles the case
 	// where sidecar was previously enabled and is now turned off).

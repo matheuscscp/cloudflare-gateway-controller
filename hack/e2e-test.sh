@@ -2420,6 +2420,150 @@ EOF
     kubectl delete cloudflaregatewayparameters replicas-params -n "$TEST_NS" --ignore-not-found
 }
 
+test_vpa_autoscaling() {
+    log "Installing VPA CRD..."
+    kubectl apply -f https://raw.githubusercontent.com/kubernetes/autoscaler/master/vertical-pod-autoscaler/deploy/vpa-v1-crd-gen.yaml \
+        || fail "Failed to install VPA CRD"
+    retry 10 2 kubectl get crd verticalpodautoscalers.autoscaling.k8s.io \
+        || fail "VPA CRD not found after install"
+    pass "VPA CRD installed"
+
+    log "Creating CloudflareGatewayParameters 'vpa-params' with autoscaling enabled..."
+    kubectl apply -f - <<EOF
+apiVersion: cloudflare-gateway-controller.io/v1
+kind: CloudflareGatewayParameters
+metadata:
+  name: vpa-params
+  namespace: $TEST_NS
+spec:
+  secretRef:
+    name: cloudflare-creds
+  tunnel:
+    cloudflared:
+      autoscaling:
+        enabled: true
+        minAllowed:
+          cpu: 25m
+          memory: 32Mi
+        maxAllowed:
+          cpu: "1"
+          memory: 512Mi
+        controlledResources: [cpu, memory]
+        controlledValues: RequestsAndLimits
+    sidecar:
+      autoscaling:
+        enabled: true
+        controlledValues: RequestsOnly
+EOF
+
+    log "Creating Gateway 'vpa-gw'..."
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: vpa-gw
+  namespace: $TEST_NS
+spec:
+  gatewayClassName: cloudflare
+  infrastructure:
+    parametersRef:
+      group: cloudflare-gateway-controller.io
+      kind: CloudflareGatewayParameters
+      name: vpa-params
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+EOF
+
+    retry 60 2 kubectl wait gateway/vpa-gw -n "$TEST_NS" \
+        --for=condition=Programmed --timeout=5s \
+        || fail "vpa-gw did not become Programmed"
+    pass "vpa-gw is Programmed"
+
+    log "Verifying VPA exists..."
+    retry 30 2 kubectl get vpa gateway-vpa-gw-primary -n "$TEST_NS" \
+        || fail "VPA gateway-vpa-gw-primary not found"
+    pass "VPA exists"
+
+    log "Verifying VPA spec..."
+    local update_mode
+    update_mode=$(kubectl get vpa gateway-vpa-gw-primary -n "$TEST_NS" \
+        -o jsonpath='{.spec.updatePolicy.updateMode}')
+    [ "$update_mode" = "InPlaceOrRecreate" ] \
+        || fail "VPA updateMode expected InPlaceOrRecreate, got '$update_mode'"
+    pass "VPA updateMode is InPlaceOrRecreate"
+
+    local target_name
+    target_name=$(kubectl get vpa gateway-vpa-gw-primary -n "$TEST_NS" \
+        -o jsonpath='{.spec.targetRef.name}')
+    [ "$target_name" = "gateway-vpa-gw-primary" ] \
+        || fail "VPA targetRef.name expected gateway-vpa-gw-primary, got '$target_name'"
+    pass "VPA targetRef is correct"
+
+    # Verify container policies: wildcard Off + cloudflared Auto + sidecar Auto.
+    # Use -o json (not jsonpath) so jq can parse the output.
+    local policies
+    policies=$(kubectl get vpa gateway-vpa-gw-primary -n "$TEST_NS" \
+        -o json | jq '.spec.resourcePolicy.containerPolicies')
+
+    echo "$policies" | jq -e '.[] | select(.containerName == "*" and .mode == "Off")' >/dev/null \
+        || fail "VPA missing wildcard '*' Off policy"
+    pass "VPA has wildcard Off policy"
+
+    echo "$policies" | jq -e '.[] | select(.containerName == "cloudflared" and .mode == "Auto")' >/dev/null \
+        || fail "VPA missing cloudflared Auto policy"
+    pass "VPA has cloudflared Auto policy"
+
+    echo "$policies" | jq -e '.[] | select(.containerName == "sidecar" and .mode == "Auto")' >/dev/null \
+        || fail "VPA missing sidecar Auto policy"
+    pass "VPA has sidecar Auto policy"
+
+    # Verify cloudflared minAllowed/maxAllowed.
+    local cf_min_cpu cf_max_cpu
+    cf_min_cpu=$(echo "$policies" | jq -r '.[] | select(.containerName == "cloudflared") | .minAllowed.cpu')
+    cf_max_cpu=$(echo "$policies" | jq -r '.[] | select(.containerName == "cloudflared") | .maxAllowed.cpu')
+    [ "$cf_min_cpu" = "25m" ] || fail "cloudflared minAllowed.cpu expected 25m, got '$cf_min_cpu'"
+    [ "$cf_max_cpu" = "1" ] || fail "cloudflared maxAllowed.cpu expected 1, got '$cf_max_cpu'"
+    pass "cloudflared minAllowed/maxAllowed are correct"
+
+    # Verify cloudflared controlledValues.
+    local cf_cv
+    cf_cv=$(echo "$policies" | jq -r '.[] | select(.containerName == "cloudflared") | .controlledValues')
+    [ "$cf_cv" = "RequestsAndLimits" ] \
+        || fail "cloudflared controlledValues expected RequestsAndLimits, got '$cf_cv'"
+    pass "cloudflared controlledValues is correct"
+
+    # Verify sidecar controlledValues.
+    local sc_cv
+    sc_cv=$(echo "$policies" | jq -r '.[] | select(.containerName == "sidecar") | .controlledValues')
+    [ "$sc_cv" = "RequestsOnly" ] \
+        || fail "sidecar controlledValues expected RequestsOnly, got '$sc_cv'"
+    pass "sidecar controlledValues is correct"
+
+    log "Disabling autoscaling and verifying VPA cleanup..."
+    kubectl apply -f - <<EOF
+apiVersion: cloudflare-gateway-controller.io/v1
+kind: CloudflareGatewayParameters
+metadata:
+  name: vpa-params
+  namespace: $TEST_NS
+spec:
+  secretRef:
+    name: cloudflare-creds
+EOF
+
+    retry 30 2 bash -c "! kubectl get vpa gateway-vpa-gw-primary -n '$TEST_NS' 2>/dev/null" \
+        || fail "VPA gateway-vpa-gw-primary still exists after disabling autoscaling"
+    pass "VPA cleaned up after disabling autoscaling"
+
+    log "Cleaning up VPA test..."
+    kubectl delete gateway vpa-gw -n "$TEST_NS"
+    retry 60 3 bash -c "! kubectl get gateway vpa-gw -n '$TEST_NS' 2>/dev/null" \
+        || fail "vpa-gw still exists"
+    kubectl delete cloudflaregatewayparameters vpa-params -n "$TEST_NS" --ignore-not-found
+}
+
 # ─── Run ──────────────────────────────────────────────────────────────────────
 
 run_tests \
@@ -2439,4 +2583,5 @@ run_tests \
     test_sidecar_disabled \
     test_traffic_splitting \
     test_session_persistence \
-    test_replicas
+    test_replicas \
+    test_vpa_autoscaling

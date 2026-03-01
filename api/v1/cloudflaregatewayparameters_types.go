@@ -106,6 +106,10 @@ type TunnelConfig struct {
 	// +kubebuilder:validation:MaxItems=128
 	Replicas []ReplicaConfig `json:"replicas"`
 
+	// Cloudflared configures the cloudflared container.
+	// +optional
+	Cloudflared *CloudflaredConfig `json:"cloudflared,omitempty"`
+
 	// Sidecar configures the sidecar reverse proxy that runs alongside
 	// cloudflared for per-request load balancing through kube-proxy.
 	// +optional
@@ -130,8 +134,59 @@ type JSONPatchOperation struct {
 	Value *apiextensionsv1.JSON `json:"value,omitempty"`
 }
 
+// ContainerConfig configures container-level settings shared by the
+// cloudflared and sidecar containers.
+type ContainerConfig struct {
+	// Resources configures compute resource requirements for the container.
+	// When absent, the controller uses defaults (requests: 50m CPU, 64Mi
+	// memory; limits: 500m CPU, 256Mi memory). When set, replaces defaults.
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// Autoscaling configures vertical autoscaling for the container.
+	// +optional
+	Autoscaling *AutoscalingConfig `json:"autoscaling,omitempty"`
+}
+
+// AutoscalingConfig configures vertical autoscaling for a container.
+type AutoscalingConfig struct {
+	// Enabled controls whether VPA recommendations are produced and
+	// applied for this container. Defaults to false.
+	Enabled bool `json:"enabled"`
+
+	// MinAllowed specifies the minimum amount of resources that will be
+	// recommended for the container. The default is no minimum.
+	// +optional
+	MinAllowed corev1.ResourceList `json:"minAllowed,omitempty"`
+
+	// MaxAllowed specifies the maximum amount of resources that will be
+	// recommended for the container. The default is no maximum.
+	// +optional
+	MaxAllowed corev1.ResourceList `json:"maxAllowed,omitempty"`
+
+	// ControlledResources specifies which resource types are subject to
+	// autoscaling. Allowed values are "cpu" and "memory". The default
+	// is both cpu and memory.
+	// +optional
+	ControlledResources []corev1.ResourceName `json:"controlledResources,omitempty"`
+
+	// ControlledValues specifies which resource values are subject to
+	// autoscaling. Allowed values are "RequestsAndLimits" and
+	// "RequestsOnly". The default is "RequestsAndLimits".
+	// +optional
+	// +kubebuilder:validation:Enum=RequestsAndLimits;RequestsOnly
+	ControlledValues *string `json:"controlledValues,omitempty"`
+}
+
+// CloudflaredConfig configures the cloudflared container.
+type CloudflaredConfig struct {
+	ContainerConfig `json:",inline"`
+}
+
 // SidecarConfig configures the sidecar reverse proxy.
 type SidecarConfig struct {
+	ContainerConfig `json:",inline"`
+
 	// Enabled controls whether the sidecar reverse proxy runs alongside
 	// cloudflared. When absent, defaults to true — the sidecar is enabled.
 	// Set to false to disable the sidecar and let cloudflared connect

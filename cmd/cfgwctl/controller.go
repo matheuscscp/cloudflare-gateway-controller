@@ -16,6 +16,7 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -34,6 +35,7 @@ var controllerScheme = runtime.NewScheme()
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(controllerScheme))
 	utilruntime.Must(apiextensionsv1.AddToScheme(controllerScheme))
+	utilruntime.Must(vpav1.AddToScheme(controllerScheme))
 	utilruntime.Must(gatewayv1.Install(controllerScheme))
 	utilruntime.Must(gatewayv1beta1.Install(controllerScheme))
 	utilruntime.Must(apiv1.Install(controllerScheme))

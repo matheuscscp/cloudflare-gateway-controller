@@ -161,6 +161,73 @@ Each patch operation has the following fields:
 - `from` (optional): Source path for `move` and `copy` operations.
 - `value` (optional): Value for `add`, `replace`, and `test` operations.
 
+#### Cloudflared container configuration
+
+The `.spec.tunnel.cloudflared` field configures the cloudflared container.
+
+##### Container resources
+
+The `.spec.tunnel.cloudflared.resources` field configures compute resource
+requirements for the cloudflared container. When absent, the controller uses
+defaults (requests: 50m CPU, 64Mi memory; limits: 500m CPU, 256Mi memory).
+When set, the provided values replace the defaults entirely.
+
+```yaml
+spec:
+  tunnel:
+    cloudflared:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: "1"
+          memory: 512Mi
+```
+
+##### Container autoscaling
+
+The `.spec.tunnel.cloudflared.autoscaling` field configures vertical pod
+autoscaling for the cloudflared container.
+
+```yaml
+spec:
+  tunnel:
+    cloudflared:
+      autoscaling:
+        enabled: true
+        minAllowed:
+          cpu: 50m
+          memory: 64Mi
+        maxAllowed:
+          cpu: "2"
+          memory: 1Gi
+        controlledResources: [cpu, memory]
+        controlledValues: RequestsAndLimits
+```
+
+When `autoscaling.enabled` is `true`, the controller creates a
+[VerticalPodAutoscaler](https://github.com/kubernetes/autoscaler/tree/master/vertical-pod-autoscaler)
+(VPA) resource for each Deployment replica. The VPA produces resource
+recommendations and applies them automatically using the `InPlaceOrRecreate`
+update mode. A container policy with mode `Auto` is added for each container
+that has autoscaling enabled.
+
+The autoscaling fields are:
+
+- `enabled` (required): Whether to enable VPA for this container.
+- `minAllowed` (optional): Minimum recommended resources (floor).
+- `maxAllowed` (optional): Maximum recommended resources (ceiling).
+- `controlledResources` (optional): Which resource types to autoscale. Allowed
+  values are `cpu` and `memory`. Defaults to both.
+- `controlledValues` (optional): Which resource values to autoscale.
+  `RequestsAndLimits` (default) scales both; `RequestsOnly` scales only
+  requests.
+
+The VPA CRD must be installed in the cluster for autoscaling to work. If the
+CRD is not installed, VPA creation will fail and the error will be reported in
+the Gateway status.
+
 #### Sidecar configuration
 
 The `.spec.tunnel.sidecar` field configures the sidecar reverse proxy that runs
@@ -184,3 +251,36 @@ Because cloudflared uses persistent connections, kube-proxy cannot effectively
 distribute traffic across pods. Traffic splitting (weighted `backendRefs`) and
 session persistence are also not available, and HTTPRoutes with multiple
 `backendRefs` in a single rule or `sessionPersistence` are rejected.
+
+##### Sidecar container resources
+
+The `.spec.tunnel.sidecar.resources` field configures compute resource
+requirements for the sidecar container. Follows the same semantics as
+`.spec.tunnel.cloudflared.resources`.
+
+```yaml
+spec:
+  tunnel:
+    sidecar:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: "1"
+          memory: 512Mi
+```
+
+##### Sidecar container autoscaling
+
+The `.spec.tunnel.sidecar.autoscaling` field configures vertical pod
+autoscaling for the sidecar container. Follows the same semantics as
+`.spec.tunnel.cloudflared.autoscaling`.
+
+```yaml
+spec:
+  tunnel:
+    sidecar:
+      autoscaling:
+        enabled: true
+```
