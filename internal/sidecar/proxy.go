@@ -4,7 +4,6 @@
 package sidecar
 
 import (
-	"fmt"
 	"math/rand/v2"
 	"net/http"
 	"net/http/httputil"
@@ -18,6 +17,10 @@ import (
 // loaded yet. The health check uses this to distinguish an internal 503 from a
 // proxied one.
 const HeaderConfigNotLoaded = "X-Sidecar-Config-Not-Loaded"
+
+// noKeepAliveTransport is a shared http.Transport with keep-alives disabled.
+// Each request opens a fresh TCP connection through kube-proxy.
+var noKeepAliveTransport = &http.Transport{DisableKeepAlives: true}
 
 // Proxy is a reverse proxy that routes requests based on hostname and path
 // prefix matching. The routing table is swapped atomically when the ConfigMap
@@ -43,7 +46,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	route := matchRoute(cfg.Routes, r.Host, r.URL.Path)
+	route := matchRoute(cfg, r.Host, r.URL.Path)
 	if route == nil {
 		http.NotFound(w, r)
 		return
@@ -71,9 +74,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			req.URL.Scheme = backend.serviceURL.Scheme
 			req.URL.Host = backend.serviceURL.Host
 		},
-		Transport: &http.Transport{
-			DisableKeepAlives: true,
-		},
+		Transport: noKeepAliveTransport,
 	}
 
 	// Set or re-issue cookie (cookie-based persistence only).
@@ -176,36 +177,43 @@ func findBackendByID(route *Route, id string) *Backend {
 // where now is the current Unix timestamp used as the last-activity marker.
 func sessionCookieValue(backendID string, createdAt int64, withLastActivity bool) string {
 	if withLastActivity {
-		return fmt.Sprintf("%s.%d.%d", backendID, createdAt, time.Now().Unix())
+		return backendID + "." + strconv.FormatInt(createdAt, 10) + "." + strconv.FormatInt(time.Now().Unix(), 10)
 	}
-	return fmt.Sprintf("%s.%d", backendID, createdAt)
+	return backendID + "." + strconv.FormatInt(createdAt, 10)
 }
 
 // parseSessionCookie parses a cookie value in the format "backendID.createdAt"
 // or "backendID.createdAt.lastActivity". When the lastActivity segment is
 // absent, lastActivity is set equal to createdAt.
 func parseSessionCookie(value string) (backendID string, createdAt, lastActivity int64, ok bool) {
-	parts := strings.Split(value, ".")
-	switch len(parts) {
-	case 2:
-		ts, err := strconv.ParseInt(parts[1], 10, 64)
-		if err != nil {
-			return "", 0, 0, false
-		}
-		return parts[0], ts, ts, true
-	case 3:
-		created, err := strconv.ParseInt(parts[1], 10, 64)
-		if err != nil {
-			return "", 0, 0, false
-		}
-		lastAct, err := strconv.ParseInt(parts[2], 10, 64)
-		if err != nil {
-			return "", 0, 0, false
-		}
-		return parts[0], created, lastAct, true
-	default:
+	// First cut: backendID . rest
+	id, rest, found := strings.Cut(value, ".")
+	if !found {
 		return "", 0, 0, false
 	}
+
+	// Second cut: createdAt [ . lastActivity ]
+	createdStr, lastActStr, hasLastAct := strings.Cut(rest, ".")
+
+	created, err := strconv.ParseInt(createdStr, 10, 64)
+	if err != nil {
+		return "", 0, 0, false
+	}
+
+	if !hasLastAct {
+		return id, created, created, true
+	}
+
+	// Reject extra dots (e.g. "a.1.2.3").
+	if strings.ContainsRune(lastActStr, '.') {
+		return "", 0, 0, false
+	}
+
+	lastAct, err := strconv.ParseInt(lastActStr, 10, 64)
+	if err != nil {
+		return "", 0, 0, false
+	}
+	return id, created, lastAct, true
 }
 
 // cookieMaxAge computes the Max-Age for a Permanent cookie. When only
@@ -236,15 +244,11 @@ func cookieMaxAge(sp *SessionPersistence, createdAt int64) int {
 // Backends with weight 0 are never selected. Returns nil if no backend is
 // available (empty slice or all weights are 0).
 func pickBackend(route *Route) *Backend {
-	var totalWeight int32
-	for i := range route.Backends {
-		totalWeight += route.Backends[i].Weight
-	}
-	if totalWeight <= 0 {
+	if route.totalWeight <= 0 {
 		return nil
 	}
 
-	r := rand.Int32N(totalWeight)
+	r := rand.Int32N(route.totalWeight)
 	var cumulative int32
 	for i := range route.Backends {
 		cumulative += route.Backends[i].Weight
@@ -255,21 +259,18 @@ func pickBackend(route *Route) *Backend {
 	return nil // unreachable
 }
 
-// matchRoute finds the best matching route: exact hostname match, then
-// longest PathPrefix. Returns nil if no route matches.
-func matchRoute(routes []Route, host, path string) *Route {
+// matchRoute finds the best matching route: exact hostname match via the
+// precomputed index, then longest PathPrefix. Returns nil if no route matches.
+func matchRoute(cfg *Config, host, path string) *Route {
 	// Strip port from host if present.
 	if i := strings.LastIndex(host, ":"); i != -1 {
 		host = host[:i]
 	}
 
+	routes := cfg.routesByHost[host]
 	var best *Route
 	bestLen := -1
-	for i := range routes {
-		r := &routes[i]
-		if r.Hostname != host {
-			continue
-		}
+	for _, r := range routes {
 		prefix := r.PathPrefix
 		if prefix == "" {
 			prefix = "/"

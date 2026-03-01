@@ -15,6 +15,8 @@ import (
 // in the per-Gateway ConfigMap.
 type Config struct {
 	Routes []Route `json:"routes"`
+
+	routesByHost map[string][]*Route // hostname -> routes index, populated by Config.Parse
 }
 
 // Parse validates and parses every backend's Service URL, computes backend IDs,
@@ -22,6 +24,7 @@ type Config struct {
 // is used by the Proxy. Returns an error if any URL is invalid.
 func (c *Config) Parse() error {
 	for i := range c.Routes {
+		var totalWeight int32
 		for j := range c.Routes[i].Backends {
 			b := &c.Routes[i].Backends[j]
 			u, err := url.Parse(b.Service)
@@ -32,7 +35,9 @@ func (c *Config) Parse() error {
 			b.serviceURL = u
 			h := sha256.Sum256([]byte(b.Service))
 			b.id = hex.EncodeToString(h[:])[:16]
+			totalWeight += b.Weight
 		}
+		c.Routes[i].totalWeight = totalWeight
 		if sp := c.Routes[i].SessionPersistence; sp != nil {
 			if sp.AbsoluteTimeout != "" {
 				d, err := time.ParseDuration(sp.AbsoluteTimeout)
@@ -52,6 +57,14 @@ func (c *Config) Parse() error {
 			}
 		}
 	}
+
+	// Build hostname index for O(1) lookup in matchRoute.
+	c.routesByHost = make(map[string][]*Route, len(c.Routes))
+	for i := range c.Routes {
+		h := c.Routes[i].Hostname
+		c.routesByHost[h] = append(c.routesByHost[h], &c.Routes[i])
+	}
+
 	return nil
 }
 
@@ -84,4 +97,6 @@ type Route struct {
 	Owner              string              `json:"owner,omitempty"`      // "namespace/name" of the owning HTTPRoute
 	Backends           []Backend           `json:"backends"`
 	SessionPersistence *SessionPersistence `json:"sessionPersistence,omitempty"`
+
+	totalWeight int32 // sum of backend weights, populated by Config.Parse
 }
