@@ -161,6 +161,58 @@ Each patch operation has the following fields:
 - `from` (optional): Source path for `move` and `copy` operations.
 - `value` (optional): Value for `add`, `replace`, and `test` operations.
 
+#### Replicas
+
+The `.spec.tunnel.replicas` field configures multiple replicas of the tunnel pods
+for high availability. There are no guarantees about how requests from Cloudflare
+will be distributed among replicas, but the sidecar reverse proxy, if enabled, can
+improve load balancing when proxying to backend Services.
+
+There are three behaviors:
+
+**Single replica (default)** — omit the `replicas` field entirely. The controller
+creates one Deployment named `gateway-<gatewayName>-primary`.
+
+**Scale to zero** — set an explicitly empty list:
+
+```yaml
+spec:
+  tunnel:
+    replicas: []
+```
+
+No Deployments are created.
+
+**Multiple replicas** — list each replica with a unique name:
+
+```yaml
+spec:
+  tunnel:
+    replicas:
+      - name: alpha
+        zone: us-east-1a
+      - name: beta
+        zone: eu-west-1a
+```
+
+Each entry creates a separate Deployment named
+`gateway-<gatewayName>-<replicaName>`. All replicas share the same tunnel,
+Secret, and sidecar resources.
+
+Each replica has the following fields:
+
+- `name` (required): Identifies the replica. Must be 1–63 characters, lowercase
+  alphanumeric with hyphens (DNS label format). Names must be unique within the
+  list.
+- `zone` (optional): Shorthand for `topology.kubernetes.io/zone` node affinity.
+  Mutually exclusive with `affinity`.
+- `nodeSelector` (optional): Map of label key-value pairs for node selection.
+- `affinity` (optional): Full Kubernetes affinity spec for pod placement.
+  Mutually exclusive with `zone`.
+
+Replica placement fields (`affinity`, `zone`, `nodeSelector`) are applied after
+base Deployment construction and user patches, so they always take priority.
+
 #### Cloudflared container configuration
 
 The `.spec.tunnel.cloudflared` field configures the cloudflared container.

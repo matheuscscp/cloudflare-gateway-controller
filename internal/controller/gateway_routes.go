@@ -68,9 +68,14 @@ func validateGateway(gw *gatewayv1.Gateway) *gatewayValidationError {
 
 	l := gw.Spec.Listeners[0]
 
-	if l.Protocol != gatewayv1.HTTPProtocolType && l.Protocol != gatewayv1.HTTPSProtocolType {
-		msg := fmt.Sprintf("Listener protocol %q is not supported, must be HTTP or HTTPS", l.Protocol)
+	if l.Protocol != gatewayv1.HTTPSProtocolType {
+		msg := fmt.Sprintf("Listener protocol %q is not supported, must be HTTPS", l.Protocol)
 		return rejectedCond(gatewayv1.GatewayReasonListenersNotValid, msg)
+	}
+
+	if l.Port != 443 {
+		return rejectedCond(gatewayv1.GatewayReasonListenersNotValid,
+			fmt.Sprintf("Listener port %d is not supported, must be 443", l.Port))
 	}
 
 	if l.TLS != nil {

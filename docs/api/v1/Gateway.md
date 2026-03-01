@@ -30,16 +30,17 @@ spec:
       kind: CloudflareGatewayParameters
       name: my-params
   listeners:
-    - name: http
-      protocol: HTTP
-      port: 80
+    - name: https
+      protocol: HTTPS
+      port: 443
 ```
 
 ## Writing a Gateway spec
 
-The Gateway must have exactly one listener with `protocol: HTTP`. TLS
-configuration and hostnames on listeners are not supported. Hostnames are
-configured on [HTTPRoute](HTTPRoute.md) resources instead.
+The Gateway must have exactly one listener with `protocol: HTTPS` and
+`port: 443`. The `tls` field and hostnames on listeners are not supported.
+Cloudflare handles TLS termination; hostnames are configured on
+[HTTPRoute](HTTPRoute.md) resources instead.
 
 The `.spec.addresses` field is not supported and must not be set.
 
@@ -58,18 +59,6 @@ spec:
       name: my-params
 ```
 
-Alternatively, if no typed configuration is needed, `parametersRef` can
-reference a bare `core/v1` Secret containing Cloudflare API credentials:
-
-```yaml
-spec:
-  infrastructure:
-    parametersRef:
-      group: ""
-      kind: Secret
-      name: cloudflare-creds
-```
-
 ### Credentials resolution
 
 The controller resolves Cloudflare API credentials in the following order:
@@ -77,9 +66,7 @@ The controller resolves Cloudflare API credentials in the following order:
 1. If `.spec.infrastructure.parametersRef` references a
    `CloudflareGatewayParameters` that has `.spec.secretRef`, credentials are
    read from that Secret.
-2. If `.spec.infrastructure.parametersRef` directly references a `core/v1`
-   Secret, credentials are read from it.
-3. Otherwise, credentials are read from the [GatewayClass](GatewayClass.md)
+2. Otherwise, credentials are read from the [GatewayClass](GatewayClass.md)
    `parametersRef` Secret.
 
 If none of the above is set, the Gateway is rejected with
@@ -128,7 +115,8 @@ without leaking Cloudflare resources — a reborn cluster with the same
 | Resource                | Name                                                        |
 |-------------------------|-------------------------------------------------------------|
 | Cloudflare Tunnel       | `gw-` + hex SHA256 of `clusterName/namespace/gatewayName` (67 chars) |
-| cloudflared Deployment  | `gateway-<gatewayName>`                                     |
+| cloudflared Deployment  | `gateway-<gatewayName>-<replicaName>` (default: `primary`)  |
+| VPA (when autoscaling)  | `gateway-<gatewayName>-<replicaName>` (default: `primary`)  |
 | Tunnel token Secret     | `gateway-<gatewayName>`                                     |
 | Sidecar ConfigMap       | `gateway-<gatewayName>`                                     |
 | Sidecar ServiceAccount  | `gateway-<gatewayName>`                                     |
@@ -140,7 +128,7 @@ Sidecar resources are only created when the sidecar is enabled per-Gateway
 (via [CloudflareGatewayParameters](CloudflareGatewayParameters.md#sidecar-configuration),
 default: enabled).
 
-Source: `TunnelName()`, `GatewayResourceName()` in `api/v1/meta_types.go`.
+Source: `TunnelName()`, `GatewayResourceName()`, `GatewayReplicaName()` in `api/v1/meta_types.go`.
 
 ## Validations
 
@@ -157,9 +145,9 @@ reconciliation. If any validation fails, the Gateway is rejected with
 
 - The Gateway must have exactly one listener. Multiple listeners are rejected
   with `Accepted=False/ListenersNotValid`.
-- The listener `protocol` must be `HTTP` or `HTTPS`. Other protocols are
-  rejected with `Accepted=False/ListenersNotValid`.
-- The listener `tls` field must not be set. Cloudflare handles TLS termination.
+- The listener `protocol` must be `HTTPS` and `port` must be `443`. Other
+  values are rejected with `Accepted=False/ListenersNotValid`.
+- Cloudflare handles TLS termination, so the `tls` field must not be set.
   Rejected with `Accepted=False/ListenersNotValid`.
 - The listener `hostname` field must not be set. Hostnames are configured on
   [HTTPRoutes](HTTPRoute.md) instead. Rejected with
@@ -174,7 +162,7 @@ The `.spec.addresses` field must not be set. Rejected with
 
 ### Parameters reference
 
-- `.spec.infrastructure.parametersRef` must reference a `core/v1` Secret or a
+- `.spec.infrastructure.parametersRef` must reference a
   `CloudflareGatewayParameters`. Other kinds are rejected with
   `Accepted=False/InvalidParameters`.
 - When referencing a `CloudflareGatewayParameters`, the resource must exist.

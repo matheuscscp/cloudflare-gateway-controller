@@ -33,26 +33,49 @@ flowchart LR
     CD --> SB[Service B]
 ```
 
-A minimal setup needs only a Gateway and an HTTPRoute — no CloudflareGatewayParameters
-required. Credentials come from the GatewayClass `parametersRef` Secret, and DNS management
-is enabled for all hostnames by default:
+A minimal setup needs a credentials Secret, a GatewayClass, a Gateway, and an HTTPRoute —
+no CloudflareGatewayParameters required. Credentials come from the GatewayClass
+`parametersRef` Secret, and DNS management is enabled for all hostnames by default:
 
 ```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cloudflare-creds
+  namespace: default
+stringData:
+  CLOUDFLARE_API_TOKEN: "your-api-token"
+  CLOUDFLARE_ACCOUNT_ID: "your-account-id"
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: cloudflare
+spec:
+  controllerName: cloudflare-gateway-controller.io/controller
+  parametersRef:
+    group: ""
+    kind: Secret
+    name: cloudflare-creds
+    namespace: default
+---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: my-gateway
+  namespace: default
 spec:
   gatewayClassName: cloudflare
   listeners:
-  - name: http
-    protocol: HTTP
-    port: 80
+  - name: https
+    protocol: HTTPS
+    port: 443
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: my-route
+  namespace: default
 spec:
   parentRefs:
   - name: my-gateway
@@ -64,24 +87,62 @@ spec:
       port: 80
 ```
 
-For more control, reference a CloudflareGatewayParameters to provide per-Gateway credentials
-or restrict DNS management to specific zones:
+For more control, reference a CloudflareGatewayParameters to configure tunnel replicas
+for high availability, vertical autoscaling, restrict DNS zones, and more:
 
 ```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+  name: my-gateway
+  namespace: default
+spec:
+  # ...
+  infrastructure:
+    parametersRef:
+      group: cloudflare-gateway-controller.io
+      kind: CloudflareGatewayParameters
+      name: my-params
+---
 apiVersion: cloudflare-gateway-controller.io/v1
 kind: CloudflareGatewayParameters
 metadata:
   name: my-params
+  namespace: default
 spec:
-  secretRef:
-    name: cloudflare-creds
+  tunnel:
+    replicas:
+      - name: us-east-1a
+        zone: us-east-1a
+      - name: us-east-1b
+        zone: us-east-1b
+    cloudflared:
+      autoscaling:
+        enabled: true
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: "1"
+          memory: 512Mi
+    sidecar:
+      autoscaling:
+        enabled: true
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: "1"
+          memory: 512Mi
   dns:
     zones:
-    - name: example.com
+      - name: example.com
+      - name: other.com
 ```
 
 See the [CloudflareGatewayParameters](docs/api/v1/CloudflareGatewayParameters.md) docs for
-all options, including how to disable DNS management entirely.
+all options.
 
 **DNS:** The controller creates a CNAME record for each hostname declared in the attached
 HTTPRoutes. Each CNAME points directly to the tunnel address (`<tunnelID>.cfargotunnel.com`).
@@ -93,6 +154,23 @@ When an HTTPRoute hostname is removed, its CNAME is deleted.
 a tunnel token Secret, and (when the sidecar is enabled) a sidecar ConfigMap, a
 ServiceAccount, a Role, and a RoleBinding. The sidecar is enabled by default and can be
 disabled per-Gateway via [CloudflareGatewayParameters](docs/api/v1/CloudflareGatewayParameters.md#sidecar-configuration).
+
+**Replicas:** Multiple named replicas can be configured per tunnel for high availability.
+Each replica creates a separate Deployment with optional placement controls (zone,
+nodeSelector, affinity). See
+[CloudflareGatewayParameters](docs/api/v1/CloudflareGatewayParameters.md#replicas) for
+configuration details.
+
+**Deployment patches:** RFC 6902 JSON Patch operations can be applied to the cloudflared
+Deployment for advanced customization (e.g. tolerations, node selectors). See
+[CloudflareGatewayParameters](docs/api/v1/CloudflareGatewayParameters.md#patches) for
+details.
+
+**Container resources and autoscaling:** CPU and memory requests/limits are configurable
+for both cloudflared and sidecar containers. Vertical Pod Autoscaler (VPA) support is
+available for automatic resource tuning. See
+[CloudflareGatewayParameters](docs/api/v1/CloudflareGatewayParameters.md#cloudflared-container-configuration)
+for details.
 
 **Observability:** The controller creates a
 [CloudflareGatewayStatus](docs/api/v1/CloudflareGatewayStatus.md) (short name: `cgs`) per
@@ -127,9 +205,9 @@ splitting (weighted `backendRefs`) and session persistence are also not availabl
 
 ## API Token Permissions
 
-The Cloudflare API token stored in the `secretRef` Secret must have the following permissions:
+The Cloudflare API token must have the following permissions:
 
 | Permission | Scope | Purpose |
 |---|---|---|
-| Cloudflare Tunnel: Edit | Account | Create, configure, and delete tunnels |
-| DNS: Edit | All zones | Create, update, and delete CNAME records |
+| Cloudflare Tunnel: Edit | Account | Create, configure, and delete tunnels in the account |
+| DNS: Edit | Zone(s) | Create, update, and delete CNAME records in the zone(s) |

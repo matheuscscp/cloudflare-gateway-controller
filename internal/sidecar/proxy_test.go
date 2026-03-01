@@ -150,6 +150,48 @@ func TestParse_InvalidURL(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("bad.example.com"))
 }
 
+func TestParse_InvalidAbsoluteTimeout(t *testing.T) {
+	g := NewWithT(t)
+
+	cfg := &sidecar.Config{
+		Routes: []sidecar.Route{
+			{
+				Hostname: "app.example.com",
+				Backends: []sidecar.Backend{{Service: "http://valid:8080", Weight: 1}},
+				SessionPersistence: &sidecar.SessionPersistence{
+					Type:            "Cookie",
+					SessionName:     "test",
+					AbsoluteTimeout: "not-a-duration",
+				},
+			},
+		},
+	}
+	err := cfg.Parse()
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("absoluteTimeout"))
+}
+
+func TestParse_InvalidIdleTimeout(t *testing.T) {
+	g := NewWithT(t)
+
+	cfg := &sidecar.Config{
+		Routes: []sidecar.Route{
+			{
+				Hostname: "app.example.com",
+				Backends: []sidecar.Backend{{Service: "http://valid:8080", Weight: 1}},
+				SessionPersistence: &sidecar.SessionPersistence{
+					Type:        "Cookie",
+					SessionName: "test",
+					IdleTimeout: "invalid",
+				},
+			},
+		},
+	}
+	err := cfg.Parse()
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("idleTimeout"))
+}
+
 func TestProxy_DisableKeepAlives(t *testing.T) {
 	g := NewWithT(t)
 
@@ -776,6 +818,183 @@ func TestProxy_CookieSessionPersistence_IdleTimeoutReissue(t *testing.T) {
 // splitCookieValue splits a session cookie value by "." for test assertions.
 func splitCookieValue(value string) []string {
 	return strings.Split(value, ".")
+}
+
+func TestProxy_SessionPersistence_MalformedCookieValues(t *testing.T) {
+	g := NewWithT(t)
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+
+	p := &sidecar.Proxy{}
+	setConfig(t, p, &sidecar.Config{
+		Routes: []sidecar.Route{
+			{
+				Hostname: "app.example.com",
+				Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}},
+				SessionPersistence: &sidecar.SessionPersistence{
+					Type:               "Cookie",
+					SessionName:        "cgw-session",
+					CookieLifetimeType: "Session",
+				},
+			},
+		},
+	})
+
+	// Malformed 2-part cookie: non-numeric timestamp.
+	req := httptest.NewRequest("GET", "http://app.example.com/", nil)
+	req.AddCookie(&http.Cookie{Name: "cgw-session", Value: "backendid.notanumber"})
+	rec := httptest.NewRecorder()
+	p.ServeHTTP(rec, req)
+	g.Expect(rec.Code).To(Equal(http.StatusOK))
+	g.Expect(rec.Result().Cookies()).To(HaveLen(1)) // Falls back to new cookie.
+
+	// Malformed 3-part cookie: non-numeric createdAt.
+	req = httptest.NewRequest("GET", "http://app.example.com/", nil)
+	req.AddCookie(&http.Cookie{Name: "cgw-session", Value: "backendid.bad.123"})
+	rec = httptest.NewRecorder()
+	p.ServeHTTP(rec, req)
+	g.Expect(rec.Code).To(Equal(http.StatusOK))
+	g.Expect(rec.Result().Cookies()).To(HaveLen(1))
+
+	// Malformed 3-part cookie: non-numeric lastActivity.
+	req = httptest.NewRequest("GET", "http://app.example.com/", nil)
+	req.AddCookie(&http.Cookie{Name: "cgw-session", Value: "backendid.123.bad"})
+	rec = httptest.NewRecorder()
+	p.ServeHTTP(rec, req)
+	g.Expect(rec.Code).To(Equal(http.StatusOK))
+	g.Expect(rec.Result().Cookies()).To(HaveLen(1))
+
+	// Too many segments.
+	req = httptest.NewRequest("GET", "http://app.example.com/", nil)
+	req.AddCookie(&http.Cookie{Name: "cgw-session", Value: "a.b.c.d"})
+	rec = httptest.NewRecorder()
+	p.ServeHTTP(rec, req)
+	g.Expect(rec.Code).To(Equal(http.StatusOK))
+	g.Expect(rec.Result().Cookies()).To(HaveLen(1))
+}
+
+func TestProxy_CookieSessionPersistence_PermanentIdleTimeoutOnly(t *testing.T) {
+	g := NewWithT(t)
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+
+	p := &sidecar.Proxy{}
+	setConfig(t, p, &sidecar.Config{
+		Routes: []sidecar.Route{
+			{
+				Hostname: "app.example.com",
+				Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}},
+				SessionPersistence: &sidecar.SessionPersistence{
+					Type:               "Cookie",
+					SessionName:        "cgw-session",
+					IdleTimeout:        "5m",
+					CookieLifetimeType: "Permanent",
+				},
+			},
+		},
+	})
+
+	req := httptest.NewRequest("GET", "http://app.example.com/", nil)
+	rec := httptest.NewRecorder()
+	p.ServeHTTP(rec, req)
+	g.Expect(rec.Code).To(Equal(http.StatusOK))
+	cookies := rec.Result().Cookies()
+	g.Expect(cookies).To(HaveLen(1))
+	g.Expect(cookies[0].MaxAge).To(Equal(300)) // 5 minutes = 300 seconds
+}
+
+func TestProxy_CookieSessionPersistence_BothTimeoutsRemainingSmaller(t *testing.T) {
+	g := NewWithT(t)
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+
+	p := &sidecar.Proxy{}
+	setConfig(t, p, &sidecar.Config{
+		Routes: []sidecar.Route{
+			{
+				Hostname: "app.example.com",
+				Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}},
+				SessionPersistence: &sidecar.SessionPersistence{
+					Type:               "Cookie",
+					SessionName:        "cgw-session",
+					AbsoluteTimeout:    "1h",
+					IdleTimeout:        "10m",
+					CookieLifetimeType: "Permanent",
+				},
+			},
+		},
+	})
+
+	// Get initial cookie.
+	req := httptest.NewRequest("GET", "http://app.example.com/", nil)
+	rec := httptest.NewRecorder()
+	p.ServeHTTP(rec, req)
+	g.Expect(rec.Code).To(Equal(http.StatusOK))
+	cookies := rec.Result().Cookies()
+	g.Expect(cookies).To(HaveLen(1))
+
+	parts := splitCookieValue(cookies[0].Value)
+	g.Expect(parts).To(HaveLen(3))
+	backendID := parts[0]
+
+	// Forge cookie with createdAt 55 minutes ago (remaining absolute = 5min = 300s < idle = 600s).
+	forgedCookie := &http.Cookie{
+		Name:  "cgw-session",
+		Value: fmt.Sprintf("%s.%d.%d", backendID, time.Now().Unix()-3300, time.Now().Unix()),
+	}
+	req = httptest.NewRequest("GET", "http://app.example.com/", nil)
+	req.AddCookie(forgedCookie)
+	rec = httptest.NewRecorder()
+	p.ServeHTTP(rec, req)
+	g.Expect(rec.Code).To(Equal(http.StatusOK))
+	reissuedCookies := rec.Result().Cookies()
+	g.Expect(reissuedCookies).To(HaveLen(1))
+	// Remaining absolute ≈ 3600 - 3300 = 300 < idle 600, so Max-Age = 300.
+	g.Expect(reissuedCookies[0].MaxAge).To(Equal(300))
+}
+
+func TestProxy_HeaderSessionPersistence_UnknownBackend(t *testing.T) {
+	g := NewWithT(t)
+
+	var countA atomic.Int32
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		countA.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+
+	p := &sidecar.Proxy{}
+	setConfig(t, p, &sidecar.Config{
+		Routes: []sidecar.Route{
+			{
+				Hostname: "app.example.com",
+				Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}},
+				SessionPersistence: &sidecar.SessionPersistence{
+					Type:        "Header",
+					SessionName: "X-Session",
+				},
+			},
+		},
+	})
+
+	// Unknown backend ID in header → falls back to weighted random.
+	req := httptest.NewRequest("GET", "http://app.example.com/", nil)
+	req.Header.Set("X-Session", "unknown-backend-id")
+	rec := httptest.NewRecorder()
+	p.ServeHTTP(rec, req)
+	g.Expect(rec.Code).To(Equal(http.StatusOK))
+	g.Expect(int(countA.Load())).To(Equal(1))
+	// Header-based: no Set-Cookie issued.
+	g.Expect(rec.Result().Cookies()).To(BeEmpty())
 }
 
 func TestProxy_HeaderSessionPersistence(t *testing.T) {

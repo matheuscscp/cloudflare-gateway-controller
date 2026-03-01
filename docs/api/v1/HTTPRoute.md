@@ -212,8 +212,8 @@ specific-zones mode, the `message` lists applied and skipped hostnames.
 When DNS record creation or update fails:
 
 - `type: DNSRecordsApplied`
-- `status: "False"`
-- `reason: ReconciliationFailed`
+- `status: "Unknown"`
+- `reason: ProgressingWithRetry`
 
 This condition is removed from the status when DNS is disabled.
 

@@ -337,6 +337,19 @@ type mockDNSCall struct {
 
 func (m *mockCloudflareClient) CreateTunnel(_ context.Context, name string) (string, error) {
 	if m.createTunnelErr != nil {
+		// On conflict, track the tunnel so subsequent GetTunnelIDByName
+		// calls find it — matches real-world behavior where another process
+		// created the tunnel concurrently.
+		if cloudflare.IsConflict(m.createTunnelErr) {
+			id := m.tunnelID
+			if m.tunnelIDFunc != nil {
+				id = m.tunnelIDFunc(name)
+			}
+			if m.trackedTunnels == nil {
+				m.trackedTunnels = make(map[string]string)
+			}
+			m.trackedTunnels[name] = id
+		}
 		return "", m.createTunnelErr
 	}
 	id := m.tunnelID
@@ -479,6 +492,63 @@ func (m *mockCloudflareClient) ListDNSCNAMEsByTarget(_ context.Context, _, _ str
 	return m.listDNSCNAMEsByTarget, nil
 }
 
+// faultClient wraps a real client.Client and allows tests to inject errors
+// for specific operations by setting interceptor functions. Used with standalone
+// reconciler instances (not the shared one) to test error handling paths that
+// require transient API server failures.
+type faultClient struct {
+	ctrlclient.Client
+	getInterceptor         func(ctx context.Context, key ctrlclient.ObjectKey, obj ctrlclient.Object) error
+	listInterceptor        func(ctx context.Context, list ctrlclient.ObjectList, opts ...ctrlclient.ListOption) error
+	statusPatchInterceptor func(ctx context.Context, obj ctrlclient.Object, patch ctrlclient.Patch, opts ...ctrlclient.SubResourcePatchOption) error
+}
+
+func (f *faultClient) Get(ctx context.Context, key ctrlclient.ObjectKey, obj ctrlclient.Object, opts ...ctrlclient.GetOption) error {
+	if f.getInterceptor != nil {
+		if err := f.getInterceptor(ctx, key, obj); err != nil {
+			return err
+		}
+	}
+	return f.Client.Get(ctx, key, obj, opts...)
+}
+
+func (f *faultClient) List(ctx context.Context, list ctrlclient.ObjectList, opts ...ctrlclient.ListOption) error {
+	if f.listInterceptor != nil {
+		if err := f.listInterceptor(ctx, list, opts...); err != nil {
+			return err
+		}
+	}
+	return f.Client.List(ctx, list, opts...)
+}
+
+func (f *faultClient) Status() ctrlclient.SubResourceWriter {
+	return &faultStatusWriter{
+		SubResourceWriter: f.Client.Status(),
+		patchInterceptor:  f.statusPatchInterceptor,
+	}
+}
+
+type faultStatusWriter struct {
+	ctrlclient.SubResourceWriter
+	patchInterceptor func(ctx context.Context, obj ctrlclient.Object, patch ctrlclient.Patch, opts ...ctrlclient.SubResourcePatchOption) error
+}
+
+func (w *faultStatusWriter) Patch(ctx context.Context, obj ctrlclient.Object, patch ctrlclient.Patch, opts ...ctrlclient.SubResourcePatchOption) error {
+	if w.patchInterceptor != nil {
+		if err := w.patchInterceptor(ctx, obj, patch, opts...); err != nil {
+			return err
+		}
+	}
+	return w.SubResourceWriter.Patch(ctx, obj, patch, opts...)
+}
+
+// noopEventRecorder discards all events. Used for standalone reconciler
+// instances in fault injection tests where events are not being asserted.
+type noopEventRecorder struct{}
+
+func (noopEventRecorder) Eventf(_ runtime.Object, _ runtime.Object, _, _, _, _ string, _ ...any) {
+}
+
 func createTestNamespace(g Gomega) *corev1.Namespace {
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
@@ -532,9 +602,9 @@ func createTestGateway(g Gomega, name, namespace, gcName string) *gatewayv1.Gate
 			GatewayClassName: gatewayv1.ObjectName(gcName),
 			Listeners: []gatewayv1.Listener{
 				{
-					Name:     "http",
-					Protocol: gatewayv1.HTTPProtocolType,
-					Port:     80,
+					Name:     "https",
+					Protocol: gatewayv1.HTTPSProtocolType,
+					Port:     443,
 				},
 			},
 		},
