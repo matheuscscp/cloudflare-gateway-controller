@@ -20,9 +20,9 @@ import (
 
 // reconcileTunnelIngress builds and applies ingress rules for the tunnel.
 // Returns the denied refs map, change messages, and any error.
-// When sidecar is enabled, sidecarDeniedRefs provides the denied refs computed
-// by reconcileSidecarConfigMap.
-func (r *GatewayReconciler) reconcileTunnelIngress(ctx context.Context, tc cloudflare.Client, params *apiv1.CloudflareGatewayParameters, tunnel tunnelState, routes []*gatewayv1.HTTPRoute, sidecarDeniedRefs map[types.NamespacedName][]string) (map[types.NamespacedName][]string, []string, error) {
+// When sidecar is enabled, routeDeniedRefs provides the denied refs computed
+// by reconcileRouteConfigMap.
+func (r *GatewayReconciler) reconcileTunnelIngress(ctx context.Context, tc cloudflare.Client, params *apiv1.CloudflareGatewayParameters, tunnel tunnelState, routes []*gatewayv1.HTTPRoute, routeDeniedRefs map[types.NamespacedName][]string) (map[types.NamespacedName][]string, []string, error) {
 	l := log.FromContext(ctx)
 
 	var ingress []cloudflare.IngressRule
@@ -32,7 +32,7 @@ func (r *GatewayReconciler) reconcileTunnelIngress(ctx context.Context, tc cloud
 		// When sidecar is enabled, use a single catch-all rule that forwards
 		// all traffic to the sidecar proxy on localhost:8080.
 		ingress = []cloudflare.IngressRule{{Service: buildSidecarIngressCatchAll()}}
-		routesWithDeniedRefs = sidecarDeniedRefs
+		routesWithDeniedRefs = routeDeniedRefs
 	} else {
 		var err error
 		ingress, routesWithDeniedRefs, err = buildIngressRules(ctx, r.Client, routes)

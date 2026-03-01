@@ -249,8 +249,15 @@ func (r *GatewayReconciler) removeOwnerReferences(ctx context.Context, gw *gatew
 		l.V(1).Info("Removed owner reference from Secret", "secret", secretKey)
 	}
 
-	// Remove owner references from sidecar resources.
-	sidecarRemoved, err := r.removeOwnerReferencesFromSidecarResources(ctx, gw)
+	// Remove owner references from route ConfigMap.
+	routeCMRemoved, err := r.removeOwnerReferencesFromRouteConfigMap(ctx, gw)
+	removed = append(removed, routeCMRemoved...)
+	if err != nil {
+		return removed, err
+	}
+
+	// Remove owner references from sidecar RBAC resources.
+	sidecarRemoved, err := r.removeOwnerReferencesFromSidecarRBACResources(ctx, gw)
 	removed = append(removed, sidecarRemoved...)
 	if err != nil {
 		return removed, err
@@ -621,7 +628,7 @@ func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gatewa
 				"sidecar",
 				"--namespace", gw.Namespace,
 				"--configmap-name", apiv1.GatewayResourceName(gw),
-				"--configmap-key", sidecarConfigMapKey,
+				"--configmap-key", routeConfigMapKey,
 			).
 			WithResources(resolveResources(sidecarCC)).
 			WithLivenessProbe(accorev1.Probe().

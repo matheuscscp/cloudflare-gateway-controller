@@ -713,14 +713,14 @@ func resetMockErrors(t *testing.T) {
 	t.Cleanup(doReset)
 }
 
-// getSidecarConfig reads the sidecar ConfigMap for a Gateway and returns
-// the parsed sidecar config.
-func getSidecarConfig(g Gomega, gw *gatewayv1.Gateway) sidecar.Config {
+// getRouteConfig reads the route ConfigMap for a Gateway and returns
+// the parsed route config.
+func getRouteConfig(g Gomega, gw *gatewayv1.Gateway) sidecar.Config {
 	var cm corev1.ConfigMap
 	cmKey := ctrlclient.ObjectKey{Name: apiv1.GatewayResourceName(gw), Namespace: gw.Namespace}
 	g.Expect(testClient.Get(testCtx, cmKey, &cm)).To(Succeed())
 	data, ok := cm.Data["config.yaml"]
-	g.Expect(ok).To(BeTrue(), "config.yaml key not found in sidecar ConfigMap")
+	g.Expect(ok).To(BeTrue(), "config.yaml key not found in route ConfigMap")
 	var cfg sidecar.Config
 	g.Expect(yaml.Unmarshal([]byte(data), &cfg)).To(Succeed())
 	return cfg

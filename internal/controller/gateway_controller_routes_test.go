@@ -113,11 +113,12 @@ func TestGatewayReconciler_HTTPRouteAccepted(t *testing.T) {
 		expectCatchAllIngress(g)
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
-	// Verify sidecar ConfigMap has the correct routes.
+	// Verify route ConfigMap has the correct routes with Owner.
 	g.Eventually(func(g Gomega) {
-		cfg := getSidecarConfig(g, gw)
+		cfg := getRouteConfig(g, gw)
 		g.Expect(cfg.Routes).To(HaveLen(1))
 		g.Expect(cfg.Routes[0].Hostname).To(Equal("app.example.com"))
+		g.Expect(cfg.Routes[0].Owner).To(Equal(ns.Name + "/test-httproute"))
 		g.Expect(cfg.Routes[0].Backends).To(HaveLen(1))
 		g.Expect(cfg.Routes[0].Backends[0].Service).To(Equal("http://my-service." + ns.Name + ".svc.cluster.local:8080"))
 		g.Expect(cfg.Routes[0].Backends[0].Weight).To(Equal(int32(1)))
@@ -547,9 +548,9 @@ func TestGatewayReconciler_HTTPRouteDeletion(t *testing.T) {
 		return testClient.Get(testCtx, routeKey, &latest)
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Satisfy(apierrors.IsNotFound))
 
-	// Verify sidecar ConfigMap has empty routes after deletion.
+	// Verify route ConfigMap has empty routes after deletion.
 	g.Eventually(func(g Gomega) {
-		cfg := getSidecarConfig(g, gw)
+		cfg := getRouteConfig(g, gw)
 		g.Expect(cfg.Routes).To(BeEmpty())
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
@@ -812,9 +813,9 @@ func TestGatewayReconciler_StaleRouteParentRefRemoved(t *testing.T) {
 		g.Expect(result.Status.Listeners[0].AttachedRoutes).To(Equal(int32(0)))
 	}).WithTimeout(30 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
 
-	// Sidecar ConfigMap should have empty routes.
+	// Route ConfigMap should have empty routes.
 	g.Eventually(func(g Gomega) {
-		cfg := getSidecarConfig(g, gw)
+		cfg := getRouteConfig(g, gw)
 		g.Expect(cfg.Routes).To(BeEmpty())
 	}).WithTimeout(30 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
 }
@@ -905,9 +906,9 @@ func TestGatewayReconciler_HTTPRouteCrossNamespaceBackendDenied(t *testing.T) {
 		g.Expect(resolvedRefs.Message).To(ContainSubstring("cross-service"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
-	// Sidecar ConfigMap should have empty routes (denied backend excluded).
+	// Route ConfigMap should have empty routes (denied backend excluded).
 	g.Eventually(func(g Gomega) {
-		cfg := getSidecarConfig(g, gw)
+		cfg := getRouteConfig(g, gw)
 		g.Expect(cfg.Routes).To(BeEmpty())
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
@@ -1037,9 +1038,9 @@ func TestGatewayReconciler_HTTPRouteCrossNamespaceBackendGranted(t *testing.T) {
 		g.Expect(resolvedRefs.Status).To(Equal(metav1.ConditionTrue))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
-	// Sidecar ConfigMap should contain the cross-namespace service URL.
+	// Route ConfigMap should contain the cross-namespace service URL.
 	g.Eventually(func(g Gomega) {
-		cfg := getSidecarConfig(g, gw)
+		cfg := getRouteConfig(g, gw)
 		g.Expect(cfg.Routes).To(HaveLen(1))
 		g.Expect(cfg.Routes[0].Hostname).To(Equal("backend-granted.example.com"))
 		g.Expect(cfg.Routes[0].Backends).To(HaveLen(1))
@@ -1121,9 +1122,9 @@ func TestGatewayReconciler_HTTPRoutePathMatches(t *testing.T) {
 		}
 	})
 
-	// Verify sidecar ConfigMap has the path prefix route.
+	// Verify route ConfigMap has the path prefix route.
 	g.Eventually(func(g Gomega) {
-		cfg := getSidecarConfig(g, gw)
+		cfg := getRouteConfig(g, gw)
 		g.Expect(cfg.Routes).To(HaveLen(1))
 		g.Expect(cfg.Routes[0].Hostname).To(Equal("path.example.com"))
 		g.Expect(cfg.Routes[0].PathPrefix).To(Equal("/api/v1"))
@@ -1204,7 +1205,7 @@ func TestGatewayReconciler_HTTPRouteMultipleRulesAndHostnames(t *testing.T) {
 
 	// 2 rules x 2 hostnames = 4 sidecar routes.
 	g.Eventually(func(g Gomega) {
-		cfg := getSidecarConfig(g, gw)
+		cfg := getRouteConfig(g, gw)
 		g.Expect(cfg.Routes).To(HaveLen(4))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
@@ -1473,9 +1474,9 @@ func TestGatewayReconciler_HTTPRouteMultipleBackendRefs(t *testing.T) {
 		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
-	// Verify sidecar ConfigMap contains both backends with correct weights.
+	// Verify route ConfigMap contains both backends with correct weights.
 	g.Eventually(func(g Gomega) {
-		cfg := getSidecarConfig(g, gw)
+		cfg := getRouteConfig(g, gw)
 		g.Expect(cfg.Routes).To(HaveLen(1))
 		g.Expect(cfg.Routes[0].Hostname).To(Equal("backends.example.com"))
 		g.Expect(cfg.Routes[0].Backends).To(HaveLen(2))
@@ -1763,9 +1764,9 @@ func TestGatewayReconciler_HTTPRouteSessionPersistence(t *testing.T) {
 		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
-	// Verify sidecar ConfigMap has correct session persistence config.
+	// Verify route ConfigMap has correct session persistence config.
 	g.Eventually(func(g Gomega) {
-		cfg := getSidecarConfig(g, gw)
+		cfg := getRouteConfig(g, gw)
 		g.Expect(cfg.Routes).To(HaveLen(1))
 		g.Expect(cfg.Routes[0].SessionPersistence).NotTo(BeNil())
 		g.Expect(cfg.Routes[0].SessionPersistence.Type).To(Equal("Cookie"))
@@ -1958,9 +1959,9 @@ func TestGatewayReconciler_HTTPRouteSessionPersistenceIdleTimeout(t *testing.T) 
 		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
-	// Verify sidecar ConfigMap has correct idleTimeout.
+	// Verify route ConfigMap has correct idleTimeout.
 	g.Eventually(func(g Gomega) {
-		cfg := getSidecarConfig(g, gw)
+		cfg := getRouteConfig(g, gw)
 		g.Expect(cfg.Routes).To(HaveLen(1))
 		g.Expect(cfg.Routes[0].SessionPersistence).NotTo(BeNil())
 		g.Expect(cfg.Routes[0].SessionPersistence.Type).To(Equal("Cookie"))
@@ -2156,5 +2157,143 @@ func TestGatewayReconciler_HTTPRouteUnsupportedFeaturesExtended(t *testing.T) {
 		g.Expect(accepted.Message).To(ContainSubstring("queryParams is not supported"))
 		g.Expect(accepted.Message).To(ContainSubstring("path.type \"Exact\" is not supported"))
 		g.Expect(accepted.Message).To(ContainSubstring("backendRefs[0].filters is not supported"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func TestGatewayReconciler_HTTPRouteConflictingHostnamePath(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-conflict", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	gw := createTestGateway(g, "test-gw-conflict", ns.Name, gc.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+	waitForGatewayProgrammed(g, gw)
+
+	// Create first route — this one should be accepted.
+	routeA := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "route-a",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{Name: gatewayv1.ObjectName(gw.Name)},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"conflict.example.com"},
+			Rules: []gatewayv1.HTTPRouteRule{
+				{
+					BackendRefs: []gatewayv1.HTTPBackendRef{
+						{
+							BackendRef: gatewayv1.BackendRef{
+								BackendObjectReference: gatewayv1.BackendObjectReference{
+									Name: "svc-a",
+									Port: new(gatewayv1.PortNumber(80)),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, routeA)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.HTTPRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(routeA), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Wait for route-a to be accepted.
+	routeAKey := client.ObjectKeyFromObject(routeA)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.HTTPRoute
+		g.Expect(testClient.Get(testCtx, routeAKey, &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(HaveLen(1))
+		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Create second route with the same hostname — this one should be rejected.
+	routeB := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "route-b",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{Name: gatewayv1.ObjectName(gw.Name)},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"conflict.example.com"},
+			Rules: []gatewayv1.HTTPRouteRule{
+				{
+					BackendRefs: []gatewayv1.HTTPBackendRef{
+						{
+							BackendRef: gatewayv1.BackendRef{
+								BackendObjectReference: gatewayv1.BackendObjectReference{
+									Name: "svc-b",
+									Port: new(gatewayv1.PortNumber(80)),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, routeB)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.HTTPRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(routeB), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Verify route-b is rejected due to conflict.
+	routeBKey := client.ObjectKeyFromObject(routeB)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.HTTPRoute
+		g.Expect(testClient.Get(testCtx, routeBKey, &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(HaveLen(1))
+		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.RouteReasonUnsupportedValue)))
+		g.Expect(accepted.Message).To(ContainSubstring("conflict.example.com"))
+		g.Expect(accepted.Message).To(ContainSubstring("Conflicting hostname/path"))
+		g.Expect(accepted.Message).To(ContainSubstring("claimed by"))
+		g.Expect(accepted.Message).To(ContainSubstring("route-a"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Verify route-a is still accepted.
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.HTTPRoute
+		g.Expect(testClient.Get(testCtx, routeAKey, &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(HaveLen(1))
+		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }

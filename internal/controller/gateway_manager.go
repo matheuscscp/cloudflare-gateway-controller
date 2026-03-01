@@ -41,7 +41,7 @@ func (r *GatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				predicate.GenerationChangedPredicate{},
 				predicate.AnnotationChangedPredicate{})))).
 
-		// Owned resources: cloudflared Deployment and tunnel token Secret.
+		// Owned resources: cloudflared Deployment, tunnel token Secret, route ConfigMap.
 		Owns(&appsv1.Deployment{},
 			builder.WithPredicates(predicates.Debug(apiv1.KindDeployment,
 				predicate.ResourceVersionChangedPredicate{}))).
@@ -49,12 +49,12 @@ func (r *GatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestForOwner(mgr.GetScheme(), mgr.GetRESTMapper(), &gatewayv1.Gateway{}, handler.OnlyControllerOwner()),
 			builder.WithPredicates(predicates.Debug(apiv1.KindSecret,
 				predicate.ResourceVersionChangedPredicate{}))).
-
-		// Owned sidecar resources: ConfigMap, ServiceAccount, Role, RoleBinding.
 		WatchesMetadata(&corev1.ConfigMap{},
 			handler.EnqueueRequestForOwner(mgr.GetScheme(), mgr.GetRESTMapper(), &gatewayv1.Gateway{}, handler.OnlyControllerOwner()),
 			builder.WithPredicates(predicates.Debug(apiv1.KindConfigMap,
 				predicate.ResourceVersionChangedPredicate{}))).
+
+		// Owned sidecar RBAC resources: ServiceAccount, Role, RoleBinding.
 		Owns(&corev1.ServiceAccount{},
 			builder.WithPredicates(predicates.Debug(apiv1.KindServiceAccount,
 				predicate.ResourceVersionChangedPredicate{}))).

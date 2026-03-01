@@ -247,12 +247,12 @@ func (r *GatewayReconciler) reconcileCGS(
 			APIVersion: apiv1.APIVersionApps, Kind: apiv1.KindDeployment, Name: apiv1.GatewayReplicaName(gw, r.Name),
 		})
 	}
-	desired.Inventory = append(desired.Inventory, apiv1.ResourceRef{
-		APIVersion: apiv1.APIVersionCore, Kind: apiv1.KindSecret, Name: resourceName,
-	})
+	desired.Inventory = append(desired.Inventory,
+		apiv1.ResourceRef{APIVersion: apiv1.APIVersionCore, Kind: apiv1.KindSecret, Name: resourceName},
+		apiv1.ResourceRef{APIVersion: apiv1.APIVersionCore, Kind: apiv1.KindConfigMap, Name: resourceName},
+	)
 	if r.sidecarEnabled(params) {
 		desired.Inventory = append(desired.Inventory,
-			apiv1.ResourceRef{APIVersion: apiv1.APIVersionCore, Kind: apiv1.KindConfigMap, Name: resourceName},
 			apiv1.ResourceRef{APIVersion: apiv1.APIVersionCore, Kind: apiv1.KindServiceAccount, Name: resourceName},
 			apiv1.ResourceRef{APIVersion: apiv1.APIVersionRBAC, Kind: apiv1.KindRole, Name: resourceName},
 			apiv1.ResourceRef{APIVersion: apiv1.APIVersionRBAC, Kind: apiv1.KindRoleBinding, Name: resourceName},
