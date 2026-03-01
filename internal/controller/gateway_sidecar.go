@@ -12,7 +12,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -180,12 +179,22 @@ func (r *GatewayReconciler) reconcileSidecarRBAC(ctx context.Context, gw *gatewa
 	}
 
 	// ServiceAccount
-	sa := &unstructured.Unstructured{}
-	sa.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind(apiv1.KindServiceAccount))
-	sa.SetName(saName)
-	sa.SetNamespace(gw.Namespace)
-	sa.SetLabels(labels)
-	sa.SetOwnerReferences([]metav1.OwnerReference{ownerRef})
+	saTyped := &corev1.ServiceAccount{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: corev1.SchemeGroupVersion.String(),
+			Kind:       apiv1.KindServiceAccount,
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            saName,
+			Namespace:       gw.Namespace,
+			Labels:          labels,
+			OwnerReferences: []metav1.OwnerReference{ownerRef},
+		},
+	}
+	sa, err := toUnstructured(saTyped)
+	if err != nil {
+		return nil, fmt.Errorf("converting sidecar ServiceAccount to unstructured: %w", err)
+	}
 
 	ssaEntry, err := r.ResourceManager.Apply(ctx, sa, ssaApplyOptions)
 	if err != nil {
@@ -197,21 +206,27 @@ func (r *GatewayReconciler) reconcileSidecarRBAC(ctx context.Context, gw *gatewa
 	l.V(1).Info("Reconciled sidecar ServiceAccount", "serviceaccount", saName, "action", ssaEntry.Action)
 
 	// Role
-	role := &unstructured.Unstructured{}
-	role.SetGroupVersionKind(rbacv1.SchemeGroupVersion.WithKind(apiv1.KindRole))
-	role.SetName(saName)
-	role.SetNamespace(gw.Namespace)
-	role.SetLabels(labels)
-	role.SetOwnerReferences([]metav1.OwnerReference{ownerRef})
-	if err := unstructured.SetNestedSlice(role.Object, []any{
-		map[string]any{
-			"apiGroups":     []any{""},
-			"resources":     []any{"configmaps"},
-			"resourceNames": []any{cmName},
-			"verbs":         []any{"get", "list", "watch"},
+	roleTyped := &rbacv1.Role{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: rbacv1.SchemeGroupVersion.String(),
+			Kind:       apiv1.KindRole,
 		},
-	}, "rules"); err != nil {
-		return nil, fmt.Errorf("setting role rules: %w", err)
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            saName,
+			Namespace:       gw.Namespace,
+			Labels:          labels,
+			OwnerReferences: []metav1.OwnerReference{ownerRef},
+		},
+		Rules: []rbacv1.PolicyRule{{
+			APIGroups:     []string{""},
+			Resources:     []string{"configmaps"},
+			ResourceNames: []string{cmName},
+			Verbs:         []string{"get", "list", "watch"},
+		}},
+	}
+	role, err := toUnstructured(roleTyped)
+	if err != nil {
+		return nil, fmt.Errorf("converting sidecar Role to unstructured: %w", err)
 	}
 
 	ssaEntry, err = r.ResourceManager.Apply(ctx, role, ssaApplyOptions)
@@ -224,27 +239,31 @@ func (r *GatewayReconciler) reconcileSidecarRBAC(ctx context.Context, gw *gatewa
 	l.V(1).Info("Reconciled sidecar Role", "role", saName, "action", ssaEntry.Action)
 
 	// RoleBinding
-	rb := &unstructured.Unstructured{}
-	rb.SetGroupVersionKind(rbacv1.SchemeGroupVersion.WithKind(apiv1.KindRoleBinding))
-	rb.SetName(saName)
-	rb.SetNamespace(gw.Namespace)
-	rb.SetLabels(labels)
-	rb.SetOwnerReferences([]metav1.OwnerReference{ownerRef})
-	if err := unstructured.SetNestedField(rb.Object, map[string]any{
-		"apiGroup": rbacv1.SchemeGroupVersion.Group,
-		"kind":     apiv1.KindRole,
-		"name":     saName,
-	}, "roleRef"); err != nil {
-		return nil, fmt.Errorf("setting rolebinding roleRef: %w", err)
-	}
-	if err := unstructured.SetNestedSlice(rb.Object, []any{
-		map[string]any{
-			"kind":      apiv1.KindServiceAccount,
-			"name":      saName,
-			"namespace": gw.Namespace,
+	rbTyped := &rbacv1.RoleBinding{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: rbacv1.SchemeGroupVersion.String(),
+			Kind:       apiv1.KindRoleBinding,
 		},
-	}, "subjects"); err != nil {
-		return nil, fmt.Errorf("setting rolebinding subjects: %w", err)
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            saName,
+			Namespace:       gw.Namespace,
+			Labels:          labels,
+			OwnerReferences: []metav1.OwnerReference{ownerRef},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.SchemeGroupVersion.Group,
+			Kind:     apiv1.KindRole,
+			Name:     saName,
+		},
+		Subjects: []rbacv1.Subject{{
+			Kind:      apiv1.KindServiceAccount,
+			Name:      saName,
+			Namespace: gw.Namespace,
+		}},
+	}
+	rb, err := toUnstructured(rbTyped)
+	if err != nil {
+		return nil, fmt.Errorf("converting sidecar RoleBinding to unstructured: %w", err)
 	}
 
 	ssaEntry, err = r.ResourceManager.Apply(ctx, rb, ssaApplyOptions)

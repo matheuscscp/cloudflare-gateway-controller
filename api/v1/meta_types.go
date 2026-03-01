@@ -27,9 +27,10 @@ const (
 
 // APIVersion constants.
 const (
-	APIVersionCore = "v1"
-	APIVersionApps = "apps/v1"
-	APIVersionRBAC = "rbac.authorization.k8s.io/v1"
+	APIVersionCore        = "v1"
+	APIVersionApps        = "apps/v1"
+	APIVersionRBAC        = "rbac.authorization.k8s.io/v1"
+	APIVersionAutoscaling = "autoscaling.k8s.io/v1"
 )
 
 // Kind constants.
@@ -49,6 +50,7 @@ const (
 	KindServiceAccount              = "ServiceAccount"
 	KindRole                        = "Role"
 	KindRoleBinding                 = "RoleBinding"
+	KindVerticalPodAutoscaler       = "VerticalPodAutoscaler"
 )
 
 // GroupCore is the Kubernetes core API group name used in Gateway API

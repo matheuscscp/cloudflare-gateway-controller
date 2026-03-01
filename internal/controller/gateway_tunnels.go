@@ -256,6 +256,13 @@ func (r *GatewayReconciler) removeOwnerReferences(ctx context.Context, gw *gatew
 		return removed, err
 	}
 
+	// Remove owner references from VPAs.
+	vpaRemoved, err := r.removeOwnerReferencesFromVPAs(ctx, gw)
+	removed = append(removed, vpaRemoved...)
+	if err != nil {
+		return removed, err
+	}
+
 	return removed, nil
 }
 
@@ -569,6 +576,11 @@ func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gatewa
 	deployLabels := maps.Clone(selectorLabels)
 	maps.Copy(deployLabels, infraLabels)
 
+	var cloudflaredCC *apiv1.ContainerConfig
+	if params != nil && params.Spec.Tunnel != nil && params.Spec.Tunnel.Cloudflared != nil {
+		cloudflaredCC = &params.Spec.Tunnel.Cloudflared.ContainerConfig
+	}
+
 	cloudflaredContainer := accorev1.Container().
 		WithName("cloudflared").
 		WithImage(r.CloudflaredImage).
@@ -582,16 +594,7 @@ func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gatewa
 				),
 			),
 		).
-		WithResources(accorev1.ResourceRequirements().
-			WithRequests(corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("50m"),
-				corev1.ResourceMemory: resource.MustParse("64Mi"),
-			}).
-			WithLimits(corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("500m"),
-				corev1.ResourceMemory: resource.MustParse("256Mi"),
-			}),
-		).
+		WithResources(resolveResources(cloudflaredCC)).
 		WithLivenessProbe(accorev1.Probe().
 			WithHTTPGet(accorev1.HTTPGetAction().
 				WithPath("/ready").
@@ -606,6 +609,11 @@ func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gatewa
 	if r.sidecarEnabled(params) {
 		podSpec = podSpec.WithServiceAccountName(apiv1.GatewayResourceName(gw))
 
+		var sidecarCC *apiv1.ContainerConfig
+		if params != nil && params.Spec.Tunnel != nil && params.Spec.Tunnel.Sidecar != nil {
+			sidecarCC = &params.Spec.Tunnel.Sidecar.ContainerConfig
+		}
+
 		sidecarContainer := accorev1.Container().
 			WithName("sidecar").
 			WithImage(r.SidecarImage).
@@ -615,16 +623,7 @@ func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gatewa
 				"--configmap-name", apiv1.GatewayResourceName(gw),
 				"--configmap-key", sidecarConfigMapKey,
 			).
-			WithResources(accorev1.ResourceRequirements().
-				WithRequests(corev1.ResourceList{
-					corev1.ResourceCPU:    resource.MustParse("50m"),
-					corev1.ResourceMemory: resource.MustParse("64Mi"),
-				}).
-				WithLimits(corev1.ResourceList{
-					corev1.ResourceCPU:    resource.MustParse("500m"),
-					corev1.ResourceMemory: resource.MustParse("256Mi"),
-				}),
-			).
+			WithResources(resolveResources(sidecarCC)).
 			WithLivenessProbe(accorev1.Probe().
 				WithHTTPGet(accorev1.HTTPGetAction().
 					WithPath("/healthz").
@@ -652,6 +651,14 @@ func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gatewa
 			WithController(true),
 		).
 		WithSpec(acappsv1.DeploymentSpec().
+			WithReplicas(1).
+			WithStrategy(acappsv1.DeploymentStrategy().
+				WithType(appsv1.RollingUpdateDeploymentStrategyType).
+				WithRollingUpdate(acappsv1.RollingUpdateDeployment().
+					WithMaxSurge(intstr.FromInt32(1)).
+					WithMaxUnavailable(intstr.FromInt32(0)),
+				),
+			).
 			WithSelector(acmetav1.LabelSelector().
 				WithMatchLabels(selectorLabels),
 			).
@@ -665,4 +672,28 @@ func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gatewa
 		)
 
 	return deploy
+}
+
+// resolveResources returns the resource requirements apply configuration
+// for a container. When the ContainerConfig provides explicit resources,
+// those are used (via JSON round-trip). Otherwise hardcoded defaults are returned.
+func resolveResources(cc *apiv1.ContainerConfig) *accorev1.ResourceRequirementsApplyConfiguration {
+	if cc != nil && cc.Resources != nil {
+		data, err := json.Marshal(cc.Resources)
+		if err == nil {
+			var ac accorev1.ResourceRequirementsApplyConfiguration
+			if err := json.Unmarshal(data, &ac); err == nil {
+				return &ac
+			}
+		}
+	}
+	return accorev1.ResourceRequirements().
+		WithRequests(corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("50m"),
+			corev1.ResourceMemory: resource.MustParse("64Mi"),
+		}).
+		WithLimits(corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("500m"),
+			corev1.ResourceMemory: resource.MustParse("256Mi"),
+		})
 }

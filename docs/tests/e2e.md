@@ -457,3 +457,37 @@ tunnel, Secret, and sidecar resources.
 4. Verify single shared Secret `gateway-replicas-gw`.
 5. Delete `Gateway`; verify deleted.
 6. Clean up `CloudflareGatewayParameters`.
+
+## test_vpa_autoscaling
+
+Vertical Pod Autoscaler (VPA) lifecycle: creation with per-container autoscaling
+policies and cleanup when autoscaling is disabled. Installs the VPA CRD from
+upstream before testing.
+
+**Resources created:**
+- VPA CRD (cluster-scoped, installed from upstream)
+- `CloudflareGatewayParameters` with autoscaling enabled for cloudflared
+  (minAllowed, maxAllowed, controlledResources, controlledValues) and sidecar
+  (controlledValues)
+- `Gateway` referencing the parameters
+
+**Cloudflare resources:** 1 tunnel.
+
+**Steps:**
+
+1. Install VPA CRD from upstream; verify CRD is available.
+2. Create `CloudflareGatewayParameters` with autoscaling enabled for both
+   cloudflared and sidecar containers.
+3. Create `Gateway`; wait for Programmed.
+4. Verify VPA `gateway-vpa-gw-primary` exists.
+5. Verify VPA `updateMode` is `InPlaceOrRecreate`.
+6. Verify VPA `targetRef` points to the Deployment.
+7. Verify container policies: wildcard `*` set to `Off`, `cloudflared` set to
+   `Auto`, `sidecar` set to `Auto`.
+8. Verify cloudflared `minAllowed`/`maxAllowed` values.
+9. Verify cloudflared `controlledValues` is `RequestsAndLimits`.
+10. Verify sidecar `controlledValues` is `RequestsOnly`.
+11. Disable autoscaling by updating CGP (remove tunnel config).
+12. Verify VPA is deleted (cleanup).
+13. Delete `Gateway`; verify deleted.
+14. Clean up `CloudflareGatewayParameters`.

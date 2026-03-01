@@ -24,6 +24,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -72,6 +73,7 @@ func newTestScheme() *runtime.Scheme {
 	utilruntime.Must(apiextensionsv1.AddToScheme(s))
 	utilruntime.Must(gatewayv1.Install(s))
 	utilruntime.Must(gatewayv1beta1.Install(s))
+	utilruntime.Must(vpav1.AddToScheme(s))
 	utilruntime.Must(apiv1.Install(s))
 	return s
 }

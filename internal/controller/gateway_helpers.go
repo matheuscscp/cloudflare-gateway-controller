@@ -272,6 +272,13 @@ func (r *GatewayReconciler) reconcileCGS(
 			apiv1.ResourceRef{APIVersion: apiv1.APIVersionRBAC, Kind: apiv1.KindRoleBinding, Name: resourceName},
 		)
 	}
+	if autoscalingEnabled(params) {
+		for _, r := range replicas {
+			desired.Inventory = append(desired.Inventory, apiv1.ResourceRef{
+				APIVersion: apiv1.APIVersionAutoscaling, Kind: apiv1.KindVerticalPodAutoscaler, Name: apiv1.GatewayReplicaName(gw, r.Name),
+			})
+		}
+	}
 
 	if cgs == nil || !cgs.DeletionTimestamp.IsZero() {
 		if cgs != nil && controllerutil.ContainsFinalizer(cgs, apiv1.Finalizer) {
