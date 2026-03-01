@@ -167,6 +167,6 @@ When the sidecar is disabled, the cloudflared Deployment has a single container,
 no ConfigMap/ServiceAccount/Role/RoleBinding resources are created, and tunnel
 ingress rules point directly to backend Services instead of the sidecar proxy.
 Because cloudflared uses persistent connections, kube-proxy cannot effectively
-distribute traffic across pods. Traffic splitting (weighted `backendRefs`) is
-also not available, and HTTPRoutes with multiple `backendRefs` in a single rule
-are rejected.
+distribute traffic across pods. Traffic splitting (weighted `backendRefs`) and
+session persistence are also not available, and HTTPRoutes with multiple
+`backendRefs` in a single rule or `sessionPersistence` are rejected.

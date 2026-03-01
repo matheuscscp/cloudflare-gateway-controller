@@ -320,6 +320,8 @@ load generator.
 - All 1000 requests return 2xx (zero 5xx).
 - Every pod receives at least 1 request.
 - Coefficient of variation (CV = stddev / mean) of per-pod counts ≤ 0.5.
+- Every response's `host` field matches the public hostname (verifies correct
+  Host header forwarding through cloudflared and the sidecar).
 
 **Steps:**
 
@@ -328,8 +330,9 @@ load generator.
 3. Create `Gateway` (bare Secret); wait for Programmed.
 4. Create `HTTPRoute`.
 5. Wait for HTTPS endpoint reachable.
-6. Run `cfgwctl test load` with 1000 requests, concurrency 10, and pod
-   distribution check (`--namespace`, `--label-selector`, `--max-cv 0.5`).
+6. Run `cfgwctl test load` with 1000 requests, concurrency 10, pod
+   distribution check (`--namespace`, `--label-selector`, `--max-cv 0.5`),
+   and host header verification (`--hostname`).
 7. Delete `HTTPRoute`, `Gateway` (wait for deletion), `Deployment`, `Service`.
 
 ## test_sidecar_disabled
@@ -353,6 +356,7 @@ load balancing across pods. Multiple backendRefs per rule are rejected.
 **Pass criteria:**
 - Sidecar condition is `status=False, reason=Disabled`.
 - 10 requests return 2xx (zero 5xx).
+- Every response's `host` field matches the public hostname.
 
 **Steps:**
 
@@ -362,8 +366,8 @@ load balancing across pods. Multiple backendRefs per rule are rejected.
 4. Verify Sidecar condition is `False/Disabled`.
 5. Create `HTTPRoute`.
 6. Wait for HTTPS endpoint reachable.
-7. Run `cfgwctl test load` with 10 requests, concurrency 1 (no pod distribution
-   check — just verify traffic flows).
+7. Run `cfgwctl test load` with 10 requests, concurrency 1, and host header
+   verification (`--hostname`).
 8. Delete `HTTPRoute`, `Gateway` (wait for deletion), CGP, `Deployment`, `Service`.
 
 ## test_traffic_splitting
@@ -397,4 +401,37 @@ their weights (80/20). Uses `cfgwctl test serve` as the backend and
 6. Run `cfgwctl test load` with 200 requests, concurrency 5, and weighted
    backend distribution check (`--backend app=ts-svc-a:80 --backend app=ts-svc-b:20
    --tolerance 0.15`).
+7. Delete `HTTPRoute`, `Gateway` (wait for deletion), Deployments, Services.
+
+## test_session_persistence
+
+Sends real HTTP traffic through the Cloudflare tunnel and verifies that the
+sidecar proxy correctly implements cookie-based session persistence. With two
+equally-weighted backends, all requests after the initial one (which sets the
+cookie) must go to the same backend pod. Also verifies that the public hostname
+is correctly forwarded through cloudflared and the sidecar to the backend.
+
+**Resources created:**
+- 1-replica `Deployment` `sp-svc-a` running `cfgwctl test serve` (selector `app=sp-svc-a`)
+- 1-replica `Deployment` `sp-svc-b` running `cfgwctl test serve` (selector `app=sp-svc-b`)
+- `Service` `sp-svc-a` and `sp-svc-b` (port 80 → targetPort 8080)
+- `Gateway` with bare Secret (no CGP — sidecar enabled by default)
+- `HTTPRoute` with one rule, 2 backendRefs (weight 50/50) and `sessionPersistence: { type: Cookie }`
+
+**Cloudflare resources:** 1 tunnel, 1 DNS CNAME record.
+
+**Pass criteria:**
+- Initial request returns 2xx and sets a `cgw-session` cookie.
+- All 50 follow-up requests (with cookie) return 2xx and the same `pod` value.
+- The `host` field in every response matches the public hostname.
+
+**Steps:**
+
+1. Deploy 2 test servers (1 replica each) and 2 Services.
+2. Wait for rollouts.
+3. Create `Gateway` (bare Secret); wait for Programmed.
+4. Create `HTTPRoute` with session persistence and weighted backendRefs (50/50).
+5. Wait for HTTPS endpoint reachable.
+6. Run `cfgwctl test session` with 50 requests, verifying cookie affinity and
+   host header forwarding (`--hostname`).
 7. Delete `HTTPRoute`, `Gateway` (wait for deletion), Deployments, Services.

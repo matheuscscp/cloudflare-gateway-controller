@@ -104,6 +104,7 @@ jobs:
           - test_load_balancing
           - test_sidecar_disabled
           - test_traffic_splitting
+          - test_session_persistence
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -137,7 +138,9 @@ jobs:
           TEST_ZONE_NAME_3: z3.cloudflare-gateway-controller.dev
           TEST_TRAFFIC_ZONE_NAME: cloudflare-gateway-controller.dev
           TEST: ${{ matrix.test }}
-        run: KIND_CLUSTER_NAME="${TEST//_/-}" hack/e2e-test.sh 2>&1 | stdbuf -oL tee test-e2e.log
+        run: |
+          set -o pipefail
+          KIND_CLUSTER_NAME="${TEST//_/-}" hack/e2e-test.sh 2>&1 | stdbuf -oL tee test-e2e.log
 
       - name: Print controller logs
         if: always()

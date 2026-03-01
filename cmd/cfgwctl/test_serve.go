@@ -41,11 +41,12 @@ func newTestServeCmd() *cobra.Command {
 				})
 			})
 
-			mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+			mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 				counter.Add(1)
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(map[string]any{
-					"pod": podName,
+					"pod":  podName,
+					"host": r.Host,
 				})
 			})
 

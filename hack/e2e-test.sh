@@ -41,7 +41,15 @@ source "$SCRIPT_DIR/e2e-lib.sh"
 validate_prerequisites
 setup_cluster
 register_cleanup
-install_controller
+
+# Tests that use experimental Gateway API fields (e.g. sessionPersistence)
+# need the experimental CRD channel.
+helm_extra_args=()
+if [ -z "${TEST:-}" ] || [ "${TEST:-}" = "test_session_persistence" ]; then
+    helm_extra_args+=(--set api.channel=experimental)
+fi
+install_controller "${helm_extra_args[@]}"
+
 start_controller_log_stream
 create_test_namespace
 ensure_gatewayclass
@@ -133,13 +141,10 @@ spec:
       port: 80
 EOF
 
-    log "Waiting for tunnel config to include '$test_hostname'..."
-    check_tunnel_has_hostname() {
-        cfgwctl tunnel get-config --tunnel-id "$tunnel_id" \
-            | jq -e ".[] | select(.hostname == \"$test_hostname\")" >/dev/null
-    }
-    retry 60 3 check_tunnel_has_hostname || fail "tunnel config does not contain hostname"
-    pass "Tunnel config has hostname"
+    log "Waiting for sidecar config to include '$test_hostname'..."
+    retry 60 3 bash -c "sidecar_config_has_hostname 'test-gateway' '$test_hostname'" \
+        || fail "sidecar config does not contain hostname"
+    pass "Sidecar config has hostname"
 
     log "Finding zone ID for '$TEST_ZONE_NAME'..."
     local zone_id tunnel_target
@@ -159,13 +164,10 @@ EOF
     log "Deleting HTTPRoute 'test-route'..."
     kubectl delete httproute test-route -n "$TEST_NS"
 
-    log "Waiting for tunnel config to remove '$test_hostname'..."
-    check_tunnel_no_hostname() {
-        ! cfgwctl tunnel get-config --tunnel-id "$tunnel_id" \
-            | jq -e ".[] | select(.hostname == \"$test_hostname\")" >/dev/null 2>&1
-    }
-    retry 60 3 check_tunnel_no_hostname || fail "tunnel config still contains hostname"
-    pass "Tunnel config updated after route deletion"
+    log "Waiting for sidecar config to remove '$test_hostname'..."
+    retry 60 3 bash -c "! sidecar_config_has_hostname 'test-gateway' '$test_hostname'" \
+        || fail "sidecar config still contains hostname"
+    pass "Sidecar config updated after route deletion"
 
     log "Verifying DNS CNAME removed for '$test_hostname'..."
     check_dns_cname_removed() {
@@ -297,12 +299,12 @@ spec:
       port: 80
 EOF
 
-    log "Verifying tunnel config has both hostnames..."
-    retry 60 3 bash -c "cfgwctl tunnel get-config --tunnel-id '$mr_tunnel_id' | jq -e '.[] | select(.hostname == \"$hostname_a\")' >/dev/null" \
-        || fail "tunnel config missing hostname A"
-    retry 60 3 bash -c "cfgwctl tunnel get-config --tunnel-id '$mr_tunnel_id' | jq -e '.[] | select(.hostname == \"$hostname_b\")' >/dev/null" \
-        || fail "tunnel config missing hostname B"
-    pass "Tunnel config has both hostnames"
+    log "Verifying sidecar config has both hostnames..."
+    retry 60 3 bash -c "sidecar_config_has_hostname 'multi-route-gw' '$hostname_a'" \
+        || fail "sidecar config missing hostname A"
+    retry 60 3 bash -c "sidecar_config_has_hostname 'multi-route-gw' '$hostname_b'" \
+        || fail "sidecar config missing hostname B"
+    pass "Sidecar config has both hostnames"
 
     local mr_zone_id
     mr_zone_id=$(cfgwctl dns find-zone --hostname "$hostname_a" | jq -r '.zoneId')
@@ -318,11 +320,11 @@ EOF
     kubectl delete httproute route-a -n "$TEST_NS"
 
     log "Verifying hostname A removed but hostname B still present..."
-    retry 60 3 bash -c "! cfgwctl tunnel get-config --tunnel-id '$mr_tunnel_id' | jq -e '.[] | select(.hostname == \"$hostname_a\")' >/dev/null 2>&1" \
-        || fail "tunnel config still has hostname A"
-    cfgwctl tunnel get-config --tunnel-id "$mr_tunnel_id" | jq -e ".[] | select(.hostname == \"$hostname_b\")" >/dev/null \
-        || fail "tunnel config lost hostname B"
-    pass "Tunnel config correctly updated after partial route deletion"
+    retry 60 3 bash -c "! sidecar_config_has_hostname 'multi-route-gw' '$hostname_a'" \
+        || fail "sidecar config still has hostname A"
+    sidecar_config_has_hostname "multi-route-gw" "$hostname_b" \
+        || fail "sidecar config lost hostname B"
+    pass "Sidecar config correctly updated after partial route deletion"
 
     log "Verifying DNS CNAME A removed but B still exists..."
     retry 60 3 bash -c "! cfgwctl dns list-cnames --zone-id '$mr_zone_id' --target '$mr_tunnel_target' | jq -e '.hostnames[] | select(. == \"$hostname_a\")' >/dev/null 2>&1" \
@@ -422,12 +424,12 @@ spec:
       port: 80
 EOF
 
-    log "Verifying tunnel config has path-based entries..."
-    retry 60 3 bash -c "cfgwctl tunnel get-config --tunnel-id '$path_tunnel_id' | jq -e '.[] | select(.hostname == \"$path_hostname\" and .path == \"/api\")' >/dev/null" \
-        || fail "tunnel config missing /api path"
-    retry 60 3 bash -c "cfgwctl tunnel get-config --tunnel-id '$path_tunnel_id' | jq -e '.[] | select(.hostname == \"$path_hostname\" and .path == \"/web\")' >/dev/null" \
-        || fail "tunnel config missing /web path"
-    pass "Tunnel config has path-based entries"
+    log "Verifying sidecar config has path-based entries..."
+    retry 60 3 bash -c "sidecar_config_has_hostname 'path-gw' '$path_hostname' '/api'" \
+        || fail "sidecar config missing /api path"
+    retry 60 3 bash -c "sidecar_config_has_hostname 'path-gw' '$path_hostname' '/web'" \
+        || fail "sidecar config missing /web path"
+    pass "Sidecar config has path-based entries"
 
     log "Cleaning up path matching test..."
     kubectl delete httproute path-route -n "$TEST_NS"
@@ -610,10 +612,10 @@ spec:
       port: 80
 EOF
 
-    log "Verifying tunnel config has hostname..."
-    retry 60 3 bash -c "cfgwctl tunnel get-config --tunnel-id '$nd_tunnel_id' | jq -e '.[] | select(.hostname == \"$no_dns_hostname\")' >/dev/null" \
-        || fail "no-dns tunnel config missing hostname"
-    pass "Tunnel config has hostname"
+    log "Verifying sidecar config has hostname..."
+    retry 60 3 bash -c "sidecar_config_has_hostname 'no-dns-gw' '$no_dns_hostname'" \
+        || fail "no-dns sidecar config missing hostname"
+    pass "Sidecar config has hostname"
 
     log "Verifying NO DNS CNAME was created..."
     local nd_zone_id nd_tunnel_target
@@ -682,7 +684,7 @@ EOF
 
     log "Verifying cloudflared Deployment has patched label..."
     local patch_label
-    patch_label=$(kubectl get deployment cloudflared-patched-gw -n "$TEST_NS" \
+    patch_label=$(kubectl get deployment gateway-patched-gw -n "$TEST_NS" \
         -o jsonpath='{.spec.template.metadata.labels.e2e-patch}')
     [ "$patch_label" = "applied" ] || fail "Deployment patch not applied: got '$patch_label'"
     pass "Deployment patch applied"
@@ -791,10 +793,10 @@ EOF
         || fail "disabled-gw still exists"
     pass "disabled-gw deleted"
 
-    log "Verifying cloudflared Deployment still exists (orphaned)..."
-    kubectl get deployment cloudflared-disabled-gw -n "$TEST_NS" >/dev/null 2>&1 \
-        || fail "cloudflared Deployment was deleted (should be orphaned)"
-    pass "Cloudflared Deployment is orphaned"
+    log "Verifying gateway Deployment still exists (orphaned)..."
+    kubectl get deployment gateway-disabled-gw -n "$TEST_NS" >/dev/null 2>&1 \
+        || fail "gateway Deployment was deleted (should be orphaned)"
+    pass "Gateway Deployment is orphaned"
 
     log "Verifying tunnel still exists in Cloudflare..."
     local dis_tunnel_check
@@ -809,9 +811,9 @@ EOF
     pass "DNS CNAME still exists"
 
     log "Manual cleanup of orphaned resources..."
-    kubectl delete deployment cloudflared-disabled-gw -n "$TEST_NS" --ignore-not-found
-    retry 60 3 bash -c "! kubectl get deployment cloudflared-disabled-gw -n '$TEST_NS' 2>/dev/null"
-    kubectl delete secret cloudflared-token-disabled-gw -n "$TEST_NS" --ignore-not-found
+    kubectl delete deployment gateway-disabled-gw -n "$TEST_NS" --ignore-not-found
+    retry 60 3 bash -c "! kubectl get deployment gateway-disabled-gw -n '$TEST_NS' 2>/dev/null"
+    kubectl delete secret gateway-disabled-gw -n "$TEST_NS" --ignore-not-found
     cfgwctl dns delete-cname --zone-id "$dis_zone_id" --hostname "$disabled_hostname"
     cfgwctl tunnel cleanup-connections --tunnel-id "$dis_tunnel_id"
     cfgwctl tunnel delete --tunnel-id "$dis_tunnel_id"
@@ -923,11 +925,10 @@ EOF
         || fail "DNS CNAME still exists after DNS disabled"
     pass "DNS CNAME removed after DNS disabled"
 
-    log "Verifying tunnel config still has hostname (tunnel config unaffected)..."
-    cfgwctl tunnel get-config --tunnel-id "$zr_tunnel_id" \
-        | jq -e ".[] | select(.hostname == \"$zone_rm_hostname\")" >/dev/null \
-        || fail "tunnel config lost hostname after DNS config removal"
-    pass "Tunnel config still has hostname"
+    log "Verifying sidecar config still has hostname (sidecar config unaffected)..."
+    sidecar_config_has_hostname "zone-rm-gw" "$zone_rm_hostname" \
+        || fail "sidecar config lost hostname after DNS config removal"
+    pass "Sidecar config still has hostname"
 
     log "Cleaning up DNS config removal test..."
     kubectl delete httproute zone-rm-route -n "$TEST_NS"
@@ -1139,10 +1140,10 @@ EOF
         || fail "tunnel ID changed: before=$tunnel_id_before after=$tunnel_id_after (resource leaked!)"
     pass "Tunnel adopted: same ID $tunnel_id_before"
 
-    log "Verifying tunnel config has hostname after adoption..."
-    retry 60 3 bash -c "cfgwctl tunnel get-config --tunnel-id '$tunnel_id_after' | jq -e '.[] | select(.hostname == \"$test_hostname\")' >/dev/null" \
-        || fail "tunnel config missing hostname after adoption"
-    pass "Tunnel config has hostname after adoption"
+    log "Verifying sidecar config has hostname after adoption..."
+    retry 60 3 bash -c "sidecar_config_has_hostname 'recreate-gw' '$test_hostname'" \
+        || fail "sidecar config missing hostname after adoption"
+    pass "Sidecar config has hostname after adoption"
 
     log "Verifying DNS CNAME still exists after adoption..."
     retry 60 3 bash -c "cfgwctl dns list-cnames --zone-id '$zone_id' --target '$tunnel_target' | jq -e '.hostnames[] | select(. == \"$test_hostname\")' >/dev/null" \
@@ -1826,6 +1827,7 @@ EOF
         --namespace "$TEST_NS" \
         --label-selector app=lb-test \
         --max-cv 0.5 \
+        --hostname "$hostname" \
         || fail "load test failed"
     pass "Load balancing distribution check passed"
 
@@ -1971,6 +1973,7 @@ EOF
         --url "https://$hostname/" \
         --requests 10 \
         --concurrency 1 \
+        --hostname "$hostname" \
         || fail "traffic check failed"
     pass "Traffic flows end-to-end with sidecar disabled"
 
@@ -2156,6 +2159,7 @@ EOF
         --backend "app=ts-svc-a:80" \
         --backend "app=ts-svc-b:20" \
         --tolerance 0.15 \
+        --hostname "$hostname" \
         || fail "traffic splitting load test failed"
     pass "Traffic splitting distribution check passed"
 
@@ -2168,6 +2172,191 @@ EOF
     kubectl delete deployment ts-svc-b -n "$TEST_NS" --ignore-not-found
     kubectl delete service ts-svc-a -n "$TEST_NS" --ignore-not-found
     kubectl delete service ts-svc-b -n "$TEST_NS" --ignore-not-found
+}
+
+test_session_persistence() {
+    local hostname="sp-${TS: -6}.${TEST_TRAFFIC_ZONE_NAME}"
+
+    log "Deploying 2 separate backends for session persistence..."
+
+    # Deploy sp-svc-a (1 replica)
+    kubectl apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sp-svc-a
+  namespace: $TEST_NS
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sp-svc-a
+  template:
+    metadata:
+      labels:
+        app: sp-svc-a
+    spec:
+      containers:
+      - name: server
+        image: $IMAGE
+        args: ["test", "serve"]
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /_healthz
+            port: 8080
+          initialDelaySeconds: 1
+          periodSeconds: 2
+EOF
+
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: sp-svc-a
+  namespace: $TEST_NS
+spec:
+  selector:
+    app: sp-svc-a
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+EOF
+
+    # Deploy sp-svc-b (1 replica)
+    kubectl apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sp-svc-b
+  namespace: $TEST_NS
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sp-svc-b
+  template:
+    metadata:
+      labels:
+        app: sp-svc-b
+    spec:
+      containers:
+      - name: server
+        image: $IMAGE
+        args: ["test", "serve"]
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /_healthz
+            port: 8080
+          initialDelaySeconds: 1
+          periodSeconds: 2
+EOF
+
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: sp-svc-b
+  namespace: $TEST_NS
+spec:
+  selector:
+    app: sp-svc-b
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+EOF
+
+    log "Waiting for sp-svc-a rollout..."
+    kubectl rollout status deployment/sp-svc-a -n "$TEST_NS" --timeout=120s \
+        || fail "sp-svc-a deployment did not become ready"
+    log "Waiting for sp-svc-b rollout..."
+    kubectl rollout status deployment/sp-svc-b -n "$TEST_NS" --timeout=120s \
+        || fail "sp-svc-b deployment did not become ready"
+    pass "Both session persistence deployments ready"
+
+    log "Creating Gateway 'sp-gw' (bare Secret)..."
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: sp-gw
+  namespace: $TEST_NS
+spec:
+  gatewayClassName: cloudflare
+  infrastructure:
+    parametersRef:
+      group: ""
+      kind: Secret
+      name: cloudflare-creds
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+EOF
+
+    retry 60 5 kubectl wait gateway/sp-gw -n "$TEST_NS" \
+        --for=condition=Programmed --timeout=5s \
+        || fail "sp-gw did not become Programmed"
+    pass "sp-gw is Programmed"
+
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: sp-route
+  namespace: $TEST_NS
+spec:
+  parentRefs:
+  - name: sp-gw
+  hostnames:
+  - "$hostname"
+  rules:
+  - sessionPersistence:
+      type: Cookie
+    backendRefs:
+    - name: sp-svc-a
+      port: 80
+      weight: 50
+    - name: sp-svc-b
+      port: 80
+      weight: 50
+EOF
+
+    wait_for_https "https://$hostname/"
+
+    log "Running session persistence test (50 requests)..."
+    "$CFGWCTL" test session \
+        --url "https://$hostname/" \
+        --requests 50 \
+        --cookie-name "cgw-session" \
+        --hostname "$hostname" \
+        || fail "session persistence test failed"
+    pass "Session persistence check passed"
+
+    log "Cleaning up session persistence test..."
+    kubectl delete httproute sp-route -n "$TEST_NS"
+    kubectl delete gateway sp-gw -n "$TEST_NS"
+    retry 60 3 bash -c "! kubectl get gateway sp-gw -n '$TEST_NS' 2>/dev/null" \
+        || fail "sp-gw still exists"
+    kubectl delete deployment sp-svc-a -n "$TEST_NS" --ignore-not-found
+    kubectl delete deployment sp-svc-b -n "$TEST_NS" --ignore-not-found
+    kubectl delete service sp-svc-a -n "$TEST_NS" --ignore-not-found
+    kubectl delete service sp-svc-b -n "$TEST_NS" --ignore-not-found
 }
 
 # ─── Run ──────────────────────────────────────────────────────────────────────
@@ -2187,4 +2376,5 @@ run_tests \
     test_cluster_recreation \
     test_load_balancing \
     test_sidecar_disabled \
-    test_traffic_splitting
+    test_traffic_splitting \
+    test_session_persistence

@@ -44,7 +44,7 @@ func NewWatcher(clientset kubernetes.Interface, namespace, configMapName, config
 			fmt.Printf("sidecar watcher: failed to parse config: %v\n", err)
 			return
 		}
-		if err := cfg.ParseServiceURLs(); err != nil {
+		if err := cfg.Parse(); err != nil {
 			fmt.Printf("sidecar watcher: invalid config: %v\n", err)
 			return
 		}

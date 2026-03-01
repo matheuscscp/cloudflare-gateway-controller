@@ -1682,3 +1682,367 @@ func TestGatewayReconciler_HTTPRouteNonServiceBackend(t *testing.T) {
 		g.Expect(accepted.Message).To(ContainSubstring("only core Service backends are supported"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
+
+func TestGatewayReconciler_HTTPRouteSessionPersistence(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-sp", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	gw := createTestGateway(g, "test-gw-sp", ns.Name, gc.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+	waitForGatewayProgrammed(g, gw)
+
+	spType := gatewayv1.CookieBasedSessionPersistence
+	absoluteTimeout := gatewayv1.Duration("1h")
+	lifetimeType := gatewayv1.PermanentCookieLifetimeType
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-route-sp",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{Name: gatewayv1.ObjectName(gw.Name)},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"sp.example.com"},
+			Rules: []gatewayv1.HTTPRouteRule{
+				{
+					SessionPersistence: &gatewayv1.SessionPersistence{
+						Type:            &spType,
+						AbsoluteTimeout: &absoluteTimeout,
+						CookieConfig: &gatewayv1.CookieConfig{
+							LifetimeType: &lifetimeType,
+						},
+					},
+					BackendRefs: []gatewayv1.HTTPBackendRef{
+						{BackendRef: gatewayv1.BackendRef{
+							BackendObjectReference: gatewayv1.BackendObjectReference{
+								Name: "svc-a", Port: new(gatewayv1.PortNumber(80)),
+							},
+						}},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.HTTPRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Sidecar is enabled by default, so sessionPersistence should be accepted.
+	routeKey := client.ObjectKeyFromObject(route)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.HTTPRoute
+		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(HaveLen(1))
+		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Verify sidecar ConfigMap has correct session persistence config.
+	g.Eventually(func(g Gomega) {
+		cfg := getSidecarConfig(g, gw)
+		g.Expect(cfg.Routes).To(HaveLen(1))
+		g.Expect(cfg.Routes[0].SessionPersistence).NotTo(BeNil())
+		g.Expect(cfg.Routes[0].SessionPersistence.Type).To(Equal("Cookie"))
+		g.Expect(cfg.Routes[0].SessionPersistence.SessionName).To(Equal("cgw-session"))
+		g.Expect(cfg.Routes[0].SessionPersistence.AbsoluteTimeout).To(Equal("1h"))
+		g.Expect(cfg.Routes[0].SessionPersistence.CookieLifetimeType).To(Equal("Permanent"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func TestGatewayReconciler_HTTPRouteSessionPersistenceSidecarDisabled(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-sp-nosc", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	params := createTestParameters(g, "test-params-sp-nosc", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		SecretRef: &apiv1.SecretRef{Name: "cloudflare-creds"},
+		Tunnel: &apiv1.TunnelConfig{
+			Sidecar: &apiv1.SidecarConfig{
+				Enabled: new(false),
+			},
+		},
+	})
+	t.Cleanup(func() {
+		var latest apiv1.CloudflareGatewayParameters
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(params), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-sp-nosc",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
+			Listeners: []gatewayv1.Listener{
+				{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+	waitForGatewayProgrammed(g, gw)
+
+	spType := gatewayv1.CookieBasedSessionPersistence
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-route-sp-nosc",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{Name: gatewayv1.ObjectName(gw.Name)},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"sp-nosc.example.com"},
+			Rules: []gatewayv1.HTTPRouteRule{
+				{
+					SessionPersistence: &gatewayv1.SessionPersistence{
+						Type: &spType,
+					},
+					BackendRefs: []gatewayv1.HTTPBackendRef{
+						{BackendRef: gatewayv1.BackendRef{
+							BackendObjectReference: gatewayv1.BackendObjectReference{
+								Name: "svc-a", Port: new(gatewayv1.PortNumber(80)),
+							},
+						}},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.HTTPRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Sidecar is disabled, so sessionPersistence should be rejected.
+	routeKey := client.ObjectKeyFromObject(route)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.HTTPRoute
+		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(HaveLen(1))
+		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.RouteReasonUnsupportedValue)))
+		g.Expect(accepted.Message).To(ContainSubstring("sessionPersistence is not supported when sidecar is disabled"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func TestGatewayReconciler_HTTPRouteSessionPersistenceIdleTimeout(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-sp-idle", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	gw := createTestGateway(g, "test-gw-sp-idle", ns.Name, gc.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+	waitForGatewayProgrammed(g, gw)
+
+	spType := gatewayv1.CookieBasedSessionPersistence
+	idleTimeout := gatewayv1.Duration("5m")
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-route-sp-idle",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{Name: gatewayv1.ObjectName(gw.Name)},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"sp-idle.example.com"},
+			Rules: []gatewayv1.HTTPRouteRule{
+				{
+					SessionPersistence: &gatewayv1.SessionPersistence{
+						Type:        &spType,
+						IdleTimeout: &idleTimeout,
+					},
+					BackendRefs: []gatewayv1.HTTPBackendRef{
+						{BackendRef: gatewayv1.BackendRef{
+							BackendObjectReference: gatewayv1.BackendObjectReference{
+								Name: "svc-a", Port: new(gatewayv1.PortNumber(80)),
+							},
+						}},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.HTTPRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Cookie-based idleTimeout is accepted.
+	routeKey := client.ObjectKeyFromObject(route)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.HTTPRoute
+		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(HaveLen(1))
+		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Verify sidecar ConfigMap has correct idleTimeout.
+	g.Eventually(func(g Gomega) {
+		cfg := getSidecarConfig(g, gw)
+		g.Expect(cfg.Routes).To(HaveLen(1))
+		g.Expect(cfg.Routes[0].SessionPersistence).NotTo(BeNil())
+		g.Expect(cfg.Routes[0].SessionPersistence.Type).To(Equal("Cookie"))
+		g.Expect(cfg.Routes[0].SessionPersistence.IdleTimeout).To(Equal("5m"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func TestGatewayReconciler_HTTPRouteSessionPersistenceIdleTimeoutHeader(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-sp-idle-hdr", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	gw := createTestGateway(g, "test-gw-sp-idle-hdr", ns.Name, gc.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+	waitForGatewayProgrammed(g, gw)
+
+	spType := gatewayv1.HeaderBasedSessionPersistence
+	idleTimeout := gatewayv1.Duration("5m")
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-route-sp-idle-hdr",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{Name: gatewayv1.ObjectName(gw.Name)},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"sp-idle-hdr.example.com"},
+			Rules: []gatewayv1.HTTPRouteRule{
+				{
+					SessionPersistence: &gatewayv1.SessionPersistence{
+						Type:        &spType,
+						IdleTimeout: &idleTimeout,
+					},
+					BackendRefs: []gatewayv1.HTTPBackendRef{
+						{BackendRef: gatewayv1.BackendRef{
+							BackendObjectReference: gatewayv1.BackendObjectReference{
+								Name: "svc-a", Port: new(gatewayv1.PortNumber(80)),
+							},
+						}},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.HTTPRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Header-based idleTimeout is rejected.
+	routeKey := client.ObjectKeyFromObject(route)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.HTTPRoute
+		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(HaveLen(1))
+		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.RouteReasonUnsupportedValue)))
+		g.Expect(accepted.Message).To(ContainSubstring("sessionPersistence.idleTimeout is not supported for header-based sessions"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
