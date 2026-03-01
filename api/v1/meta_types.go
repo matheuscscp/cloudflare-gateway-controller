@@ -20,9 +20,10 @@ func SetClusterName(name string) { cfClusterName = name }
 // ClusterName returns the configured cluster name.
 func ClusterName() string { return cfClusterName }
 
-// CRD names.
 const (
-	CRDGatewayClass = "gatewayclasses.gateway.networking.k8s.io"
+	// GroupCore is the Kubernetes core API group name used in Gateway API
+	// references (e.g. parametersRef.group).
+	GroupCore = "core"
 )
 
 // APIVersion constants.
@@ -53,14 +54,9 @@ const (
 	KindVerticalPodAutoscaler       = "VerticalPodAutoscaler"
 )
 
-// GroupCore is the Kubernetes core API group name used in Gateway API
-// references (e.g. parametersRef.group).
-const GroupCore = "core"
-
-// Annotation values.
+// CRD names.
 const (
-	ValueEnabled  = "enabled"
-	ValueDisabled = "disabled"
+	CRDGatewayClass = "gatewayclasses.gateway.networking.k8s.io"
 )
 
 // Finalizers.
@@ -92,6 +88,25 @@ const (
 	AnnotationReconcileEvery = Group + "/reconcileEvery"
 )
 
+// Label values.
+const (
+	// LabelAppNameCloudflared is the app.kubernetes.io/name value used on all
+	// resources managed by a Gateway managed by this controller.
+	LabelAppNameCloudflared = "cloudflared"
+
+	// LabelAppComponentRoutes is the app.kubernetes.io/component value for the route ConfigMap.
+	LabelAppComponentRoutes = "routes"
+
+	// LabelAppComponentSidecar is the app.kubernetes.io/component value for sidecar RBAC resources.
+	LabelAppComponentSidecar = "sidecar"
+)
+
+// Annotation values.
+const (
+	AnnotationReconcileEnabled  = "enabled"
+	AnnotationReconcileDisabled = "disabled"
+)
+
 // Reconciliation defaults.
 const (
 	// DefaultReconcileInterval is the default interval between periodic
@@ -111,6 +126,21 @@ func GatewayReplicaName(gw *gatewayv1.Gateway, replicaName string) string {
 	return fmt.Sprintf("%s-%s", GatewayResourceName(gw), replicaName)
 }
 
+// GatewayResourceLabels returns the standard app.kubernetes.io labels shared by
+// all resources managed for a Gateway. If component is provided, the first value
+// is set as the app.kubernetes.io/component label.
+func GatewayResourceLabels(gwName string, component ...string) map[string]string {
+	lbls := map[string]string{
+		"app.kubernetes.io/name":       LabelAppNameCloudflared,
+		"app.kubernetes.io/managed-by": ShortControllerName,
+		"app.kubernetes.io/instance":   gwName,
+	}
+	if len(component) > 0 {
+		lbls["app.kubernetes.io/component"] = component[0]
+	}
+	return lbls
+}
+
 // TunnelName returns the deterministic Cloudflare tunnel name for a Gateway.
 func TunnelName(gw *gatewayv1.Gateway) string {
 	h := sha256.New()
@@ -127,7 +157,7 @@ func TunnelName(gw *gatewayv1.Gateway) string {
 // based on its annotations. Returns 0 if reconciliation is disabled.
 // Returns an error if the reconcileEvery annotation has an invalid duration.
 func ReconcileInterval(annotations map[string]string) (time.Duration, error) {
-	if annotations[AnnotationReconcile] == ValueDisabled {
+	if annotations[AnnotationReconcile] == AnnotationReconcileDisabled {
 		return 0, nil
 	}
 	val, ok := annotations[AnnotationReconcileEvery]

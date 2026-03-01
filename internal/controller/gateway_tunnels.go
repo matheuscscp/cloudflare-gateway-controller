@@ -187,11 +187,7 @@ func (r *GatewayReconciler) checkAllDeploymentsReadiness(ctx context.Context, gw
 func (r *GatewayReconciler) removeOwnerReferences(ctx context.Context, gw *gatewayv1.Gateway) ([]client.Object, error) {
 	l := log.FromContext(ctx)
 	var removed []client.Object
-	matchLabels := client.MatchingLabels{
-		"app.kubernetes.io/name":       "cloudflared",
-		"app.kubernetes.io/managed-by": apiv1.ShortControllerName,
-		"app.kubernetes.io/instance":   gw.Name,
-	}
+	matchLabels := client.MatchingLabels(apiv1.GatewayResourceLabels(gw.Name))
 
 	// Remove owner references from all cloudflared Deployments.
 	var deployList appsv1.DeploymentList
@@ -302,11 +298,7 @@ func (r *GatewayReconciler) cleanupStaleTunnelResources(ctx context.Context, gw 
 	var deployList appsv1.DeploymentList
 	if err := r.List(ctx, &deployList,
 		client.InNamespace(gw.Namespace),
-		client.MatchingLabels{
-			"app.kubernetes.io/name":       "cloudflared",
-			"app.kubernetes.io/managed-by": apiv1.ShortControllerName,
-			"app.kubernetes.io/instance":   gw.Name,
-		},
+		client.MatchingLabels(apiv1.GatewayResourceLabels(gw.Name)),
 	); err != nil {
 		return nil, []string{fmt.Sprintf("failed to list cloudflared Deployments for cleanup: %v", err)}
 	}
@@ -334,11 +326,7 @@ func (r *GatewayReconciler) cleanupStaleTunnelResources(ctx context.Context, gw 
 	var secretList corev1.SecretList
 	if err := r.List(ctx, &secretList,
 		client.InNamespace(gw.Namespace),
-		client.MatchingLabels{
-			"app.kubernetes.io/name":       "cloudflared",
-			"app.kubernetes.io/managed-by": apiv1.ShortControllerName,
-			"app.kubernetes.io/instance":   gw.Name,
-		},
+		client.MatchingLabels(apiv1.GatewayResourceLabels(gw.Name)),
 	); err != nil {
 		errs = append(errs, fmt.Sprintf("failed to list tunnel token Secrets for cleanup: %v", err))
 		return changes, errs
@@ -362,13 +350,8 @@ func (r *GatewayReconciler) cleanupStaleTunnelResources(ctx context.Context, gw 
 }
 
 func buildTunnelTokenSecret(gw *gatewayv1.Gateway, resourceName string, tunnelToken string) *corev1.Secret {
-	lbls := infrastructureLabels(gw.Spec.Infrastructure)
-	if lbls == nil {
-		lbls = make(map[string]string)
-	}
-	lbls["app.kubernetes.io/name"] = "cloudflared"
-	lbls["app.kubernetes.io/managed-by"] = apiv1.ShortControllerName
-	lbls["app.kubernetes.io/instance"] = gw.Name
+	lbls := apiv1.GatewayResourceLabels(gw.Name)
+	maps.Copy(lbls, infrastructureLabels(gw.Spec.Infrastructure))
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        resourceName,
@@ -565,12 +548,7 @@ func navigateToPodSpec(data []byte) (map[string]any, error) {
 // labels/annotations, owner reference, and the cloudflared container spec.
 func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters, resourceName string, replica *apiv1.ReplicaConfig) *acappsv1.DeploymentApplyConfiguration {
 	deploymentName := apiv1.GatewayReplicaName(gw, replica.Name)
-	selectorLabels := map[string]string{
-		"app.kubernetes.io/name":       "cloudflared",
-		"app.kubernetes.io/managed-by": apiv1.ShortControllerName,
-		"app.kubernetes.io/instance":   gw.Name,
-		"app.kubernetes.io/component":  replica.Name,
-	}
+	selectorLabels := apiv1.GatewayResourceLabels(gw.Name, replica.Name)
 	templateLabels := maps.Clone(selectorLabels)
 
 	infraLabels := infrastructureLabels(gw.Spec.Infrastructure)

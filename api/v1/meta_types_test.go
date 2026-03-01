@@ -77,7 +77,7 @@ func TestReconcileInterval(t *testing.T) {
 		{
 			name: "disabled returns zero",
 			annotations: map[string]string{
-				apiv1.AnnotationReconcile: apiv1.ValueDisabled,
+				apiv1.AnnotationReconcile: apiv1.AnnotationReconcileDisabled,
 			},
 			want: 0,
 		},
@@ -98,7 +98,7 @@ func TestReconcileInterval(t *testing.T) {
 		{
 			name: "disabled takes precedence over custom interval",
 			annotations: map[string]string{
-				apiv1.AnnotationReconcile:      apiv1.ValueDisabled,
+				apiv1.AnnotationReconcile:      apiv1.AnnotationReconcileDisabled,
 				apiv1.AnnotationReconcileEvery: "5m",
 			},
 			want: 0,
