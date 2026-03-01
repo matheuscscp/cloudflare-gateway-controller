@@ -46,7 +46,7 @@ func (r *GatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			builder.WithPredicates(predicates.Debug(apiv1.KindDeployment,
 				predicate.ResourceVersionChangedPredicate{}))).
 		WatchesMetadata(&corev1.Secret{},
-			handler.EnqueueRequestsFromMapFunc(r.mapTunnelTokenSecretToGateway),
+			handler.EnqueueRequestForOwner(mgr.GetScheme(), mgr.GetRESTMapper(), &gatewayv1.Gateway{}, handler.OnlyControllerOwner()),
 			builder.WithPredicates(predicates.Debug(apiv1.KindSecret,
 				predicate.ResourceVersionChangedPredicate{}))).
 
@@ -252,25 +252,6 @@ func (r *GatewayReconciler) mapNamespaceToGateway(ctx context.Context, obj clien
 				break
 			}
 		}
-	}
-	return requests
-}
-
-// mapTunnelTokenSecretToGateway maps a Secret event to reconcile requests for Gateways
-// whose managed tunnel token Secret matches the event object.
-func (r *GatewayReconciler) mapTunnelTokenSecretToGateway(ctx context.Context, obj client.Object) []reconcile.Request {
-	var gateways gatewayv1.GatewayList
-	if err := r.List(ctx, &gateways, client.InNamespace(obj.GetNamespace()), client.MatchingFields{
-		indexGatewayTunnelTokenSecret: obj.GetName(),
-	}); err != nil {
-		log.FromContext(ctx).Error(err, "failed to list Gateways for Secret")
-		return nil
-	}
-	var requests []reconcile.Request
-	for _, gw := range gateways.Items {
-		requests = append(requests, reconcile.Request{
-			NamespacedName: client.ObjectKeyFromObject(&gw),
-		})
 	}
 	return requests
 }

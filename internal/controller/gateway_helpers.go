@@ -241,32 +241,35 @@ func (r *GatewayReconciler) reconcileCGS(
 	gw *gatewayv1.Gateway,
 	cgs *apiv1.CloudflareGatewayStatus,
 	params *apiv1.CloudflareGatewayParameters,
-	entries []tunnelEntry,
+	tunnel tunnelState,
+	resourceName string,
+	replicas []apiv1.ReplicaConfig,
 ) (*apiv1.CloudflareGatewayStatus, error) {
 	// Build desired status detail.
 	desired := apiv1.CloudflareGatewayStatusDetail{}
 
 	// Tunnel.
-	resourceName := apiv1.GatewayResourceName(gw)
-	if len(entries) > 0 {
-		e := entries[0]
-		desired.Tunnel = &apiv1.TunnelStatus{
-			Name: e.tunnelName,
-			ID:   e.tunnelID,
-		}
+	desired.Tunnel = &apiv1.TunnelStatus{
+		Name: tunnel.name,
+		ID:   tunnel.id,
 	}
 
 	// Inventory: all Kubernetes objects managed by this Gateway.
-	desired.Inventory = []apiv1.ResourceRef{
-		{APIVersion: "apps/v1", Kind: apiv1.KindDeployment, Name: resourceName},
-		{APIVersion: "v1", Kind: apiv1.KindSecret, Name: resourceName},
+	desired.Inventory = make([]apiv1.ResourceRef, 0, len(replicas)+1)
+	for _, r := range replicas {
+		desired.Inventory = append(desired.Inventory, apiv1.ResourceRef{
+			APIVersion: apiv1.APIVersionApps, Kind: apiv1.KindDeployment, Name: apiv1.GatewayReplicaName(gw, r.Name),
+		})
 	}
+	desired.Inventory = append(desired.Inventory, apiv1.ResourceRef{
+		APIVersion: apiv1.APIVersionCore, Kind: apiv1.KindSecret, Name: resourceName,
+	})
 	if r.sidecarEnabled(params) {
 		desired.Inventory = append(desired.Inventory,
-			apiv1.ResourceRef{APIVersion: "v1", Kind: apiv1.KindConfigMap, Name: resourceName},
-			apiv1.ResourceRef{APIVersion: "v1", Kind: apiv1.KindServiceAccount, Name: resourceName},
-			apiv1.ResourceRef{APIVersion: "rbac.authorization.k8s.io/v1", Kind: apiv1.KindRole, Name: resourceName},
-			apiv1.ResourceRef{APIVersion: "rbac.authorization.k8s.io/v1", Kind: apiv1.KindRoleBinding, Name: resourceName},
+			apiv1.ResourceRef{APIVersion: apiv1.APIVersionCore, Kind: apiv1.KindConfigMap, Name: resourceName},
+			apiv1.ResourceRef{APIVersion: apiv1.APIVersionCore, Kind: apiv1.KindServiceAccount, Name: resourceName},
+			apiv1.ResourceRef{APIVersion: apiv1.APIVersionRBAC, Kind: apiv1.KindRole, Name: resourceName},
+			apiv1.ResourceRef{APIVersion: apiv1.APIVersionRBAC, Kind: apiv1.KindRoleBinding, Name: resourceName},
 		)
 	}
 

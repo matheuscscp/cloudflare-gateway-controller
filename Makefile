@@ -19,7 +19,7 @@ GO_TEST_ARGS ?=
 IMG ?= cloudflare-gateway-controller:dev
 
 .PHONY: all
-all: tidy lint test build ## Run basic validation targets.
+all: tidy manifests lint test build ## Run basic validation targets.
 
 ##@ Development
 

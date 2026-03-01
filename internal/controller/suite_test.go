@@ -454,7 +454,7 @@ func (m *mockCloudflareClient) FindZoneIDByHostname(_ context.Context, hostname 
 	return "test-zone-id", nil
 }
 
-func (m *mockCloudflareClient) EnsureDNSCNAME(_ context.Context, zoneID, hostname, target, _ string) error {
+func (m *mockCloudflareClient) EnsureDNSCNAME(_ context.Context, zoneID, hostname, target string) error {
 	if m.ensureDNSErr != nil {
 		return m.ensureDNSErr
 	}

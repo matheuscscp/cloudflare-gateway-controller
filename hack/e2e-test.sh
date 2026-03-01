@@ -684,7 +684,7 @@ EOF
 
     log "Verifying cloudflared Deployment has patched label..."
     local patch_label
-    patch_label=$(kubectl get deployment gateway-patched-gw -n "$TEST_NS" \
+    patch_label=$(kubectl get deployment gateway-patched-gw-primary -n "$TEST_NS" \
         -o jsonpath='{.spec.template.metadata.labels.e2e-patch}')
     [ "$patch_label" = "applied" ] || fail "Deployment patch not applied: got '$patch_label'"
     pass "Deployment patch applied"
@@ -794,7 +794,7 @@ EOF
     pass "disabled-gw deleted"
 
     log "Verifying gateway Deployment still exists (orphaned)..."
-    kubectl get deployment gateway-disabled-gw -n "$TEST_NS" >/dev/null 2>&1 \
+    kubectl get deployment gateway-disabled-gw-primary -n "$TEST_NS" >/dev/null 2>&1 \
         || fail "gateway Deployment was deleted (should be orphaned)"
     pass "Gateway Deployment is orphaned"
 
@@ -811,8 +811,8 @@ EOF
     pass "DNS CNAME still exists"
 
     log "Manual cleanup of orphaned resources..."
-    kubectl delete deployment gateway-disabled-gw -n "$TEST_NS" --ignore-not-found
-    retry 60 3 bash -c "! kubectl get deployment gateway-disabled-gw -n '$TEST_NS' 2>/dev/null"
+    kubectl delete deployment gateway-disabled-gw-primary -n "$TEST_NS" --ignore-not-found
+    retry 60 3 bash -c "! kubectl get deployment gateway-disabled-gw-primary -n '$TEST_NS' 2>/dev/null"
     kubectl delete secret gateway-disabled-gw -n "$TEST_NS" --ignore-not-found
     cfgwctl dns delete-cname --zone-id "$dis_zone_id" --hostname "$disabled_hostname"
     cfgwctl tunnel cleanup-connections --tunnel-id "$dis_tunnel_id"
@@ -2359,6 +2359,67 @@ EOF
     kubectl delete service sp-svc-b -n "$TEST_NS" --ignore-not-found
 }
 
+test_replicas() {
+    log "Creating CloudflareGatewayParameters 'replicas-params' with 2 replicas..."
+    kubectl apply -f - <<EOF
+apiVersion: cloudflare-gateway-controller.io/v1
+kind: CloudflareGatewayParameters
+metadata:
+  name: replicas-params
+  namespace: $TEST_NS
+spec:
+  secretRef:
+    name: cloudflare-creds
+  tunnel:
+    replicas:
+    - name: alpha
+    - name: beta
+EOF
+
+    log "Creating Gateway 'replicas-gw'..."
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: replicas-gw
+  namespace: $TEST_NS
+spec:
+  gatewayClassName: cloudflare
+  infrastructure:
+    parametersRef:
+      group: cloudflare-gateway-controller.io
+      kind: CloudflareGatewayParameters
+      name: replicas-params
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+EOF
+
+    retry 60 2 kubectl wait gateway/replicas-gw -n "$TEST_NS" \
+        --for=condition=Programmed --timeout=5s \
+        || fail "replicas-gw did not become Programmed"
+    pass "replicas-gw is Programmed"
+
+    log "Verifying two Deployments exist..."
+    kubectl get deployment gateway-replicas-gw-alpha -n "$TEST_NS" >/dev/null 2>&1 \
+        || fail "Deployment gateway-replicas-gw-alpha not found"
+    kubectl get deployment gateway-replicas-gw-beta -n "$TEST_NS" >/dev/null 2>&1 \
+        || fail "Deployment gateway-replicas-gw-beta not found"
+    pass "Both replica Deployments exist"
+
+    log "Verifying single shared Secret..."
+    kubectl get secret gateway-replicas-gw -n "$TEST_NS" >/dev/null 2>&1 \
+        || fail "Shared Secret gateway-replicas-gw not found"
+    pass "Shared Secret exists"
+
+    log "Cleaning up replicas test..."
+    kubectl delete gateway replicas-gw -n "$TEST_NS"
+    retry 60 3 bash -c "! kubectl get gateway replicas-gw -n '$TEST_NS' 2>/dev/null" \
+        || fail "replicas-gw still exists"
+    kubectl delete cloudflaregatewayparameters replicas-params -n "$TEST_NS" --ignore-not-found
+}
+
 # ─── Run ──────────────────────────────────────────────────────────────────────
 
 run_tests \
@@ -2377,4 +2438,5 @@ run_tests \
     test_load_balancing \
     test_sidecar_disabled \
     test_traffic_splitting \
-    test_session_persistence
+    test_session_persistence \
+    test_replicas

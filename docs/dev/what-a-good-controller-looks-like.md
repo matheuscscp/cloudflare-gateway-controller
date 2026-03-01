@@ -85,6 +85,12 @@ status condition (e.g. `Accepted=False`) with a message that tells the user exac
 fix. The error should be terminal (`reconcile.TerminalError`) when the invalid field lives
 on a watched object, since the watch will re-trigger reconciliation when the user corrects it.
 
+The controller also validates all the XValidation rules in associated CRDs, as old versions
+of the Kubernetes API server may not enforce them. For example, if there's an XValidation
+rule that prevents two fields from being set at the same time, the controller should check
+for that and reject the configuration if both fields are set with a terminal error and clear
+message.
+
 ## Minimizing Write Operations
 
 We avoid making write operations as much as possible, regardless of whether they would be

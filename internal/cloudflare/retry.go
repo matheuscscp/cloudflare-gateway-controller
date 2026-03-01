@@ -160,9 +160,9 @@ func (r *retryClient) FindZoneIDByHostname(ctx context.Context, hostname string)
 	})
 }
 
-func (r *retryClient) EnsureDNSCNAME(ctx context.Context, zoneID, hostname, target, comment string) error {
+func (r *retryClient) EnsureDNSCNAME(ctx context.Context, zoneID, hostname, target string) error {
 	return retry0(ctx, r.maxRetries, func() error {
-		return r.inner.EnsureDNSCNAME(ctx, zoneID, hostname, target, comment)
+		return r.inner.EnsureDNSCNAME(ctx, zoneID, hostname, target)
 	})
 }
 

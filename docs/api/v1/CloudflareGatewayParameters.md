@@ -122,7 +122,21 @@ The `.spec.tunnel` field is optional and configures Cloudflare tunnel settings.
 
 The `.spec.tunnel.patches` field is optional and specifies
 [RFC 6902](https://datatracker.ietf.org/doc/html/rfc6902) JSON Patch operations
-applied to the cloudflared Deployment after it is built.
+applied to the cloudflared Deployment.
+
+Patches run **after** the controller builds the base Deployment (which includes
+the sidecar container when enabled) but **before** replica placement fields
+(`affinity`, `zone`, `nodeSelector`) are applied on top. This means:
+
+- Patches can target any field of the base Deployment, including sidecar
+  container fields (resources, probes, etc.).
+- Replica placement always takes priority over user patches — setting affinity
+  or nodeSelector via patches will be overwritten by the replica config.
+- Removing the sidecar container via patches when the sidecar is enabled is a
+  **terminal error**. Use `.spec.tunnel.sidecar.enabled: false` to disable the
+  sidecar instead.
+- Patch errors are terminal — the controller stops retrying until the
+  CloudflareGatewayParameters resource is updated.
 
 ```yaml
 spec:

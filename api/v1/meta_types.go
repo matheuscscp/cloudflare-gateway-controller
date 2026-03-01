@@ -6,7 +6,6 @@ package v1
 import (
 	"crypto/sha256"
 	"fmt"
-	"strings"
 	"time"
 
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -21,37 +20,16 @@ func SetClusterName(name string) { cfClusterName = name }
 // ClusterName returns the configured cluster name.
 func ClusterName() string { return cfClusterName }
 
-// ResourceName returns a deterministic resource name by hashing the
-// fully-qualified ownership fields with SHA256. The result is "gw-" +
-// the full 64 hex-char SHA256 digest (67 chars total).
-func ResourceName(parts ...string) string {
-	h := sha256.New()
-	for i, p := range parts {
-		if i > 0 {
-			h.Write([]byte("/"))
-		}
-		h.Write([]byte(p))
-	}
-	return fmt.Sprintf("gw-%x", h.Sum(nil))
-}
-
-// ResourceDescription returns a compact ownership description for Cloudflare
-// resource metadata (Description on pools/monitors/LBs, Comment on DNS records).
-// The format is kept short to fit within the 100-char DNS comment limit on free plans.
-func ResourceDescription(gw *gatewayv1.Gateway, extra ...string) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "cfgw cluster:%s ns:%s gw:%s",
-		cfClusterName, gw.Namespace, gw.Name)
-	for _, e := range extra {
-		b.WriteString(" ")
-		b.WriteString(e)
-	}
-	return b.String()
-}
-
 // CRD names.
 const (
 	CRDGatewayClass = "gatewayclasses.gateway.networking.k8s.io"
+)
+
+// APIVersion constants.
+const (
+	APIVersionCore = "v1"
+	APIVersionApps = "apps/v1"
+	APIVersionRBAC = "rbac.authorization.k8s.io/v1"
 )
 
 // Kind constants.
@@ -119,16 +97,28 @@ const (
 	DefaultReconcileInterval = 10 * time.Minute
 )
 
-// GatewayResourceName returns the name used for all Kubernetes resources
-// (Deployment, Secret, ConfigMap, ServiceAccount, Role, RoleBinding)
-// managed by a Gateway.
+// GatewayResourceName returns the name used for shared Kubernetes resources
+// (Secret, ConfigMap, ServiceAccount, Role, RoleBinding) managed by a Gateway.
 func GatewayResourceName(gw *gatewayv1.Gateway) string {
 	return fmt.Sprintf("gateway-%s", gw.Name)
 }
 
+// GatewayReplicaName returns the Deployment name for a specific replica
+// of a Gateway: gateway-{gw.Name}-{replicaName}.
+func GatewayReplicaName(gw *gatewayv1.Gateway, replicaName string) string {
+	return fmt.Sprintf("%s-%s", GatewayResourceName(gw), replicaName)
+}
+
 // TunnelName returns the deterministic Cloudflare tunnel name for a Gateway.
 func TunnelName(gw *gatewayv1.Gateway) string {
-	return ResourceName(cfClusterName, gw.Namespace, gw.Name)
+	h := sha256.New()
+	for i, p := range []string{cfClusterName, gw.Namespace, gw.Name} {
+		if i > 0 {
+			h.Write([]byte("/"))
+		}
+		h.Write([]byte(p))
+	}
+	return fmt.Sprintf("gw-%x", h.Sum(nil))
 }
 
 // ReconcileInterval returns the reconciliation interval for an object

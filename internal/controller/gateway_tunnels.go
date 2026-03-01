@@ -33,112 +33,107 @@ import (
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
 )
 
-// ensureTunnels creates or looks up all desired tunnels, filling in the
-// tunnelID field on each entry. Returns a list of change messages for created tunnels.
-func (r *GatewayReconciler) ensureTunnels(ctx context.Context, tc cloudflare.Client, entries []tunnelEntry) ([]string, error) {
+// ensureTunnel creates or looks up the desired tunnel, filling in the
+// tunnel.id field. Returns a list of change messages for created tunnels.
+func (r *GatewayReconciler) ensureTunnel(ctx context.Context, tc cloudflare.Client, tunnel *tunnelState) ([]string, error) {
 	l := log.FromContext(ctx)
-	var changes []string
-	for i := range entries {
-		e := &entries[i]
-		tunnelID, err := tc.GetTunnelIDByName(ctx, e.tunnelName)
-		if err != nil {
-			return nil, fmt.Errorf("looking up tunnel %q: %w", e.tunnelName, err)
-		}
-		if tunnelID != "" {
-			e.tunnelID = tunnelID
-			continue
-		}
-		tunnelID, err = tc.CreateTunnel(ctx, e.tunnelName)
-		if err != nil {
-			if !cloudflare.IsConflict(err) {
-				return nil, fmt.Errorf("creating tunnel %q: %w", e.tunnelName, err)
-			}
-			tunnelID, err = tc.GetTunnelIDByName(ctx, e.tunnelName)
-			if err != nil {
-				return nil, fmt.Errorf("looking up tunnel %q after conflict: %w", e.tunnelName, err)
-			}
-		}
-		e.tunnelID = tunnelID
-		changes = append(changes, fmt.Sprintf("created tunnel %s", e.tunnelName))
-		l.V(1).Info("Created tunnel", "tunnelName", e.tunnelName, "tunnelID", tunnelID)
+
+	tunnelID, err := tc.GetTunnelIDByName(ctx, tunnel.name)
+	if err != nil {
+		return nil, fmt.Errorf("looking up tunnel %q: %w", tunnel.name, err)
 	}
-	return changes, nil
+	if tunnelID != "" {
+		tunnel.id = tunnelID
+		return nil, nil
+	}
+
+	tunnelID, err = tc.CreateTunnel(ctx, tunnel.name)
+	if err != nil {
+		if !cloudflare.IsConflict(err) {
+			return nil, fmt.Errorf("creating tunnel %q: %w", tunnel.name, err)
+		}
+		tunnelID, err = tc.GetTunnelIDByName(ctx, tunnel.name)
+		if err != nil {
+			return nil, fmt.Errorf("looking up tunnel %q after conflict: %w", tunnel.name, err)
+		}
+	}
+	tunnel.id = tunnelID
+	l.V(1).Info("Created tunnel", "tunnelName", tunnel.name, "tunnelID", tunnelID)
+	return []string{fmt.Sprintf("created tunnel %s", tunnel.name)}, nil
 }
 
-// reconcileTunnelTokenSecrets reconciles a tunnel token Secret for each entry,
+// reconcileTunnelTokenSecret reconciles the tunnel token Secret,
 // setting the Gateway as the controller owner reference. Returns change messages.
-func (r *GatewayReconciler) reconcileTunnelTokenSecrets(ctx context.Context, gw *gatewayv1.Gateway, tc cloudflare.Client, entries []tunnelEntry) ([]string, error) {
+func (r *GatewayReconciler) reconcileTunnelTokenSecret(ctx context.Context, gw *gatewayv1.Gateway, tc cloudflare.Client, tunnel tunnelState, resourceName string) ([]string, error) {
 	l := log.FromContext(ctx)
-	var changes []string
-	for i := range entries {
-		e := &entries[i]
-		tunnelToken, err := tc.GetTunnelToken(ctx, e.tunnelID)
-		if err != nil {
-			return nil, fmt.Errorf("getting tunnel token for %q: %w", e.tunnelName, err)
-		}
-		secret := buildTunnelTokenSecretForEntry(gw, e, tunnelToken)
-		if err := controllerutil.SetControllerReference(gw, secret, r.Scheme()); err != nil {
-			return nil, fmt.Errorf("setting owner reference on secret %q: %w", e.secretName, err)
-		}
-		result, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
-			desired := buildTunnelTokenSecretForEntry(gw, e, tunnelToken)
-			secret.Data = desired.Data
-			secret.Labels = desired.Labels
-			secret.Annotations = desired.Annotations
-			return controllerutil.SetControllerReference(gw, secret, r.Scheme())
-		})
-		if err != nil {
-			return nil, fmt.Errorf("creating/updating tunnel token secret %q: %w", e.secretName, err)
-		}
-		if result != controllerutil.OperationResultNone {
-			changes = append(changes, fmt.Sprintf("tunnel token Secret %s %s", e.secretName, result))
-		}
-		l.V(1).Info("Reconciled tunnel token Secret", "secret", e.secretName, "result", result)
+
+	tunnelToken, err := tc.GetTunnelToken(ctx, tunnel.id)
+	if err != nil {
+		return nil, fmt.Errorf("getting tunnel token for %q: %w", tunnel.name, err)
 	}
+	secret := buildTunnelTokenSecret(gw, resourceName, tunnelToken)
+	if err := controllerutil.SetControllerReference(gw, secret, r.Scheme()); err != nil {
+		return nil, fmt.Errorf("setting owner reference on secret %q: %w", resourceName, err)
+	}
+	result, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
+		desired := buildTunnelTokenSecret(gw, resourceName, tunnelToken)
+		secret.Data = desired.Data
+		secret.Labels = desired.Labels
+		secret.Annotations = desired.Annotations
+		return controllerutil.SetControllerReference(gw, secret, r.Scheme())
+	})
+	if err != nil {
+		return nil, fmt.Errorf("creating/updating tunnel token secret %q: %w", resourceName, err)
+	}
+	var changes []string
+	if result != controllerutil.OperationResultNone {
+		changes = append(changes, fmt.Sprintf("tunnel token Secret %s %s", resourceName, result))
+	}
+	l.V(1).Info("Reconciled tunnel token Secret", "secret", resourceName, "result", result)
 	return changes, nil
 }
 
 // applyCloudflaredDeployments builds and applies a cloudflared Deployment for
-// each tunnel entry via Server-Side Apply. Returns change messages.
-func (r *GatewayReconciler) applyCloudflaredDeployments(ctx context.Context, gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters, entries []tunnelEntry) ([]string, error) {
+// each replica via Server-Side Apply. Returns change messages.
+func (r *GatewayReconciler) applyCloudflaredDeployments(ctx context.Context, gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters, resourceName string, replicas []apiv1.ReplicaConfig) ([]string, error) {
 	l := log.FromContext(ctx)
 	var changes []string
-	for i := range entries {
-		e := &entries[i]
-		deployObj, err := r.buildCloudflaredDeployment(gw, params, e)
+	for i := range replicas {
+		deploymentName := apiv1.GatewayReplicaName(gw, replicas[i].Name)
+		deployObj, err := r.buildCloudflaredDeployment(gw, params, resourceName, &replicas[i])
 		if err != nil {
-			return nil, fmt.Errorf("building cloudflared deployment %q: %w", e.deploymentName, err)
+			return nil, fmt.Errorf("building cloudflared deployment %q: %w", deploymentName, err)
 		}
 		ssaEntry, err := r.ResourceManager.Apply(ctx, deployObj, ssaApplyOptions)
 		if err != nil {
-			return nil, fmt.Errorf("applying cloudflared deployment %q: %w", e.deploymentName, err)
+			return nil, fmt.Errorf("applying cloudflared deployment %q: %w", deploymentName, err)
 		}
 		if string(ssaEntry.Action) != string(ssa.UnchangedAction) {
-			changes = append(changes, fmt.Sprintf("cloudflared Deployment %s %s", e.deploymentName, ssaEntry.Action))
+			changes = append(changes, fmt.Sprintf("cloudflared Deployment %s %s", deploymentName, ssaEntry.Action))
 		}
-		l.V(1).Info("Reconciled cloudflared Deployment", "deployment", e.deploymentName, "action", ssaEntry.Action)
+		l.V(1).Info("Reconciled cloudflared Deployment", "deployment", deploymentName, "action", ssaEntry.Action)
 	}
 	return changes, nil
 }
 
 // checkAllDeploymentsReadiness fetches all cloudflared Deployments for the
-// tunnel entries and inspects their status to determine the Gateway's
+// replicas and inspects their status to determine the Gateway's
 // Programmed and Ready state. All Deployments must be available for the
 // Gateway to be considered Programmed.
-func (r *GatewayReconciler) checkAllDeploymentsReadiness(ctx context.Context, gw *gatewayv1.Gateway, entries []tunnelEntry) gatewayReadiness {
+func (r *GatewayReconciler) checkAllDeploymentsReadiness(ctx context.Context, gw *gatewayv1.Gateway, replicas []apiv1.ReplicaConfig) gatewayReadiness {
 	l := log.FromContext(ctx)
 	allAvailable := true
 	anyDeadlineExceeded := false
 	var notReadyNames []string
 
-	for i := range entries {
-		e := &entries[i]
+	for i := range replicas {
+		deploymentName := apiv1.GatewayReplicaName(gw, replicas[i].Name)
 		var deploy appsv1.Deployment
 		deployAvailable := false
 		deployDeadlineExceeded := false
 		if err := r.Get(ctx, client.ObjectKey{
 			Namespace: gw.Namespace,
-			Name:      e.deploymentName,
+			Name:      deploymentName,
 		}, &deploy); err == nil {
 			for _, c := range deploy.Status.Conditions {
 				switch {
@@ -149,14 +144,14 @@ func (r *GatewayReconciler) checkAllDeploymentsReadiness(ctx context.Context, gw
 				}
 			}
 		} else {
-			l.V(1).Info("Failed to get Deployment, treating as unavailable", "deployment", e.deploymentName, "error", err)
+			l.V(1).Info("Failed to get Deployment, treating as unavailable", "deployment", deploymentName, "error", err)
 		}
 		if deployDeadlineExceeded {
 			anyDeadlineExceeded = true
-			notReadyNames = append(notReadyNames, e.deploymentName)
+			notReadyNames = append(notReadyNames, deploymentName)
 		} else if !deployAvailable {
 			allAvailable = false
-			notReadyNames = append(notReadyNames, e.deploymentName)
+			notReadyNames = append(notReadyNames, deploymentName)
 		}
 	}
 
@@ -277,16 +272,16 @@ func removeOwnerRef(obj client.Object, ownerUID types.UID) bool {
 	return false
 }
 
-// cleanupStaleTunnelResources deletes Deployments, Secrets, and Cloudflare tunnels
-// that are no longer part of the desired tunnel entries. This handles AZ
+// cleanupStaleTunnelResources deletes Deployments and Secrets
+// that are no longer part of the desired replicas. This handles replica
 // addition/removal, service changes, and mode switches.
-func (r *GatewayReconciler) cleanupStaleTunnelResources(ctx context.Context, gw *gatewayv1.Gateway, entries []tunnelEntry) ([]string, []string) {
+func (r *GatewayReconciler) cleanupStaleTunnelResources(ctx context.Context, gw *gatewayv1.Gateway, resourceName string, replicas []apiv1.ReplicaConfig) ([]string, []string) {
 	l := log.FromContext(ctx)
 
 	// Build set of desired Deployment names.
-	desired := make(map[string]struct{}, len(entries))
-	for _, e := range entries {
-		desired[e.deploymentName] = struct{}{}
+	desired := make(map[string]struct{}, len(replicas))
+	for _, r := range replicas {
+		desired[apiv1.GatewayReplicaName(gw, r.Name)] = struct{}{}
 	}
 
 	// List all cloudflared Deployments owned by this Gateway.
@@ -335,10 +330,7 @@ func (r *GatewayReconciler) cleanupStaleTunnelResources(ctx context.Context, gw 
 		return changes, errs
 	}
 
-	desiredSecrets := make(map[string]struct{}, len(entries))
-	for _, e := range entries {
-		desiredSecrets[e.secretName] = struct{}{}
-	}
+	desiredSecrets := map[string]struct{}{resourceName: {}}
 	for i := range secretList.Items {
 		secret := &secretList.Items[i]
 		if _, ok := desiredSecrets[secret.Name]; ok {
@@ -355,7 +347,7 @@ func (r *GatewayReconciler) cleanupStaleTunnelResources(ctx context.Context, gw 
 	return changes, errs
 }
 
-func buildTunnelTokenSecretForEntry(gw *gatewayv1.Gateway, e *tunnelEntry, tunnelToken string) *corev1.Secret {
+func buildTunnelTokenSecret(gw *gatewayv1.Gateway, resourceName string, tunnelToken string) *corev1.Secret {
 	lbls := infrastructureLabels(gw.Spec.Infrastructure)
 	if lbls == nil {
 		lbls = make(map[string]string)
@@ -365,7 +357,7 @@ func buildTunnelTokenSecretForEntry(gw *gatewayv1.Gateway, e *tunnelEntry, tunne
 	lbls["app.kubernetes.io/instance"] = gw.Name
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        e.secretName,
+			Name:        resourceName,
 			Namespace:   gw.Namespace,
 			Labels:      lbls,
 			Annotations: infrastructureAnnotations(gw.Spec.Infrastructure),
@@ -378,17 +370,22 @@ func buildTunnelTokenSecretForEntry(gw *gatewayv1.Gateway, e *tunnelEntry, tunne
 
 // buildCloudflaredDeployment builds the desired cloudflared Deployment as an
 // unstructured object suitable for server-side apply via the SSA manager.
-// If the CloudflareGatewayParameters has deployment patches, the RFC 6902
-// JSON Patch operations are applied to the base Deployment. AZ placement is
-// applied last so it always takes effect.
-func (r *GatewayReconciler) buildCloudflaredDeployment(gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters, e *tunnelEntry) (*unstructured.Unstructured, error) {
-	apply := r.buildCloudflaredDeploymentApply(gw, params, e)
+//
+// The build order is:
+//  1. Base deployment (cloudflared container + sidecar if enabled, no placement)
+//  2. User-defined RFC 6902 patches (terminal errors)
+//  3. Sidecar validation — if sidecar is enabled, verify it survived patches (terminal)
+//  4. Placement overrides from replica config (affinity, zone, nodeSelector)
+//  5. Convert to unstructured
+func (r *GatewayReconciler) buildCloudflaredDeployment(gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters, resourceName string, replica *apiv1.ReplicaConfig) (*unstructured.Unstructured, error) {
+	// Step 1: Build the base deployment (no placement).
+	apply := r.buildCloudflaredDeploymentApply(gw, params, resourceName, replica)
 	data, err := json.Marshal(apply)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling deployment: %w", err)
 	}
 
-	// Apply RFC 6902 JSON Patch operations from CloudflareGatewayParameters if present.
+	// Step 2: Apply RFC 6902 JSON Patch operations from CloudflareGatewayParameters if present.
 	// These errors are terminal because the CRD is a watched object and
 	// retrying won't fix invalid user input.
 	if params != nil && params.Spec.Tunnel != nil && len(params.Spec.Tunnel.Patches) > 0 {
@@ -406,6 +403,20 @@ func (r *GatewayReconciler) buildCloudflaredDeployment(gw *gatewayv1.Gateway, pa
 		}
 	}
 
+	// Step 3: If sidecar is enabled, verify the sidecar container survived patches.
+	if r.sidecarEnabled(params) {
+		if err := validateSidecarPresent(data); err != nil {
+			return nil, err
+		}
+	}
+
+	// Step 4: Apply placement overrides from the replica config.
+	data, err = applyPlacementOverrides(data, replica)
+	if err != nil {
+		return nil, err
+	}
+
+	// Step 5: Convert to unstructured.
 	obj := &unstructured.Unstructured{}
 	if err := obj.UnmarshalJSON(data); err != nil {
 		return nil, fmt.Errorf("unmarshaling deployment: %w", err)
@@ -414,14 +425,137 @@ func (r *GatewayReconciler) buildCloudflaredDeployment(gw *gatewayv1.Gateway, pa
 	return obj, nil
 }
 
+// validateSidecarPresent checks that the sidecar container is still present
+// in the deployment JSON after user patches have been applied.
+func validateSidecarPresent(data []byte) error {
+	podSpec, err := navigateToPodSpec(data)
+	if err != nil {
+		return err
+	}
+	containers, ok := podSpec["containers"].([]any)
+	if !ok {
+		return reconcile.TerminalError(fmt.Errorf(
+			"deployment patches removed all containers; the sidecar container " +
+				"must be present when sidecar is enabled — use " +
+				".spec.tunnel.sidecar.enabled=false to disable it instead"))
+	}
+	for _, c := range containers {
+		cMap, ok := c.(map[string]any)
+		if !ok {
+			continue
+		}
+		if cMap["name"] == "sidecar" {
+			return nil
+		}
+	}
+	return reconcile.TerminalError(fmt.Errorf(
+		"deployment patches removed the sidecar container; the sidecar container " +
+			"must be present when sidecar is enabled — use " +
+			".spec.tunnel.sidecar.enabled=false to disable it instead"))
+}
+
+// applyPlacementOverrides applies placement fields (affinity, zone,
+// nodeSelector) from the replica config onto the deployment JSON. Placement
+// overrides always take priority over user patches.
+func applyPlacementOverrides(data []byte, replica *apiv1.ReplicaConfig) ([]byte, error) {
+	hasAffinity := replica.Affinity != nil || replica.Zone != ""
+	hasNodeSelector := len(replica.NodeSelector) > 0
+	if !hasAffinity && !hasNodeSelector {
+		return data, nil
+	}
+
+	podSpec, err := navigateToPodSpec(data)
+	if err != nil {
+		return nil, err
+	}
+
+	if replica.Affinity != nil {
+		affinityJSON, err := json.Marshal(replica.Affinity)
+		if err != nil {
+			return nil, reconcile.TerminalError(fmt.Errorf("marshaling replica affinity: %w", err))
+		}
+		var affinityMap map[string]any
+		if err := json.Unmarshal(affinityJSON, &affinityMap); err != nil {
+			return nil, reconcile.TerminalError(fmt.Errorf("unmarshaling replica affinity: %w", err))
+		}
+		podSpec["affinity"] = affinityMap
+	} else if replica.Zone != "" {
+		affinity := &corev1.Affinity{
+			NodeAffinity: &corev1.NodeAffinity{
+				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+					NodeSelectorTerms: []corev1.NodeSelectorTerm{{
+						MatchExpressions: []corev1.NodeSelectorRequirement{{
+							Key:      "topology.kubernetes.io/zone",
+							Operator: corev1.NodeSelectorOpIn,
+							Values:   []string{replica.Zone},
+						}},
+					}},
+				},
+			},
+		}
+		affinityJSON, err := json.Marshal(affinity)
+		if err != nil {
+			return nil, reconcile.TerminalError(fmt.Errorf("marshaling zone affinity: %w", err))
+		}
+		var affinityMap map[string]any
+		if err := json.Unmarshal(affinityJSON, &affinityMap); err != nil {
+			return nil, reconcile.TerminalError(fmt.Errorf("unmarshaling zone affinity: %w", err))
+		}
+		podSpec["affinity"] = affinityMap
+	}
+
+	if hasNodeSelector {
+		// Convert map[string]string to map[string]any for JSON.
+		ns := make(map[string]any, len(replica.NodeSelector))
+		for k, v := range replica.NodeSelector {
+			ns[k] = v
+		}
+		podSpec["nodeSelector"] = ns
+	}
+
+	// Marshal the full deployment back.
+	var deploy map[string]any
+	if err := json.Unmarshal(data, &deploy); err != nil {
+		return nil, reconcile.TerminalError(fmt.Errorf("unmarshaling deployment for placement overrides: %w", err))
+	}
+	// Re-set the podSpec in the deployment tree.
+	spec := deploy["spec"].(map[string]any)
+	template := spec["template"].(map[string]any)
+	template["spec"] = podSpec
+	return json.Marshal(deploy)
+}
+
+// navigateToPodSpec extracts spec.template.spec from a deployment JSON blob.
+func navigateToPodSpec(data []byte) (map[string]any, error) {
+	var deploy map[string]any
+	if err := json.Unmarshal(data, &deploy); err != nil {
+		return nil, reconcile.TerminalError(fmt.Errorf("unmarshaling deployment: %w", err))
+	}
+	spec, ok := deploy["spec"].(map[string]any)
+	if !ok {
+		return nil, reconcile.TerminalError(fmt.Errorf("deployment missing spec"))
+	}
+	template, ok := spec["template"].(map[string]any)
+	if !ok {
+		return nil, reconcile.TerminalError(fmt.Errorf("deployment missing spec.template"))
+	}
+	podSpec, ok := template["spec"].(map[string]any)
+	if !ok {
+		return nil, reconcile.TerminalError(fmt.Errorf("deployment missing spec.template.spec"))
+	}
+	return podSpec, nil
+}
+
 // buildCloudflaredDeploymentApply builds the apply configuration for the
 // cloudflared Deployment, including selector labels, infrastructure
 // labels/annotations, owner reference, and the cloudflared container spec.
-func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters, e *tunnelEntry) *acappsv1.DeploymentApplyConfiguration {
+func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters, resourceName string, replica *apiv1.ReplicaConfig) *acappsv1.DeploymentApplyConfiguration {
+	deploymentName := apiv1.GatewayReplicaName(gw, replica.Name)
 	selectorLabels := map[string]string{
 		"app.kubernetes.io/name":       "cloudflared",
 		"app.kubernetes.io/managed-by": apiv1.ShortControllerName,
 		"app.kubernetes.io/instance":   gw.Name,
+		"app.kubernetes.io/component":  replica.Name,
 	}
 	templateLabels := maps.Clone(selectorLabels)
 
@@ -443,7 +577,7 @@ func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gatewa
 			WithName("TUNNEL_TOKEN").
 			WithValueFrom(accorev1.EnvVarSource().
 				WithSecretKeyRef(accorev1.SecretKeySelector().
-					WithName(e.secretName).
+					WithName(resourceName).
 					WithKey("TUNNEL_TOKEN"),
 				),
 			),
@@ -506,7 +640,7 @@ func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gatewa
 		containers = append(containers, sidecarContainer)
 	}
 
-	deploy := acappsv1.Deployment(e.deploymentName, gw.Namespace).
+	deploy := acappsv1.Deployment(deploymentName, gw.Namespace).
 		WithLabels(deployLabels).
 		WithAnnotations(deployAnnotations).
 		WithOwnerReferences(acmetav1.OwnerReference().

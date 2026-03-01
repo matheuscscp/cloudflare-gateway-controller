@@ -435,3 +435,25 @@ is correctly forwarded through cloudflared and the sidecar to the backend.
 6. Run `cfgwctl test session` with 50 requests, verifying cookie affinity and
    host header forwarding (`--hostname`).
 7. Delete `HTTPRoute`, `Gateway` (wait for deletion), Deployments, Services.
+
+## test_replicas
+
+Multiple replica Deployments for the same Gateway tunnel. Verifies that the
+controller creates separate Deployments per replica while sharing a single
+tunnel, Secret, and sidecar resources.
+
+**Resources created:**
+- `CloudflareGatewayParameters` with 2 replicas (`alpha`, `beta`)
+- `Gateway` referencing the parameters
+
+**Cloudflare resources:** 1 tunnel (shared by both replicas).
+
+**Steps:**
+
+1. Create `CloudflareGatewayParameters` with 2 replicas.
+2. Create `Gateway`; wait for Programmed.
+3. Verify 2 Deployments exist: `gateway-replicas-gw-alpha` and
+   `gateway-replicas-gw-beta`.
+4. Verify single shared Secret `gateway-replicas-gw`.
+5. Delete `Gateway`; verify deleted.
+6. Clean up `CloudflareGatewayParameters`.

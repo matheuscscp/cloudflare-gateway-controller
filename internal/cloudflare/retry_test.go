@@ -206,7 +206,7 @@ func TestWithRetry_DelegatesAllMethods(t *testing.T) {
 	g.Expect(zoneID).To(Equal("zone-1"))
 	g.Expect(inner.calls["FindZoneIDByHostname"]).To(Equal(1))
 
-	err = c.EnsureDNSCNAME(ctx, "zone-1", "app.example.com", "target.example.com", "test comment")
+	err = c.EnsureDNSCNAME(ctx, "zone-1", "app.example.com", "target.example.com")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(inner.calls["EnsureDNSCNAME"]).To(Equal(1))
 
@@ -290,7 +290,7 @@ func (m *mockRetryClient) FindZoneIDByHostname(_ context.Context, _ string) (str
 	return "zone-1", nil
 }
 
-func (m *mockRetryClient) EnsureDNSCNAME(_ context.Context, _, _, _, _ string) error {
+func (m *mockRetryClient) EnsureDNSCNAME(_ context.Context, _, _, _ string) error {
 	m.calls["EnsureDNSCNAME"]++
 	return nil
 }

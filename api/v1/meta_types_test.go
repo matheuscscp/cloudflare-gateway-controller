@@ -27,32 +27,12 @@ func testGateway() *gatewayv1.Gateway {
 	}
 }
 
-func TestResourceName(t *testing.T) {
-	g := NewWithT(t)
-	name := apiv1.ResourceName("a", "b", "c")
-	g.Expect(name).To(HavePrefix("gw-"))
-	// Full SHA256 = 64 hex chars, "gw-" prefix = 67 chars total.
-	g.Expect(name).To(HaveLen(67))
-	// Same inputs produce same output.
-	g.Expect(apiv1.ResourceName("a", "b", "c")).To(Equal(name))
-	// Different inputs produce different output.
-	g.Expect(apiv1.ResourceName("a", "b", "d")).NotTo(Equal(name))
-}
-
-func TestResourceDescription(t *testing.T) {
-	g := NewWithT(t)
-	gw := testGateway()
-	desc := apiv1.ResourceDescription(gw)
-	g.Expect(desc).To(Equal("cfgw cluster:test-cluster ns:my-ns gw:my-gw"))
-	descWithExtra := apiv1.ResourceDescription(gw, "az:us-east-1a", "svc:default/web")
-	g.Expect(descWithExtra).To(Equal("cfgw cluster:test-cluster ns:my-ns gw:my-gw az:us-east-1a svc:default/web"))
-}
-
 func TestTunnelName(t *testing.T) {
 	g := NewWithT(t)
 	gw := testGateway()
 	name := apiv1.TunnelName(gw)
 	g.Expect(name).To(HavePrefix("gw-"))
+	// Full SHA256 = 64 hex chars, "gw-" prefix = 67 chars total.
 	g.Expect(name).To(HaveLen(67))
 	// Deterministic: same cluster/ns/gw always produces the same name.
 	g.Expect(apiv1.TunnelName(gw)).To(Equal(name))
@@ -62,6 +42,13 @@ func TestGatewayResourceName(t *testing.T) {
 	g := NewWithT(t)
 	gw := testGateway()
 	g.Expect(apiv1.GatewayResourceName(gw)).To(Equal("gateway-my-gw"))
+}
+
+func TestGatewayReplicaName(t *testing.T) {
+	g := NewWithT(t)
+	gw := testGateway()
+	g.Expect(apiv1.GatewayReplicaName(gw, "zone-a")).To(Equal("gateway-my-gw-zone-a"))
+	g.Expect(apiv1.GatewayReplicaName(gw, "primary")).To(Equal("gateway-my-gw-primary"))
 }
 
 func TestFinalizerGatewayClass(t *testing.T) {
