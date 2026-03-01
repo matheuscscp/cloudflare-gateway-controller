@@ -18,11 +18,11 @@ import (
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
 )
 
-// reconcileAllTunnelIngress builds and applies ingress rules for all tunnel
-// entries. Returns the denied refs map, change messages, and any error.
+// reconcileTunnelIngress builds and applies ingress rules for the tunnel.
+// Returns the denied refs map, change messages, and any error.
 // When sidecar is enabled, sidecarDeniedRefs provides the denied refs computed
 // by reconcileSidecarConfigMap.
-func (r *GatewayReconciler) reconcileAllTunnelIngress(ctx context.Context, tc cloudflare.Client, params *apiv1.CloudflareGatewayParameters, entries []tunnelEntry, routes []*gatewayv1.HTTPRoute, sidecarDeniedRefs map[types.NamespacedName][]string) (map[types.NamespacedName][]string, []string, error) {
+func (r *GatewayReconciler) reconcileTunnelIngress(ctx context.Context, tc cloudflare.Client, params *apiv1.CloudflareGatewayParameters, tunnel tunnelState, routes []*gatewayv1.HTTPRoute, sidecarDeniedRefs map[types.NamespacedName][]string) (map[types.NamespacedName][]string, []string, error) {
 	l := log.FromContext(ctx)
 
 	var ingress []cloudflare.IngressRule
@@ -45,20 +45,16 @@ func (r *GatewayReconciler) reconcileAllTunnelIngress(ctx context.Context, tc cl
 	}
 
 	var changes []string
-	for i := range entries {
-		e := &entries[i]
-
-		currentIngress, err := tc.GetTunnelConfiguration(ctx, e.tunnelID)
-		if err != nil {
-			return nil, nil, fmt.Errorf("getting tunnel %q configuration: %w", e.tunnelName, err)
+	currentIngress, err := tc.GetTunnelConfiguration(ctx, tunnel.id)
+	if err != nil {
+		return nil, nil, fmt.Errorf("getting tunnel %q configuration: %w", tunnel.name, err)
+	}
+	if !ingressRulesEqual(currentIngress, ingress) {
+		if err := tc.UpdateTunnelConfiguration(ctx, tunnel.id, ingress); err != nil {
+			return nil, nil, fmt.Errorf("updating tunnel %q configuration: %w", tunnel.name, err)
 		}
-		if !ingressRulesEqual(currentIngress, ingress) {
-			if err := tc.UpdateTunnelConfiguration(ctx, e.tunnelID, ingress); err != nil {
-				return nil, nil, fmt.Errorf("updating tunnel %q configuration: %w", e.tunnelName, err)
-			}
-			changes = append(changes, fmt.Sprintf("updated tunnel %s configuration", e.tunnelName))
-			l.V(1).Info("Updated tunnel configuration", "tunnelName", e.tunnelName)
-		}
+		changes = append(changes, fmt.Sprintf("updated tunnel %s configuration", tunnel.name))
+		l.V(1).Info("Updated tunnel configuration", "tunnelName", tunnel.name)
 	}
 	return routesWithDeniedRefs, changes, nil
 }

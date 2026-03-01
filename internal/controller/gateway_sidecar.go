@@ -231,15 +231,15 @@ func (r *GatewayReconciler) reconcileSidecarRBAC(ctx context.Context, gw *gatewa
 	rb.SetLabels(labels)
 	rb.SetOwnerReferences([]metav1.OwnerReference{ownerRef})
 	if err := unstructured.SetNestedField(rb.Object, map[string]any{
-		"apiGroup": "rbac.authorization.k8s.io",
-		"kind":     "Role",
+		"apiGroup": rbacv1.SchemeGroupVersion.Group,
+		"kind":     apiv1.KindRole,
 		"name":     saName,
 	}, "roleRef"); err != nil {
 		return nil, fmt.Errorf("setting rolebinding roleRef: %w", err)
 	}
 	if err := unstructured.SetNestedSlice(rb.Object, []any{
 		map[string]any{
-			"kind":      "ServiceAccount",
+			"kind":      apiv1.KindServiceAccount,
 			"name":      saName,
 			"namespace": gw.Namespace,
 		},

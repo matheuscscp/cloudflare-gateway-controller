@@ -93,12 +93,10 @@ type gatewayReadiness struct {
 	programmedReason, programmedMsg string
 }
 
-// tunnelEntry represents one desired tunnel and its associated Kubernetes resources.
-type tunnelEntry struct {
-	tunnelName     string // Cloudflare tunnel name (deterministic hash)
-	deploymentName string // cloudflared Deployment name
-	secretName     string // tunnel token Secret name
-	tunnelID       string // filled after ensureTunnels
+// tunnelState holds the Cloudflare tunnel identity for a Gateway.
+type tunnelState struct {
+	name string // deterministic hash name
+	id   string // Cloudflare tunnel ID (filled by ensureTunnel)
 }
 
 // +kubebuilder:rbac:groups=cloudflare-gateway-controller.io,resources=cloudflaregatewayparameters,verbs=get;list;watch
@@ -284,22 +282,20 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		validRoutes = append(validRoutes, route)
 	}
 
-	// Compute desired tunnel entry.
-	entries := []tunnelEntry{{
-		tunnelName:     apiv1.TunnelName(gw),
-		deploymentName: apiv1.GatewayResourceName(gw),
-		secretName:     apiv1.GatewayResourceName(gw),
-	}}
+	// Compute desired tunnel state and replicas.
+	replicas := resolveReplicas(params)
+	tunnel := tunnelState{name: apiv1.TunnelName(gw)}
+	resourceName := apiv1.GatewayResourceName(gw)
 
-	// Ensure all tunnels exist.
-	tunnelChanges, err := r.ensureTunnels(ctx, tc, entries)
+	// Ensure the tunnel exists.
+	tunnelChanges, err := r.ensureTunnel(ctx, tc, &tunnel)
 	if err != nil {
 		return r.reconcileError(ctx, gw, err)
 	}
 	changes = append(changes, tunnelChanges...)
 
-	// Reconcile tunnel token Secrets for all entries.
-	secretChanges, err := r.reconcileTunnelTokenSecrets(ctx, gw, tc, entries)
+	// Reconcile the tunnel token Secret.
+	secretChanges, err := r.reconcileTunnelTokenSecret(ctx, gw, tc, tunnel, resourceName)
 	if err != nil {
 		return r.reconcileError(ctx, gw, err)
 	}
@@ -322,8 +318,8 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		changes = append(changes, sidecarRBACChanges...)
 	}
 
-	// Apply cloudflared Deployments for all entries.
-	deployChanges, err := r.applyCloudflaredDeployments(ctx, gw, params, entries)
+	// Apply cloudflared Deployments for all replicas.
+	deployChanges, err := r.applyCloudflaredDeployments(ctx, gw, params, resourceName, replicas)
 	if err != nil {
 		return r.reconcileError(ctx, gw, err)
 	}
@@ -331,7 +327,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 
 	// Clean up stale Kubernetes resources (Deployments, Secrets) that are no
 	// longer desired. Tunnel names are deterministic, so no previous state needed.
-	cleanupChanges, cleanupErrs := r.cleanupStaleTunnelResources(ctx, gw, entries)
+	cleanupChanges, cleanupErrs := r.cleanupStaleTunnelResources(ctx, gw, resourceName, replicas)
 	changes = append(changes, cleanupChanges...)
 	errs = append(errs, cleanupErrs...)
 
@@ -347,7 +343,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	desiredListeners := buildListenerStatuses(gw, countAttachedRoutes(validRoutes, gw))
 
 	// Reconcile tunnel ingress configuration.
-	routesWithDeniedRefs, configChanges, err := r.reconcileAllTunnelIngress(ctx, tc, params, entries, validRoutes, sidecarDeniedRefs)
+	routesWithDeniedRefs, configChanges, err := r.reconcileTunnelIngress(ctx, tc, params, tunnel, validRoutes, sidecarDeniedRefs)
 	if err != nil {
 		return r.reconcileError(ctx, gw, err)
 	}
@@ -366,12 +362,12 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	}
 
 	// Reconcile DNS, handling zone changes.
-	dnsResult := r.reconcileDNSWithZoneChange(ctx, tc, gw, entries, validRoutes, dns)
+	dnsResult := r.reconcileDNSWithZoneChange(ctx, tc, tunnel.id, validRoutes, dns)
 	changes = append(changes, dnsResult.changes...)
 	errs = append(errs, dnsResult.errs...)
 
 	// Check readiness of all cloudflared Deployments.
-	readiness := r.checkAllDeploymentsReadiness(ctx, gw, entries)
+	readiness := r.checkAllDeploymentsReadiness(ctx, gw, replicas)
 
 	// Update HTTPRoute status.parents for allowed routes (after DNS and
 	// Deployment checks so we can report DNS status and Gateway readiness).
@@ -382,7 +378,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	// and mirrored conditions). Done before the Gateway status patch so CGS
 	// reflects the latest state even if the status patch fails.
 	cgs, _ := r.getCGS(ctx, gw)
-	if updatedCGS, err := r.reconcileCGS(ctx, gw, cgs, params, entries); err != nil {
+	if updatedCGS, err := r.reconcileCGS(ctx, gw, cgs, params, tunnel, resourceName, replicas); err != nil {
 		errs = append(errs, fmt.Sprintf("failed to reconcile CloudflareGatewayStatus: %v", err))
 	} else {
 		cgs = updatedCGS
@@ -396,7 +392,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	}
 
 	// Patch Gateway status and emit events
-	return r.patchGatewayStatus(ctx, gw, cgs, entries, desiredListeners, changes, errs, readiness, dns, sidecar, requeueAfter)
+	return r.patchGatewayStatus(ctx, gw, cgs, tunnel, desiredListeners, changes, errs, readiness, dns, sidecar, requeueAfter)
 }
 
 // dnsResult holds the results of DNS reconciliation.
@@ -411,16 +407,11 @@ type dnsResult struct {
 // diffs against the desired set, so no previous-zone tracking is needed.
 func (r *GatewayReconciler) reconcileDNSWithZoneChange(
 	ctx context.Context, tc cloudflare.Client,
-	gw *gatewayv1.Gateway,
-	entries []tunnelEntry, validRoutes []*gatewayv1.HTTPRoute,
+	tunnelID string, validRoutes []*gatewayv1.HTTPRoute,
 	dns dnsPolicy,
 ) dnsResult {
 	var res dnsResult
-	var tunnelID string
-	if len(entries) > 0 {
-		tunnelID = entries[0].tunnelID
-	}
-	dnsChanges, dnsErr := r.reconcileDNS(ctx, tc, gw, tunnelID, dns, validRoutes)
+	dnsChanges, dnsErr := r.reconcileDNS(ctx, tc, tunnelID, dns, validRoutes)
 	res.changes = append(res.changes, dnsChanges...)
 	res.dnsErr = dnsErr
 	if dnsErr != nil {
@@ -484,7 +475,7 @@ func buildSidecarCondition(generation int64, now metav1.Time, sidecarEnabled boo
 // state, checks whether a status patch is needed (conditions, listeners, or
 // resource changes), patches the status, and emits summary events/logs.
 // It also patches the CGS conditions to mirror the Gateway conditions.
-func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv1.Gateway, cgs *apiv1.CloudflareGatewayStatus, entries []tunnelEntry, desiredListeners []gatewayv1.ListenerStatus, changes, errs []string, readiness gatewayReadiness, dns dnsPolicy, sidecar bool, requeueAfter time.Duration) (ctrl.Result, error) {
+func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv1.Gateway, cgs *apiv1.CloudflareGatewayStatus, tunnel tunnelState, desiredListeners []gatewayv1.ListenerStatus, changes, errs []string, readiness gatewayReadiness, dns dnsPolicy, sidecar bool, requeueAfter time.Duration) (ctrl.Result, error) {
 	l := log.FromContext(ctx)
 	now := metav1.Now()
 
@@ -530,13 +521,10 @@ func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv
 		sidecarCond,
 	}
 
-	desiredAddresses := make([]gatewayv1.GatewayStatusAddress, 0, len(entries))
-	for _, e := range entries {
-		desiredAddresses = append(desiredAddresses, gatewayv1.GatewayStatusAddress{
-			Type:  new(gatewayv1.HostnameAddressType),
-			Value: cloudflare.TunnelTarget(e.tunnelID),
-		})
-	}
+	desiredAddresses := []gatewayv1.GatewayStatusAddress{{
+		Type:  new(gatewayv1.HostnameAddressType),
+		Value: cloudflare.TunnelTarget(tunnel.id),
+	}}
 
 	// Check if Ready is transitioning to a terminal failure state (must be
 	// computed before conditions.Set mutates gw.Status.Conditions).
@@ -642,6 +630,17 @@ func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv
 		return ctrl.Result{}, fmt.Errorf("%s", strings.Join(errs, "; "))
 	}
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
+}
+
+// resolveReplicas returns the effective replica list from the parameters.
+// nil (absent) → single replica named "primary" (default).
+// [] (explicitly empty) → no replicas (scale to zero).
+// Non-empty → use as-is.
+func resolveReplicas(params *apiv1.CloudflareGatewayParameters) []apiv1.ReplicaConfig {
+	if params == nil || params.Spec.Tunnel == nil || params.Spec.Tunnel.Replicas == nil {
+		return []apiv1.ReplicaConfig{{Name: "primary"}}
+	}
+	return params.Spec.Tunnel.Replicas
 }
 
 // reconcileError handles business logic errors by best-effort patching Ready=Unknown
@@ -885,7 +884,7 @@ func (r *GatewayReconciler) finalizeEnabled(ctx context.Context, gw *gatewayv1.G
 	}
 	if tunnelID != "" {
 		// Delete DNS CNAME records pointing to this tunnel.
-		dnsChanges, dnsErr := r.reconcileDNS(ctx, tc, gw, tunnelID, dnsPolicy{}, nil)
+		dnsChanges, dnsErr := r.reconcileDNS(ctx, tc, tunnelID, dnsPolicy{}, nil)
 		changes = append(changes, dnsChanges...)
 		if dnsErr != nil {
 			return changes, fmt.Errorf("cleaning up DNS for tunnel %s: %s", tunnelName, *dnsErr)

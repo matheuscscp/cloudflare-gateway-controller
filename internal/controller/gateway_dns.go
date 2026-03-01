@@ -11,7 +11,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
 )
 
@@ -34,7 +33,7 @@ func (d dnsPolicy) allZones() bool { return d.enabled && len(d.zones) == 0 }
 // records and deleting stale ones. When dns is disabled, all records
 // are deleted.
 func (r *GatewayReconciler) reconcileDNS(
-	ctx context.Context, tc cloudflare.Client, gw *gatewayv1.Gateway,
+	ctx context.Context, tc cloudflare.Client,
 	tunnelID string, dns dnsPolicy,
 	routes []*gatewayv1.HTTPRoute,
 ) ([]string, *string) {
@@ -123,13 +122,12 @@ func (r *GatewayReconciler) reconcileDNS(
 		actualSet[r.hostname] = struct{}{}
 	}
 
-	dnsComment := apiv1.ResourceDescription(gw)
 	var dnsChanges []string
 
 	// Create missing records.
 	for hostname, zoneID := range desired {
 		if _, ok := actualSet[hostname]; !ok {
-			if err := tc.EnsureDNSCNAME(ctx, zoneID, hostname, tunnelTarget, dnsComment); err != nil {
+			if err := tc.EnsureDNSCNAME(ctx, zoneID, hostname, tunnelTarget); err != nil {
 				return dnsChanges, new(fmt.Sprintf("Failed to ensure DNS CNAME for %q: %v", hostname, err))
 			}
 			dnsChanges = append(dnsChanges, fmt.Sprintf("created DNS CNAME for %s", hostname))

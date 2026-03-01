@@ -108,7 +108,7 @@ func TestGatewayReconciler_AcceptedAndProgrammed(t *testing.T) {
 
 	// Verify Deployment created
 	var deploy appsv1.Deployment
-	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name, Namespace: gw.Namespace}
+	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name + "-primary", Namespace: gw.Namespace}
 	g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
 	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(2))
 	g.Expect(deploy.Spec.Template.Spec.Containers[0].Image).To(Equal(controller.DefaultCloudflaredImage))
@@ -163,12 +163,12 @@ func TestGatewayReconciler_AcceptedAndProgrammed(t *testing.T) {
 
 	// Inventory lists managed Kubernetes objects (sidecar enabled in tests).
 	g.Expect(cgs.Status.Inventory).To(ConsistOf(
-		apiv1.ResourceRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "gateway-" + gw.Name},
-		apiv1.ResourceRef{APIVersion: "v1", Kind: "Secret", Name: "gateway-" + gw.Name},
-		apiv1.ResourceRef{APIVersion: "v1", Kind: "ConfigMap", Name: "gateway-" + gw.Name},
-		apiv1.ResourceRef{APIVersion: "v1", Kind: "ServiceAccount", Name: "gateway-" + gw.Name},
-		apiv1.ResourceRef{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "Role", Name: "gateway-" + gw.Name},
-		apiv1.ResourceRef{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "RoleBinding", Name: "gateway-" + gw.Name},
+		apiv1.ResourceRef{APIVersion: apiv1.APIVersionApps, Kind: apiv1.KindDeployment, Name: "gateway-" + gw.Name + "-primary"},
+		apiv1.ResourceRef{APIVersion: apiv1.APIVersionCore, Kind: apiv1.KindSecret, Name: "gateway-" + gw.Name},
+		apiv1.ResourceRef{APIVersion: apiv1.APIVersionCore, Kind: apiv1.KindConfigMap, Name: "gateway-" + gw.Name},
+		apiv1.ResourceRef{APIVersion: apiv1.APIVersionCore, Kind: apiv1.KindServiceAccount, Name: "gateway-" + gw.Name},
+		apiv1.ResourceRef{APIVersion: apiv1.APIVersionRBAC, Kind: apiv1.KindRole, Name: "gateway-" + gw.Name},
+		apiv1.ResourceRef{APIVersion: apiv1.APIVersionRBAC, Kind: apiv1.KindRoleBinding, Name: "gateway-" + gw.Name},
 	))
 
 	// CGS conditions mirror Gateway conditions.
@@ -754,7 +754,7 @@ func TestGatewayReconciler_Infrastructure(t *testing.T) {
 
 	// Verify Deployment has infrastructure labels/annotations
 	var deploy appsv1.Deployment
-	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name, Namespace: gw.Namespace}
+	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name + "-primary", Namespace: gw.Namespace}
 	g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
 
 	// Deployment ObjectMeta
@@ -1044,7 +1044,7 @@ func TestGatewayReconciler_DeploymentPatches(t *testing.T) {
 
 	// Verify Deployment has tolerations from the patch
 	var deploy appsv1.Deployment
-	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name, Namespace: gw.Namespace}
+	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name + "-primary", Namespace: gw.Namespace}
 	g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
 	g.Expect(deploy.Spec.Template.Spec.Tolerations).To(HaveLen(1))
 	g.Expect(deploy.Spec.Template.Spec.Tolerations[0].Key).To(Equal("example.com/special-node"))
@@ -1115,7 +1115,7 @@ func TestGatewayReconciler_DeploymentPatchesMultiple(t *testing.T) {
 
 	// Verify both replicas and tolerations are applied
 	var deploy appsv1.Deployment
-	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name, Namespace: gw.Namespace}
+	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name + "-primary", Namespace: gw.Namespace}
 	g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
 	g.Expect(deploy.Spec.Replicas).NotTo(BeNil())
 	g.Expect(*deploy.Spec.Replicas).To(Equal(int32(3)))
@@ -1182,7 +1182,7 @@ func TestGatewayReconciler_DeploymentPatchesResourceRequests(t *testing.T) {
 
 	// Verify Deployment container has resource requests/limits
 	var deploy appsv1.Deployment
-	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name, Namespace: gw.Namespace}
+	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name + "-primary", Namespace: gw.Namespace}
 	g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
 	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(2))
 	resources := deploy.Spec.Template.Spec.Containers[0].Resources
@@ -1383,7 +1383,7 @@ func TestGatewayReconciler_SidecarDisabledViaCGP(t *testing.T) {
 
 	// Verify Deployment has 1 container (no sidecar)
 	var deploy appsv1.Deployment
-	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name, Namespace: gw.Namespace}
+	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name + "-primary", Namespace: gw.Namespace}
 	g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
 	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
 	g.Expect(deploy.Spec.Template.Spec.Containers[0].Name).To(Equal("cloudflared"))
@@ -1421,6 +1421,177 @@ func TestGatewayReconciler_SidecarDisabledViaCGP(t *testing.T) {
 	}).WithTimeout(30 * time.Second).WithPolling(100 * time.Millisecond).Should(Satisfy(apierrors.IsNotFound))
 }
 
+func TestGatewayReconciler_DeploymentPatchesRemoveSidecar(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-patches-rm-sidecar", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	// Sidecar is enabled (default). Patch removes the sidecar container (index 1).
+	params := createTestParameters(g, "test-gw-patches-rm-sidecar-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		Tunnel: &apiv1.TunnelConfig{
+			Patches: []apiv1.JSONPatchOperation{
+				{
+					Op:   "remove",
+					Path: "/spec/template/spec/containers/1",
+				},
+			},
+		},
+	})
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-patches-rm-sidecar",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "http",
+					Protocol: gatewayv1.HTTPProtocolType,
+					Port:     80,
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// The Gateway should report a terminal error about the removed sidecar.
+	gwKey := client.ObjectKeyFromObject(gw)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
+		ready := conditions.Find(result.Status.Conditions, apiv1.ConditionReady)
+		g.Expect(ready).NotTo(BeNil())
+		g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(ready.Reason).To(Equal(apiv1.ReasonReconciliationFailed))
+		g.Expect(ready.Message).To(ContainSubstring("sidecar container"))
+		g.Expect(ready.Message).To(ContainSubstring("sidecar.enabled=false"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func TestGatewayReconciler_DeploymentPatchesPlacementOverride(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-patches-placement", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	// Patch sets nodeSelector and affinity; replica config also sets zone and
+	// nodeSelector. The replica placement must win.
+	params := createTestParameters(g, "test-gw-patches-placement-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		Tunnel: &apiv1.TunnelConfig{
+			Patches: []apiv1.JSONPatchOperation{
+				{
+					Op:   "add",
+					Path: "/spec/template/spec/nodeSelector",
+					Value: &apiextensionsv1.JSON{
+						Raw: []byte(`{"from-patch":"true"}`),
+					},
+				},
+				{
+					Op:   "add",
+					Path: "/spec/template/spec/affinity",
+					Value: &apiextensionsv1.JSON{
+						Raw: []byte(`{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"from-patch","operator":"In","values":["yes"]}]}]}}}`),
+					},
+				},
+			},
+			Replicas: []apiv1.ReplicaConfig{
+				{
+					Name:         "primary",
+					Zone:         "us-west-2",
+					NodeSelector: map[string]string{"from-replica": "true"},
+				},
+			},
+		},
+	})
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-patches-placement",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "http",
+					Protocol: gatewayv1.HTTPProtocolType,
+					Port:     80,
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayProgrammed(g, gw)
+
+	// Verify the replica placement overrode the patches.
+	var deploy appsv1.Deployment
+	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name + "-primary", Namespace: gw.Namespace}
+	g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
+
+	// nodeSelector should be from replica, not from patch.
+	g.Expect(deploy.Spec.Template.Spec.NodeSelector).To(Equal(map[string]string{"from-replica": "true"}))
+
+	// Affinity should be the zone shorthand from replica, not from patch.
+	g.Expect(deploy.Spec.Template.Spec.Affinity).NotTo(BeNil())
+	g.Expect(deploy.Spec.Template.Spec.Affinity.NodeAffinity).NotTo(BeNil())
+	required := deploy.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution
+	g.Expect(required).NotTo(BeNil())
+	g.Expect(required.NodeSelectorTerms).To(HaveLen(1))
+	g.Expect(required.NodeSelectorTerms[0].MatchExpressions).To(HaveLen(1))
+	g.Expect(required.NodeSelectorTerms[0].MatchExpressions[0].Key).To(Equal("topology.kubernetes.io/zone"))
+	g.Expect(required.NodeSelectorTerms[0].MatchExpressions[0].Values).To(ConsistOf("us-west-2"))
+
+	// Explicitly delete the Gateway and wait for finalization to complete,
+	// so the async DeleteTunnel mock call doesn't leak into the next test.
+	gwKey := client.ObjectKeyFromObject(gw)
+	g.Expect(testClient.Delete(testCtx, gw)).To(Succeed())
+	g.Eventually(func() error {
+		return testClient.Get(testCtx, gwKey, &gatewayv1.Gateway{})
+	}).WithTimeout(30 * time.Second).WithPolling(100 * time.Millisecond).Should(Satisfy(apierrors.IsNotFound))
+}
+
 func TestGatewayReconciler_DeletionReconcileDisabled(t *testing.T) {
 	g := NewWithT(t)
 
@@ -1449,7 +1620,7 @@ func TestGatewayReconciler_DeletionReconcileDisabled(t *testing.T) {
 	waitForGatewayProgrammed(g, gw)
 
 	// Verify Deployment and Secret exist.
-	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name, Namespace: gw.Namespace}
+	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name + "-primary", Namespace: gw.Namespace}
 	secretKey := client.ObjectKey{Name: "gateway-" + gw.Name, Namespace: gw.Namespace}
 	var deploy appsv1.Deployment
 	var tokenSecret corev1.Secret
@@ -1551,7 +1722,7 @@ func TestGatewayReconciler_DeploymentProgressDeadlineExceeded(t *testing.T) {
 	// Progressing condition to False. The background goroutine skips Deployments
 	// where ReadyReplicas == desired, so after Programmed we can safely
 	// patch only the Progressing condition.
-	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name, Namespace: gw.Namespace}
+	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name + "-primary", Namespace: gw.Namespace}
 	g.Eventually(func(g Gomega) {
 		var deploy appsv1.Deployment
 		g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
@@ -3290,4 +3461,264 @@ func TestGatewayReconciler_CredentialsFromCGPSecretRefMissingKeys(t *testing.T) 
 		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.GatewayReasonInvalidParameters)))
 		g.Expect(accepted.Message).To(ContainSubstring("CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func TestGatewayReconciler_Replicas(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-replicas", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	params := createTestParameters(g, "test-replicas-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		Tunnel: &apiv1.TunnelConfig{
+			Replicas: []apiv1.ReplicaConfig{
+				{Name: "zone-a", Zone: "us-east-1"},
+				{Name: "zone-b"},
+			},
+		},
+	})
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-replicas",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
+			Listeners: []gatewayv1.Listener{
+				{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayProgrammed(g, gw)
+
+	// Verify 2 Deployments exist with replica names.
+	var deployA appsv1.Deployment
+	deployKeyA := client.ObjectKey{Name: "gateway-" + gw.Name + "-zone-a", Namespace: gw.Namespace}
+	g.Expect(testClient.Get(testCtx, deployKeyA, &deployA)).To(Succeed())
+
+	var deployB appsv1.Deployment
+	deployKeyB := client.ObjectKey{Name: "gateway-" + gw.Name + "-zone-b", Namespace: gw.Namespace}
+	g.Expect(testClient.Get(testCtx, deployKeyB, &deployB)).To(Succeed())
+
+	// Verify zone-a has zone node affinity for us-east-1.
+	g.Expect(deployA.Spec.Template.Spec.Affinity).NotTo(BeNil())
+	g.Expect(deployA.Spec.Template.Spec.Affinity.NodeAffinity).NotTo(BeNil())
+	required := deployA.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution
+	g.Expect(required).NotTo(BeNil())
+	g.Expect(required.NodeSelectorTerms).To(HaveLen(1))
+	g.Expect(required.NodeSelectorTerms[0].MatchExpressions).To(HaveLen(1))
+	g.Expect(required.NodeSelectorTerms[0].MatchExpressions[0].Key).To(Equal("topology.kubernetes.io/zone"))
+	g.Expect(required.NodeSelectorTerms[0].MatchExpressions[0].Values).To(ConsistOf("us-east-1"))
+
+	// Verify zone-b has no affinity.
+	g.Expect(deployB.Spec.Template.Spec.Affinity).To(BeNil())
+
+	// Verify component labels on both Deployments.
+	g.Expect(deployA.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/component", "zone-a"))
+	g.Expect(deployB.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/component", "zone-b"))
+
+	// Verify single shared Secret.
+	var tokenSecret corev1.Secret
+	secretKey := client.ObjectKey{Name: "gateway-" + gw.Name, Namespace: gw.Namespace}
+	g.Expect(testClient.Get(testCtx, secretKey, &tokenSecret)).To(Succeed())
+	g.Expect(tokenSecret.Data).To(HaveKey("TUNNEL_TOKEN"))
+
+	// Verify CGS inventory lists both Deployments.
+	var cgs apiv1.CloudflareGatewayStatus
+	g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &cgs)).To(Succeed())
+	g.Expect(cgs.Status.Inventory).To(ContainElement(
+		apiv1.ResourceRef{APIVersion: apiv1.APIVersionApps, Kind: apiv1.KindDeployment, Name: "gateway-" + gw.Name + "-zone-a"},
+	))
+	g.Expect(cgs.Status.Inventory).To(ContainElement(
+		apiv1.ResourceRef{APIVersion: apiv1.APIVersionApps, Kind: apiv1.KindDeployment, Name: "gateway-" + gw.Name + "-zone-b"},
+	))
+	g.Expect(cgs.Status.Inventory).To(ContainElement(
+		apiv1.ResourceRef{APIVersion: apiv1.APIVersionCore, Kind: apiv1.KindSecret, Name: "gateway-" + gw.Name},
+	))
+}
+
+func TestGatewayReconciler_ReplicasDefault(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-replicas-default", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	gw := createTestGateway(g, "test-replicas-default", ns.Name, gc.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayProgrammed(g, gw)
+
+	// Verify Deployment named gateway-{gw}-primary exists.
+	var deploy appsv1.Deployment
+	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name + "-primary", Namespace: gw.Namespace}
+	g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
+
+	// Verify component: primary in selector labels.
+	g.Expect(deploy.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/component", "primary"))
+}
+
+func TestCGP_XValidation_DuplicateReplicaNames(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	cgp := &apiv1.CloudflareGatewayParameters{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-dup-replicas",
+			Namespace: ns.Name,
+		},
+		Spec: apiv1.CloudflareGatewayParametersSpec{
+			Tunnel: &apiv1.TunnelConfig{
+				Replicas: []apiv1.ReplicaConfig{
+					{Name: "alpha"},
+					{Name: "alpha"},
+				},
+			},
+		},
+	}
+	err := testClient.Create(testCtx, cgp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), "expected Invalid error, got: %v", err)
+	g.Expect(err.Error()).To(ContainSubstring("replica names must be unique"))
+}
+
+func TestCGP_XValidation_ZoneAndAffinityMutuallyExclusive(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	cgp := &apiv1.CloudflareGatewayParameters{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-zone-affinity",
+			Namespace: ns.Name,
+		},
+		Spec: apiv1.CloudflareGatewayParametersSpec{
+			Tunnel: &apiv1.TunnelConfig{
+				Replicas: []apiv1.ReplicaConfig{
+					{
+						Name: "bad",
+						Zone: "us-east-1",
+						Affinity: &corev1.Affinity{
+							NodeAffinity: &corev1.NodeAffinity{
+								RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+									NodeSelectorTerms: []corev1.NodeSelectorTerm{{
+										MatchExpressions: []corev1.NodeSelectorRequirement{{
+											Key:      "topology.kubernetes.io/zone",
+											Operator: corev1.NodeSelectorOpIn,
+											Values:   []string{"us-east-1"},
+										}},
+									}},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	err := testClient.Create(testCtx, cgp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), "expected Invalid error, got: %v", err)
+	g.Expect(err.Error()).To(ContainSubstring("zone and affinity are mutually exclusive"))
+}
+
+func TestCGP_NilVsEmptySlices(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	// Test zones: nil vs empty.
+	t.Run("zones nil", func(t *testing.T) {
+		g := NewWithT(t)
+		cgp := createTestParameters(g, "test-zones-nil", ns.Name, apiv1.CloudflareGatewayParametersSpec{})
+		t.Cleanup(func() { _ = testClient.Delete(testCtx, cgp) })
+
+		var result apiv1.CloudflareGatewayParameters
+		g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(cgp), &result)).To(Succeed())
+		g.Expect(result.Spec.DNS).To(BeNil(), "absent dns should be nil")
+	})
+
+	t.Run("zones empty", func(t *testing.T) {
+		g := NewWithT(t)
+		cgp := createTestParameters(g, "test-zones-empty", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+			DNS: &apiv1.DNSConfig{
+				Zones: []apiv1.DNSZoneConfig{},
+			},
+		})
+		t.Cleanup(func() { _ = testClient.Delete(testCtx, cgp) })
+
+		var result apiv1.CloudflareGatewayParameters
+		g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(cgp), &result)).To(Succeed())
+		g.Expect(result.Spec.DNS).NotTo(BeNil(), "dns should not be nil")
+		g.Expect(result.Spec.DNS.Zones).NotTo(BeNil(), "zones should be empty slice, not nil")
+		g.Expect(result.Spec.DNS.Zones).To(BeEmpty())
+	})
+
+	// Test replicas: nil vs empty.
+	t.Run("replicas nil", func(t *testing.T) {
+		g := NewWithT(t)
+		cgp := createTestParameters(g, "test-replicas-nil", ns.Name, apiv1.CloudflareGatewayParametersSpec{})
+		t.Cleanup(func() { _ = testClient.Delete(testCtx, cgp) })
+
+		var result apiv1.CloudflareGatewayParameters
+		g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(cgp), &result)).To(Succeed())
+		g.Expect(result.Spec.Tunnel).To(BeNil(), "absent tunnel should be nil")
+	})
+
+	t.Run("replicas empty", func(t *testing.T) {
+		g := NewWithT(t)
+		cgp := createTestParameters(g, "test-replicas-empty", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+			Tunnel: &apiv1.TunnelConfig{
+				Replicas: []apiv1.ReplicaConfig{},
+			},
+		})
+		t.Cleanup(func() { _ = testClient.Delete(testCtx, cgp) })
+
+		var result apiv1.CloudflareGatewayParameters
+		g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(cgp), &result)).To(Succeed())
+		g.Expect(result.Spec.Tunnel).NotTo(BeNil(), "tunnel should not be nil")
+		g.Expect(result.Spec.Tunnel.Replicas).NotTo(BeNil(), "replicas should be empty slice, not nil")
+		g.Expect(result.Spec.Tunnel.Replicas).To(BeEmpty())
+	})
 }

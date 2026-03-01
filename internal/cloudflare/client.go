@@ -52,7 +52,7 @@ type Client interface {
 	// Zone/DNS operations.
 	ListZoneIDs(ctx context.Context) ([]string, error)
 	FindZoneIDByHostname(ctx context.Context, hostname string) (string, error)
-	EnsureDNSCNAME(ctx context.Context, zoneID, hostname, target, comment string) error
+	EnsureDNSCNAME(ctx context.Context, zoneID, hostname, target string) error
 	DeleteDNSCNAME(ctx context.Context, zoneID, hostname string) error
 	ListDNSCNAMEsByTarget(ctx context.Context, zoneID, target string) ([]string, error)
 }
@@ -243,7 +243,7 @@ func (c *client) FindZoneIDByHostname(ctx context.Context, hostname string) (str
 	return "", fmt.Errorf("no zone found for hostname %q", hostname)
 }
 
-func (c *client) EnsureDNSCNAME(ctx context.Context, zoneID, hostname, target, comment string) error {
+func (c *client) EnsureDNSCNAME(ctx context.Context, zoneID, hostname, target string) error {
 	pager := c.client.DNS.Records.ListAutoPaging(ctx, dns.RecordListParams{
 		ZoneID: cloudflare.F(zoneID),
 		Name:   cloudflare.F(dns.RecordListParamsName{Exact: cloudflare.F(hostname)}),
@@ -263,7 +263,6 @@ func (c *client) EnsureDNSCNAME(ctx context.Context, zoneID, hostname, target, c
 					Type:    cloudflare.F(dns.CNAMERecordTypeCNAME),
 					TTL:     cloudflare.F(dns.TTL1),
 					Proxied: cloudflare.F(true),
-					Comment: cloudflare.String(comment),
 				},
 			})
 			return err
@@ -280,7 +279,6 @@ func (c *client) EnsureDNSCNAME(ctx context.Context, zoneID, hostname, target, c
 			Type:    cloudflare.F(dns.CNAMERecordTypeCNAME),
 			TTL:     cloudflare.F(dns.TTL1),
 			Proxied: cloudflare.F(true),
-			Comment: cloudflare.String(comment),
 		},
 	})
 	return err

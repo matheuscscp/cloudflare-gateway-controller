@@ -108,26 +108,44 @@ func validateGateway(gw *gatewayv1.Gateway) *gatewayValidationError {
 
 // validateParameters checks that the CloudflareGatewayParameters spec is valid.
 func validateParameters(params *apiv1.CloudflareGatewayParameters) *gatewayValidationError {
-	if params == nil || params.Spec.DNS == nil || len(params.Spec.DNS.Zones) == 0 {
-		return nil
+	if params != nil && params.Spec.DNS != nil && len(params.Spec.DNS.Zones) > 0 {
+		// Reject duplicate zone names.
+		seen := make(map[string]struct{}, len(params.Spec.DNS.Zones))
+		for _, z := range params.Spec.DNS.Zones {
+			if _, ok := seen[z.Name]; ok {
+				msg := fmt.Sprintf("duplicate zone name %q in dns.zones", z.Name)
+				return &gatewayValidationError{
+					err: reconcile.TerminalError(fmt.Errorf("%s", msg)),
+					cond: metav1.Condition{
+						Type:    string(gatewayv1.GatewayConditionAccepted),
+						Status:  metav1.ConditionFalse,
+						Reason:  string(gatewayv1.GatewayReasonInvalidParameters),
+						Message: msg,
+					},
+				}
+			}
+			seen[z.Name] = struct{}{}
+		}
 	}
 
-	// Reject duplicate zone names.
-	seen := make(map[string]struct{}, len(params.Spec.DNS.Zones))
-	for _, z := range params.Spec.DNS.Zones {
-		if _, ok := seen[z.Name]; ok {
-			msg := fmt.Sprintf("duplicate zone name %q in dns.zones", z.Name)
-			return &gatewayValidationError{
-				err: reconcile.TerminalError(fmt.Errorf("%s", msg)),
-				cond: metav1.Condition{
-					Type:    string(gatewayv1.GatewayConditionAccepted),
-					Status:  metav1.ConditionFalse,
-					Reason:  string(gatewayv1.GatewayReasonInvalidParameters),
-					Message: msg,
-				},
+	// Reject duplicate replica names (defense-in-depth, mirrors CEL XValidation).
+	if params != nil && params.Spec.Tunnel != nil && len(params.Spec.Tunnel.Replicas) > 0 {
+		seen := make(map[string]struct{}, len(params.Spec.Tunnel.Replicas))
+		for _, r := range params.Spec.Tunnel.Replicas {
+			if _, ok := seen[r.Name]; ok {
+				msg := fmt.Sprintf("duplicate replica name %q in tunnel.replicas", r.Name)
+				return &gatewayValidationError{
+					err: reconcile.TerminalError(fmt.Errorf("%s", msg)),
+					cond: metav1.Condition{
+						Type:    string(gatewayv1.GatewayConditionAccepted),
+						Status:  metav1.ConditionFalse,
+						Reason:  string(gatewayv1.GatewayReasonInvalidParameters),
+						Message: msg,
+					},
+				}
 			}
+			seen[r.Name] = struct{}{}
 		}
-		seen[z.Name] = struct{}{}
 	}
 
 	return nil

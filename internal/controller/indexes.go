@@ -18,7 +18,6 @@ import (
 // Index field constants. Named as index<Kind><Field>.
 const (
 	indexGatewayGatewayClassName            = ".gateway.gatewayClassName"
-	indexGatewayTunnelTokenSecret           = ".gateway.tunnelTokenSecret"
 	indexGatewayInfrastructureParametersRef = ".gateway.infrastructureParametersRef"
 	indexGatewayNamespaceSelector           = ".gateway.namespaceSelector"
 	indexGatewayClassControllerName         = ".gatewayClass.controllerName"
@@ -44,17 +43,6 @@ func setupGatewayIndexes(ctx context.Context, mgr ctrl.Manager) {
 			return []string{string(gw.Spec.GatewayClassName)}
 		}); err != nil {
 		panic(fmt.Sprintf("failed to setup index %s: %v", indexGatewayGatewayClassName, err))
-	}
-
-	// Index Gateways by their managed tunnel token Secret name so we can
-	// map Secret events to the owning Gateway for reconciliation. The
-	// namespace is filtered at query time via client.InNamespace.
-	if err := mgr.GetCache().IndexField(ctx, &gatewayv1.Gateway{}, indexGatewayTunnelTokenSecret,
-		func(obj client.Object) []string {
-			gw := obj.(*gatewayv1.Gateway)
-			return []string{apiv1.GatewayResourceName(gw)}
-		}); err != nil {
-		panic(fmt.Sprintf("failed to setup index %s: %v", indexGatewayTunnelTokenSecret, err))
 	}
 
 	// Index Gateways by their infrastructure.parametersRef name when it

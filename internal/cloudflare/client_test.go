@@ -626,7 +626,7 @@ func TestEnsureDNSCNAME(t *testing.T) {
 		})
 		c := newTestClient(t, mux)
 
-		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "tunnel.cfargotunnel.com", "test comment")).To(Succeed())
+		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "tunnel.cfargotunnel.com")).To(Succeed())
 		g.Expect(createdBody["name"]).To(Equal("app.example.com"))
 		g.Expect(createdBody["content"]).To(Equal("tunnel.cfargotunnel.com"))
 	})
@@ -657,7 +657,7 @@ func TestEnsureDNSCNAME(t *testing.T) {
 		})
 		c := newTestClient(t, mux)
 
-		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "new-target.cfargotunnel.com", "test comment")).To(Succeed())
+		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "new-target.cfargotunnel.com")).To(Succeed())
 		g.Expect(updatedBody["content"]).To(Equal("new-target.cfargotunnel.com"))
 	})
 
@@ -669,7 +669,7 @@ func TestEnsureDNSCNAME(t *testing.T) {
 		})
 		c := newTestClient(t, mux)
 
-		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "tunnel.cfargotunnel.com", "test comment")).To(HaveOccurred())
+		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "tunnel.cfargotunnel.com")).To(HaveOccurred())
 	})
 
 	t.Run("update error", func(t *testing.T) {
@@ -690,7 +690,7 @@ func TestEnsureDNSCNAME(t *testing.T) {
 		})
 		c := newTestClient(t, mux)
 
-		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "new-target.cfargotunnel.com", "test comment")).To(HaveOccurred())
+		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "new-target.cfargotunnel.com")).To(HaveOccurred())
 	})
 
 	t.Run("create error", func(t *testing.T) {
@@ -704,7 +704,7 @@ func TestEnsureDNSCNAME(t *testing.T) {
 		})
 		c := newTestClient(t, mux)
 
-		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "tunnel.cfargotunnel.com", "test comment")).To(HaveOccurred())
+		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "tunnel.cfargotunnel.com")).To(HaveOccurred())
 	})
 
 	t.Run("no-op when target matches", func(t *testing.T) {
@@ -730,7 +730,7 @@ func TestEnsureDNSCNAME(t *testing.T) {
 		})
 		c := newTestClient(t, mux)
 
-		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "tunnel.cfargotunnel.com", "test comment")).To(Succeed())
+		g.Expect(c.EnsureDNSCNAME(context.Background(), "zone-1", "app.example.com", "tunnel.cfargotunnel.com")).To(Succeed())
 		g.Expect(updateCalled).To(BeFalse())
 		g.Expect(createCalled).To(BeFalse())
 	})

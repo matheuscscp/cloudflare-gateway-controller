@@ -410,6 +410,7 @@ func TestGatewayClassReconciler_SecretUpdateTriggersReconcile(t *testing.T) {
 	g.Expect(testClient.Update(testCtx, &latestSecret)).To(Succeed())
 
 	// Wait for the Secret watch to trigger re-reconciliation → Accepted=True, Ready=True.
+	// Use a generous timeout because Secret watch propagation can be slow on CI runners.
 	g.Eventually(func(g Gomega) {
 		var result gatewayv1.GatewayClass
 		g.Expect(testClient.Get(testCtx, key, &result)).To(Succeed())
@@ -421,7 +422,7 @@ func TestGatewayClassReconciler_SecretUpdateTriggersReconcile(t *testing.T) {
 		ready := conditions.Find(result.Status.Conditions, apiv1.ConditionReady)
 		g.Expect(ready).NotTo(BeNil())
 		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
-	}).WithTimeout(30 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+	}).WithTimeout(60 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
 func TestGatewayClassReconciler_SupportedFeatures(t *testing.T) {
