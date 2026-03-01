@@ -337,6 +337,10 @@ load generator.
 Verifies end-to-end HTTP traffic through the tunnel when the sidecar reverse
 proxy is explicitly disabled. Cloudflared connects directly to backend Services.
 
+When the sidecar is disabled, traffic splitting (weighted backendRefs) is not
+available, and cloudflared's persistent connections prevent effective kube-proxy
+load balancing across pods. Multiple backendRefs per rule are rejected.
+
 **Resources created:**
 - 1-replica `Deployment` running `cfgwctl test serve` (selector `app=sd-test`)
 - `Service` `sd-backend` (port 80 → targetPort 8080)
@@ -361,3 +365,36 @@ proxy is explicitly disabled. Cloudflared connects directly to backend Services.
 7. Run `cfgwctl test load` with 10 requests, concurrency 1 (no pod distribution
    check — just verify traffic flows).
 8. Delete `HTTPRoute`, `Gateway` (wait for deletion), CGP, `Deployment`, `Service`.
+
+## test_traffic_splitting
+
+Sends real HTTP traffic through the Cloudflare tunnel and verifies that the
+sidecar proxy distributes requests across two backend Services according to
+their weights (80/20). Uses `cfgwctl test serve` as the backend and
+`cfgwctl test load` as the load generator.
+
+**Resources created:**
+- 1-replica `Deployment` `ts-svc-a` running `cfgwctl test serve` (selector `app=ts-svc-a`)
+- 1-replica `Deployment` `ts-svc-b` running `cfgwctl test serve` (selector `app=ts-svc-b`)
+- `Service` `ts-svc-a` and `ts-svc-b` (port 80 → targetPort 8080)
+- `Gateway` with bare Secret (no CGP — sidecar enabled by default)
+- `HTTPRoute` with one rule, 2 backendRefs: `ts-svc-a` weight 80, `ts-svc-b` weight 20
+
+**Cloudflare resources:** 1 tunnel, 1 DNS CNAME record.
+
+**Pass criteria:**
+- All 200 requests return 2xx (zero 5xx).
+- Both backends received at least 1 request.
+- Each backend's actual share is within ±15% of its expected share (80%/20%).
+
+**Steps:**
+
+1. Deploy 2 test servers (1 replica each) and 2 Services.
+2. Wait for rollouts.
+3. Create `Gateway` (bare Secret); wait for Programmed.
+4. Create `HTTPRoute` with weighted backendRefs (80/20).
+5. Wait for HTTPS endpoint reachable.
+6. Run `cfgwctl test load` with 200 requests, concurrency 5, and weighted
+   backend distribution check (`--backend app=ts-svc-a:80 --backend app=ts-svc-b:20
+   --tolerance 0.15`).
+7. Delete `HTTPRoute`, `Gateway` (wait for deletion), Deployments, Services.

@@ -506,8 +506,11 @@ func (r *GatewayReconciler) updateDeniedRouteStatus(ctx context.Context, gw *gat
 }
 
 // validateHTTPRoute checks that the HTTPRoute only uses features supported by
-// Cloudflare tunnels. Returns a list of unsupported feature descriptions, or nil if valid.
-func validateHTTPRoute(route *gatewayv1.HTTPRoute) []string {
+// Cloudflare tunnels. When sidecarEnabled is false, multiple backendRefs per
+// rule are rejected because cloudflared ingress rules only support a single
+// service per hostname+path. Returns a list of unsupported feature descriptions,
+// or nil if valid.
+func validateHTTPRoute(route *gatewayv1.HTTPRoute, sidecarEnabled bool) []string {
 	var issues []string
 	for i, ref := range route.Spec.ParentRefs {
 		if ref.Port != nil {
@@ -530,8 +533,8 @@ func validateHTTPRoute(route *gatewayv1.HTTPRoute) []string {
 		if len(rule.BackendRefs) == 0 {
 			issues = append(issues, fmt.Sprintf("spec.rules[%d].backendRefs: at least one backend is required", i))
 		}
-		if len(rule.BackendRefs) > 1 {
-			issues = append(issues, fmt.Sprintf("spec.rules[%d].backendRefs: multiple backends are not supported; use a Kubernetes Service instead", i))
+		if len(rule.BackendRefs) > 1 && !sidecarEnabled {
+			issues = append(issues, fmt.Sprintf("spec.rules[%d].backendRefs: multiple backends are not supported when sidecar is disabled; use a Kubernetes Service instead", i))
 		}
 		for j, ref := range rule.BackendRefs {
 			if len(ref.Filters) > 0 {

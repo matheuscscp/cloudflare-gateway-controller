@@ -101,6 +101,26 @@ cf_resource_name() {
 }
 export -f cf_resource_name
 
+# wait_for_https polls an HTTPS URL until it returns 2xx, printing the full
+# curl error (DNS failures, connection refused, SSL errors, HTTP status) on
+# every attempt so you can debug in real time instead of waiting for a timeout.
+wait_for_https() {
+    local hostname="${1#https://}"
+    hostname="${hostname%%/*}"
+    log "Waiting for HTTPS endpoint to be reachable at '$hostname'..."
+    for i in $(seq 1 60); do
+        local output
+        output=$(curl -sS --connect-timeout 5 --max-time 10 -o /dev/null -w '\nHTTP %{http_code}' "https://$hostname/" 2>&1 || true)
+        printf "  attempt %d/60: %s\n" "$i" "$output"
+        if [[ "$output" == *"HTTP 2"* ]]; then
+            pass "HTTPS endpoint reachable"
+            return 0
+        fi
+        sleep 5
+    done
+    fail "HTTPS endpoint not reachable at $hostname after 60 attempts"
+}
+
 # ─── Prerequisites ────────────────────────────────────────────────────────────
 
 validate_prerequisites() {

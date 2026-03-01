@@ -118,7 +118,9 @@ func TestGatewayReconciler_HTTPRouteAccepted(t *testing.T) {
 		cfg := getSidecarConfig(g, gw)
 		g.Expect(cfg.Routes).To(HaveLen(1))
 		g.Expect(cfg.Routes[0].Hostname).To(Equal("app.example.com"))
-		g.Expect(cfg.Routes[0].Service).To(Equal("http://my-service." + ns.Name + ".svc.cluster.local:8080"))
+		g.Expect(cfg.Routes[0].Backends).To(HaveLen(1))
+		g.Expect(cfg.Routes[0].Backends[0].Service).To(Equal("http://my-service." + ns.Name + ".svc.cluster.local:8080"))
+		g.Expect(cfg.Routes[0].Backends[0].Weight).To(Equal(int32(1)))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
 	// Verify Gateway listener has AttachedRoutes=1
@@ -1040,7 +1042,8 @@ func TestGatewayReconciler_HTTPRouteCrossNamespaceBackendGranted(t *testing.T) {
 		cfg := getSidecarConfig(g, gw)
 		g.Expect(cfg.Routes).To(HaveLen(1))
 		g.Expect(cfg.Routes[0].Hostname).To(Equal("backend-granted.example.com"))
-		g.Expect(cfg.Routes[0].Service).To(Equal(
+		g.Expect(cfg.Routes[0].Backends).To(HaveLen(1))
+		g.Expect(cfg.Routes[0].Backends[0].Service).To(Equal(
 			"http://cross-service." + nsB.Name + ".svc.cluster.local:8080"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
@@ -1124,7 +1127,8 @@ func TestGatewayReconciler_HTTPRoutePathMatches(t *testing.T) {
 		g.Expect(cfg.Routes).To(HaveLen(1))
 		g.Expect(cfg.Routes[0].Hostname).To(Equal("path.example.com"))
 		g.Expect(cfg.Routes[0].PathPrefix).To(Equal("/api/v1"))
-		g.Expect(cfg.Routes[0].Service).To(Equal("http://my-service." + ns.Name + ".svc.cluster.local:8080"))
+		g.Expect(cfg.Routes[0].Backends).To(HaveLen(1))
+		g.Expect(cfg.Routes[0].Backends[0].Service).To(Equal("http://my-service." + ns.Name + ".svc.cluster.local:8080"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
@@ -1416,6 +1420,8 @@ func TestGatewayReconciler_HTTPRouteMultipleBackendRefs(t *testing.T) {
 	})
 	waitForGatewayProgrammed(g, gw)
 
+	weight80 := new(int32(80))
+	weight20 := new(int32(20))
 	route := &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-route-multi-backends",
@@ -1428,6 +1434,127 @@ func TestGatewayReconciler_HTTPRouteMultipleBackendRefs(t *testing.T) {
 				},
 			},
 			Hostnames: []gatewayv1.Hostname{"backends.example.com"},
+			Rules: []gatewayv1.HTTPRouteRule{
+				{
+					BackendRefs: []gatewayv1.HTTPBackendRef{
+						{BackendRef: gatewayv1.BackendRef{
+							BackendObjectReference: gatewayv1.BackendObjectReference{
+								Name: "svc-a", Port: new(gatewayv1.PortNumber(80)),
+							},
+							Weight: weight80,
+						}},
+						{BackendRef: gatewayv1.BackendRef{
+							BackendObjectReference: gatewayv1.BackendObjectReference{
+								Name: "svc-b", Port: new(gatewayv1.PortNumber(80)),
+							},
+							Weight: weight20,
+						}},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.HTTPRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Sidecar is enabled by default, so multiple backendRefs should be accepted.
+	routeKey := client.ObjectKeyFromObject(route)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.HTTPRoute
+		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(HaveLen(1))
+		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Verify sidecar ConfigMap contains both backends with correct weights.
+	g.Eventually(func(g Gomega) {
+		cfg := getSidecarConfig(g, gw)
+		g.Expect(cfg.Routes).To(HaveLen(1))
+		g.Expect(cfg.Routes[0].Hostname).To(Equal("backends.example.com"))
+		g.Expect(cfg.Routes[0].Backends).To(HaveLen(2))
+		g.Expect(cfg.Routes[0].Backends[0].Service).To(Equal("http://svc-a." + ns.Name + ".svc.cluster.local:80"))
+		g.Expect(cfg.Routes[0].Backends[0].Weight).To(Equal(int32(80)))
+		g.Expect(cfg.Routes[0].Backends[1].Service).To(Equal("http://svc-b." + ns.Name + ".svc.cluster.local:80"))
+		g.Expect(cfg.Routes[0].Backends[1].Weight).To(Equal(int32(20)))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func TestGatewayReconciler_HTTPRouteMultipleBackendRefsSidecarDisabled(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-multi-be-nosc", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	// Create CGP with sidecar disabled.
+	params := createTestParameters(g, "test-params-nosc", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		SecretRef: &apiv1.SecretRef{Name: "cloudflare-creds"},
+		Tunnel: &apiv1.TunnelConfig{
+			Sidecar: &apiv1.SidecarConfig{
+				Enabled: new(false),
+			},
+		},
+	})
+	t.Cleanup(func() {
+		var latest apiv1.CloudflareGatewayParameters
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(params), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-multi-be-nosc",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
+			Listeners: []gatewayv1.Listener{
+				{Name: "http", Protocol: gatewayv1.HTTPProtocolType, Port: 80},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+	waitForGatewayProgrammed(g, gw)
+
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-route-multi-be-nosc",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{Name: gatewayv1.ObjectName(gw.Name)},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"backends-nosc.example.com"},
 			Rules: []gatewayv1.HTTPRouteRule{
 				{
 					BackendRefs: []gatewayv1.HTTPBackendRef{
@@ -1454,6 +1581,7 @@ func TestGatewayReconciler_HTTPRouteMultipleBackendRefs(t *testing.T) {
 		}
 	})
 
+	// Sidecar is disabled, so multiple backendRefs should be rejected.
 	routeKey := client.ObjectKeyFromObject(route)
 	g.Eventually(func(g Gomega) {
 		var result gatewayv1.HTTPRoute
@@ -1463,7 +1591,7 @@ func TestGatewayReconciler_HTTPRouteMultipleBackendRefs(t *testing.T) {
 		g.Expect(accepted).NotTo(BeNil())
 		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
 		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.RouteReasonUnsupportedValue)))
-		g.Expect(accepted.Message).To(ContainSubstring("multiple backends are not supported"))
+		g.Expect(accepted.Message).To(ContainSubstring("multiple backends are not supported when sidecar is disabled"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 

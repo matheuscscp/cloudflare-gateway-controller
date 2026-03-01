@@ -272,9 +272,10 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		}
 	}
 	// Set Accepted=False/UnsupportedValue on routes that use unsupported features.
+	sidecar := r.sidecarEnabled(params)
 	var validRoutes []*gatewayv1.HTTPRoute
 	for _, route := range gatewayRoutes {
-		if issues := validateHTTPRoute(route); len(issues) > 0 {
+		if issues := validateHTTPRoute(route, sidecar); len(issues) > 0 {
 			if err := r.updateInvalidRouteStatus(ctx, gw, route, issues); err != nil {
 				errs = append(errs, fmt.Sprintf("failed to update invalid HTTPRoute %s/%s status: %v", route.Namespace, route.Name, err))
 			}
@@ -306,7 +307,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 
 	// Reconcile sidecar resources when sidecar is enabled.
 	var sidecarDeniedRefs map[types.NamespacedName][]string
-	if r.sidecarEnabled(params) {
+	if sidecar {
 		var sidecarCMChanges []string
 		sidecarDeniedRefs, sidecarCMChanges, err = r.reconcileSidecarConfigMap(ctx, gw, validRoutes)
 		if err != nil {
@@ -336,7 +337,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 
 	// Clean up sidecar resources when sidecar is disabled (handles the case
 	// where sidecar was previously enabled and is now turned off).
-	if !r.sidecarEnabled(params) {
+	if !sidecar {
 		sidecarCleanupChanges, sidecarCleanupErrs := r.cleanupStaleSidecarResources(ctx, gw)
 		changes = append(changes, sidecarCleanupChanges...)
 		errs = append(errs, sidecarCleanupErrs...)
@@ -395,7 +396,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	}
 
 	// Patch Gateway status and emit events
-	return r.patchGatewayStatus(ctx, gw, cgs, entries, desiredListeners, changes, errs, readiness, dns, r.sidecarEnabled(params), requeueAfter)
+	return r.patchGatewayStatus(ctx, gw, cgs, entries, desiredListeners, changes, errs, readiness, dns, sidecar, requeueAfter)
 }
 
 // dnsResult holds the results of DNS reconciliation.
@@ -472,7 +473,9 @@ func buildSidecarCondition(generation int64, now metav1.Time, sidecarEnabled boo
 	} else {
 		cond.Status = metav1.ConditionFalse
 		cond.Reason = apiv1.ReasonDisabled
-		cond.Message = "Sidecar reverse proxy is disabled"
+		cond.Message = "Sidecar reverse proxy is disabled; " +
+			"traffic splitting (weighted backendRefs) is not available, " +
+			"and cloudflared's persistent connections prevent effective kube-proxy load balancing across pods"
 	}
 	return cond
 }
