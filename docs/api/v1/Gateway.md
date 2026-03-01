@@ -305,9 +305,9 @@ When the sidecar is disabled:
 - `type: Sidecar`
 - `status: "False"`
 - `reason: Disabled`
-- `message`: includes limitations — traffic splitting (weighted `backendRefs`) is
-  not available, and cloudflared's persistent connections prevent effective
-  kube-proxy load balancing across pods.
+- `message`: includes limitations — traffic splitting (weighted `backendRefs`)
+  and session persistence are not available, and cloudflared's persistent
+  connections prevent effective kube-proxy load balancing across pods.
 
 #### Ready Gateway
 

@@ -77,8 +77,10 @@ fail() {
 retry() {
     local max_attempts=$1 delay=$2
     shift 2
+    local output
     for i in $(seq 1 "$max_attempts"); do
-        if "$@" 2>/dev/null; then return 0; fi
+        output=$("$@" 2>&1) && return 0
+        printf "  retry %d/%d: %s\n" "$i" "$max_attempts" "$output"
         sleep "$delay"
     done
     return 1
@@ -100,6 +102,20 @@ cf_resource_name() {
     echo -n "gw-$(printf '%s' "$input" | sha256sum | cut -d' ' -f1)"
 }
 export -f cf_resource_name
+
+# sidecar_config_has_hostname checks whether the sidecar ConfigMap for a given
+# gateway contains a route entry for the specified hostname (and optional pathPrefix).
+sidecar_config_has_hostname() {
+    local gw_name="$1" hostname="$2" path_prefix="${3:-}"
+    local filter=".routes[] | select(.hostname == \"$hostname\")"
+    if [ -n "$path_prefix" ]; then
+        filter=".routes[] | select(.hostname == \"$hostname\" and .pathPrefix == \"$path_prefix\")"
+    fi
+    kubectl get configmap "gateway-${gw_name}" -n "$TEST_NS" \
+        -o jsonpath='{.data.config\.yaml}' | yq -e "$filter" >/dev/null
+}
+export -f sidecar_config_has_hostname
+export TEST_NS
 
 # wait_for_https polls an HTTPS URL until it returns 2xx, printing the full
 # curl error (DNS failures, connection refused, SSL errors, HTTP status) on
@@ -187,6 +203,7 @@ start_controller_log_stream() {
 # install_controller loads the image and installs/upgrades the controller.
 # If REUSE_CONTROLLER=1 and the controller is Running, skip.
 # If RELOAD_CONTROLLER=1, reload image and restart.
+# Any extra arguments are forwarded to helm upgrade --install.
 install_controller() {
     if [ "${REUSE_CONTROLLER:-}" = "1" ]; then
         local status
@@ -217,6 +234,7 @@ install_controller() {
         --set image.pullPolicy=Never \
         --set config.clusterName="$KIND_CLUSTER_NAME" \
         --set 'podArgs[0]=--log-level=debug' \
+        "$@" \
         --wait --timeout 120s
 
     log "Waiting for controller deployment to be ready..."

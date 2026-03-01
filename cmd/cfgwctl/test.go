@@ -20,6 +20,7 @@ func newTestCmd() *cobra.Command {
 	cmd.AddCommand(newDNSCmd(&credentialsFile))
 	cmd.AddCommand(newTestServeCmd())
 	cmd.AddCommand(newTestLoadCmd())
+	cmd.AddCommand(newTestSessionCmd())
 
 	return cmd
 }

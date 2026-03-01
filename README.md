@@ -115,13 +115,15 @@ by hostname and path prefix to the correct backend Service, and disables HTTP
 keep-alives on egress so every request opens a fresh connection through kube-proxy
 for proper pod-level load balancing. When an HTTPRoute rule has multiple `backendRefs`
 with `weight` fields, the sidecar distributes requests across backends according to
-their weights (traffic splitting).
+their weights (traffic splitting). The sidecar also supports
+[session persistence](docs/api/v1/HTTPRoute.md#session-persistence) via cookie-based
+or header-based affinity to pin a client to the same backend across requests.
 
 The sidecar is enabled by default. To disable it for a specific Gateway, set
 `tunnel.sidecar.enabled: false` in your CloudflareGatewayParameters. When disabled,
 cloudflared connects directly to backend Services with persistent connections,
 which means kube-proxy cannot effectively distribute traffic across pods. Traffic
-splitting (weighted `backendRefs`) is also not available.
+splitting (weighted `backendRefs`) and session persistence are also not available.
 
 ## API Token Permissions
 

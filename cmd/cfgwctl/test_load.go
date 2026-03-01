@@ -32,6 +32,7 @@ func newTestLoadCmd() *cobra.Command {
 		kubeconfig    string
 		backends      []string
 		tolerance     float64
+		hostname      string
 	)
 
 	cmd := &cobra.Command{
@@ -44,9 +45,10 @@ func newTestLoadCmd() *cobra.Command {
 			fmt.Printf("Sending %d requests to %s with concurrency %d...\n", requests, url, concurrency)
 
 			var (
-				ok2xx  atomic.Int64
-				err5xx atomic.Int64
-				other  atomic.Int64
+				ok2xx    atomic.Int64
+				err5xx   atomic.Int64
+				other    atomic.Int64
+				hostErrs atomic.Int64
 			)
 
 			work := make(chan struct{}, requests)
@@ -63,6 +65,16 @@ func newTestLoadCmd() *cobra.Command {
 						if err != nil {
 							other.Add(1)
 							continue
+						}
+						if hostname != "" && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+							var body struct {
+								Host string `json:"host"`
+							}
+							if err := json.NewDecoder(resp.Body).Decode(&body); err == nil {
+								if body.Host != hostname {
+									hostErrs.Add(1)
+								}
+							}
 						}
 						_ = resp.Body.Close()
 						switch {
@@ -82,10 +94,17 @@ func newTestLoadCmd() *cobra.Command {
 			fmt.Printf("  2xx: %d\n", ok2xx.Load())
 			fmt.Printf("  5xx: %d\n", err5xx.Load())
 			fmt.Printf("  other/errors: %d\n", other.Load())
+			if hostname != "" {
+				fmt.Printf("  host mismatches: %d\n", hostErrs.Load())
+			}
 
 			if got := ok2xx.Load(); got != int64(requests) {
 				return fmt.Errorf("expected %d 2xx responses, got %d (5xx: %d, other: %d)",
 					requests, got, err5xx.Load(), other.Load())
+			}
+
+			if hostname != "" && hostErrs.Load() > 0 {
+				return fmt.Errorf("%d responses had incorrect host (expected %q)", hostErrs.Load(), hostname)
 			}
 
 			// Phase 2a: Weighted backend distribution check (optional).
@@ -180,6 +199,7 @@ func newTestLoadCmd() *cobra.Command {
 		"weighted backend for traffic splitting check: selector:weight (e.g. app=svc-a:80); repeatable")
 	cmd.Flags().Float64Var(&tolerance, "tolerance", 0.15,
 		"max deviation from expected share (0.15 = ±15%) for --backend checks")
+	cmd.Flags().StringVar(&hostname, "hostname", "", "expected Host header value in responses (optional)")
 	cobra.CheckErr(cmd.MarkFlagRequired("url"))
 
 	return cmd

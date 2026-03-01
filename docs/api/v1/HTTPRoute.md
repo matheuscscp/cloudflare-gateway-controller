@@ -46,7 +46,6 @@ The following fields are not supported and must not be set:
 - `spec.rules[*].filters`
 - `spec.rules[*].timeouts`
 - `spec.rules[*].retry`
-- `spec.rules[*].sessionPersistence`
 - `spec.rules[*].backendRefs[*].filters`
 
 ### Backend references
@@ -70,6 +69,67 @@ The following fields are not supported and must not be set:
 - Query parameter matches (`spec.rules[*].matches[*].queryParams`) are not
   supported.
 - Method matches (`spec.rules[*].matches[*].method`) are not supported.
+
+### Session persistence
+
+Session persistence pins a client to the same backend across requests. It is
+supported only when the sidecar reverse proxy is enabled (default). When the
+sidecar is disabled, `sessionPersistence` is rejected.
+
+**Cookie-based** (default): The sidecar sets a cookie on the first response.
+Subsequent requests with that cookie are routed to the same backend.
+
+```yaml
+rules:
+  - sessionPersistence:
+      type: Cookie
+      sessionName: my-session          # optional, default "cgw-session"
+      absoluteTimeout: 1h              # optional
+      idleTimeout: 10m                 # optional
+      cookieConfig:
+        lifetimeType: Permanent        # "Session" (default) or "Permanent"
+    backendRefs:
+      - name: svc-a
+        port: 80
+        weight: 50
+      - name: svc-b
+        port: 80
+        weight: 50
+```
+
+**Header-based**: The client supplies a header with the backend ID. No cookie
+is set by the proxy.
+
+```yaml
+rules:
+  - sessionPersistence:
+      type: Header
+      sessionName: X-My-Session        # optional, default "X-Cgw-Session"
+    backendRefs:
+      - name: svc-a
+        port: 80
+```
+
+**Cookie lifetime types:**
+
+- `Session` (default): Browser session cookie (no `Max-Age`). If
+  `absoluteTimeout` is set, the sidecar enforces it server-side by checking
+  the timestamp encoded in the cookie value.
+- `Permanent`: Sets `Max-Age` on the cookie. When only `absoluteTimeout` is
+  set, `Max-Age` equals `absoluteTimeout`. When only `idleTimeout` is set,
+  `Max-Age` equals `idleTimeout`. When both are set, `Max-Age` is the minimum
+  of the remaining absolute timeout and `idleTimeout`.
+
+**Idle timeout** (`idleTimeout`): Supported for cookie-based sessions only. When
+configured, the sidecar re-issues the cookie on every response with an updated
+last-activity timestamp. If the time since the last activity exceeds
+`idleTimeout`, the session expires and a new backend is selected. When both
+`absoluteTimeout` and `idleTimeout` are set, both are enforced independently —
+the session expires if either timeout is exceeded.
+
+`idleTimeout` is **not supported** for header-based sessions (no mechanism to
+push updated timestamps to the client) and is rejected if configured with
+`type: Header`.
 
 ### Namespace restrictions
 

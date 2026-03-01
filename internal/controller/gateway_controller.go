@@ -474,7 +474,7 @@ func buildSidecarCondition(generation int64, now metav1.Time, sidecarEnabled boo
 		cond.Status = metav1.ConditionFalse
 		cond.Reason = apiv1.ReasonDisabled
 		cond.Message = "Sidecar reverse proxy is disabled; " +
-			"traffic splitting (weighted backendRefs) is not available, " +
+			"traffic splitting (weighted backendRefs) and session persistence are not available, " +
 			"and cloudflared's persistent connections prevent effective kube-proxy load balancing across pods"
 	}
 	return cond

@@ -117,12 +117,42 @@ func buildSidecarConfig(ctx context.Context, r client.Reader, routes []*gatewayv
 			if denied || len(backends) == 0 {
 				continue
 			}
+			var sp *sidecar.SessionPersistence
+			if rule.SessionPersistence != nil {
+				spType := "Cookie"
+				if rule.SessionPersistence.Type != nil {
+					spType = string(*rule.SessionPersistence.Type)
+				}
+				sessionName := "cgw-session"
+				if spType == "Header" {
+					sessionName = "X-Cgw-Session"
+				}
+				if rule.SessionPersistence.SessionName != nil {
+					sessionName = *rule.SessionPersistence.SessionName
+				}
+				sp = &sidecar.SessionPersistence{
+					Type:        spType,
+					SessionName: sessionName,
+				}
+				if rule.SessionPersistence.AbsoluteTimeout != nil {
+					sp.AbsoluteTimeout = string(*rule.SessionPersistence.AbsoluteTimeout)
+				}
+				if rule.SessionPersistence.IdleTimeout != nil {
+					sp.IdleTimeout = string(*rule.SessionPersistence.IdleTimeout)
+				}
+				if rule.SessionPersistence.CookieConfig != nil && rule.SessionPersistence.CookieConfig.LifetimeType != nil {
+					sp.CookieLifetimeType = string(*rule.SessionPersistence.CookieConfig.LifetimeType)
+				} else {
+					sp.CookieLifetimeType = "Session"
+				}
+			}
 			pathPrefix := pathFromMatches(rule.Matches)
 			for _, hostname := range route.Spec.Hostnames {
 				sidecarRoutes = append(sidecarRoutes, sidecar.Route{
-					Hostname:   string(hostname),
-					PathPrefix: pathPrefix,
-					Backends:   backends,
+					Hostname:           string(hostname),
+					PathPrefix:         pathPrefix,
+					Backends:           backends,
+					SessionPersistence: sp,
 				})
 			}
 		}
