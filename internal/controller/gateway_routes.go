@@ -22,6 +22,7 @@ import (
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/conditions"
+	"github.com/matheuscscp/cloudflare-gateway-controller/internal/sidecar"
 )
 
 // gatewayValidationError holds a terminal error and the condition to set on the Gateway.
@@ -600,14 +601,107 @@ func validateHTTPRoute(route *gatewayv1.HTTPRoute, sidecarEnabled bool) []string
 	return issues
 }
 
-// updateInvalidRouteStatus sets Accepted=False/UnsupportedValue on the
-// status.parents entry for this Gateway on an HTTPRoute that uses unsupported
-// features. Any stale conditions from a previous reconciliation are removed.
-func (r *GatewayReconciler) updateInvalidRouteStatus(ctx context.Context, gw *gatewayv1.Gateway, route *gatewayv1.HTTPRoute, issues []string) error {
+// filterConflictingRoutes reads the existing route ConfigMap, detects conflicts,
+// rejects conflicting routes, and returns the filtered list of non-conflicting routes.
+func (r *GatewayReconciler) filterConflictingRoutes(ctx context.Context, gw *gatewayv1.Gateway, validRoutes []*gatewayv1.HTTPRoute) ([]*gatewayv1.HTTPRoute, []string, error) {
+	existingRouteConfig, err := r.getExistingRouteConfig(ctx, gw)
+	if err != nil {
+		return nil, nil, err
+	}
+	conflicting := findConflictingRoutes(existingRouteConfig, validRoutes)
+	if len(conflicting) == 0 {
+		return validRoutes, nil, nil
+	}
+	var filtered []*gatewayv1.HTTPRoute
+	var errs []string
+	for _, route := range validRoutes {
+		key := types.NamespacedName{Namespace: route.Namespace, Name: route.Name}
+		if issues, ok := conflicting[key]; ok {
+			msg := "Conflicting hostname/path (already claimed by an earlier HTTPRoute):\n- " + strings.Join(issues, "\n- ")
+			if err := r.rejectRouteStatus(ctx, gw, route,
+				string(gatewayv1.RouteReasonUnsupportedValue), msg); err != nil {
+				errs = append(errs, fmt.Sprintf("failed to update conflicting HTTPRoute %s/%s status: %v", route.Namespace, route.Name, err))
+			}
+			continue
+		}
+		filtered = append(filtered, route)
+	}
+	return filtered, errs, nil
+}
+
+// hostnamePathKey is a (hostname, pathPrefix) pair used to detect conflicting routes.
+type hostnamePathKey struct {
+	hostname string
+	path     string
+}
+
+// findConflictingRoutes detects HTTPRoutes that claim the same (hostname, pathPrefix)
+// pair. When two routes produce identical routing keys, only one can actually receive
+// traffic — the other is silently ignored. This returns a map of conflicting routes
+// (route key -> list of conflicting hostname+path descriptions) so the caller can
+// reject them with Accepted=False.
+//
+// The existing route ConfigMap is used as source of truth: entries with a non-empty
+// Owner field pre-claim their (hostname, pathPrefix) keys, protecting existing traffic
+// from rogue/malicious tenants. Among routes with the same priority, the first one
+// encountered in the input order claims the key.
+func findConflictingRoutes(existingConfig *sidecar.Config, routes []*gatewayv1.HTTPRoute) map[types.NamespacedName][]string {
+	type owner struct {
+		namespace string
+		name      string
+	}
+
+	// Pre-populate claimed map from existingConfig routes.
+	claimed := make(map[hostnamePathKey]owner)
+	if existingConfig != nil {
+		for _, r := range existingConfig.Routes {
+			if r.Owner == "" {
+				continue // skip pre-upgrade entries without Owner
+			}
+			parts := strings.SplitN(r.Owner, "/", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			key := hostnamePathKey{hostname: r.Hostname, path: r.PathPrefix}
+			claimed[key] = owner{namespace: parts[0], name: parts[1]}
+		}
+	}
+
+	// Iterate through routes: if (hostname, path) is already claimed by a
+	// different route, flag as conflict; otherwise claim it.
+	conflicts := make(map[types.NamespacedName][]string)
+	for _, route := range routes {
+		routeKey := types.NamespacedName{Namespace: route.Namespace, Name: route.Name}
+		for _, rule := range route.Spec.Rules {
+			path := pathFromMatches(rule.Matches)
+			for _, hostname := range route.Spec.Hostnames {
+				key := hostnamePathKey{hostname: string(hostname), path: path}
+				if first, ok := claimed[key]; ok {
+					if first.namespace != route.Namespace || first.name != route.Name {
+						desc := string(hostname)
+						if path != "" {
+							desc += path
+						}
+						conflicts[routeKey] = append(conflicts[routeKey],
+							fmt.Sprintf("%s (claimed by %s/%s)", desc, first.namespace, first.name))
+					}
+				} else {
+					claimed[key] = owner{namespace: route.Namespace, name: route.Name}
+				}
+			}
+		}
+	}
+	return conflicts
+}
+
+// rejectRouteStatus sets Accepted=False on the status.parents entry for this
+// Gateway on an HTTPRoute. Any stale conditions from a previous
+// reconciliation are removed.
+func (r *GatewayReconciler) rejectRouteStatus(ctx context.Context, gw *gatewayv1.Gateway, route *gatewayv1.HTTPRoute, reason, msg string) error {
 	acceptedType := string(gatewayv1.RouteConditionAccepted)
 	acceptedStatus := metav1.ConditionFalse
-	acceptedReason := string(gatewayv1.RouteReasonUnsupportedValue)
-	acceptedMsg := "Unsupported features:\n- " + strings.Join(issues, "\n- ")
+	acceptedReason := reason
+	acceptedMsg := msg
 
 	routeKey := client.ObjectKeyFromObject(route)
 	patched := false

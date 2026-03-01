@@ -81,6 +81,7 @@ type Backend struct {
 type Route struct {
 	Hostname           string              `json:"hostname"`             // e.g. "app.example.com"
 	PathPrefix         string              `json:"pathPrefix,omitempty"` // e.g. "/api" (match only, forwarded as-is)
+	Owner              string              `json:"owner,omitempty"`      // "namespace/name" of the owning HTTPRoute
 	Backends           []Backend           `json:"backends"`
 	SessionPersistence *SessionPersistence `json:"sessionPersistence,omitempty"`
 }

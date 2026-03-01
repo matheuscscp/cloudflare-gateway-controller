@@ -275,13 +275,22 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	var validRoutes []*gatewayv1.HTTPRoute
 	for _, route := range gatewayRoutes {
 		if issues := validateHTTPRoute(route, sidecar); len(issues) > 0 {
-			if err := r.updateInvalidRouteStatus(ctx, gw, route, issues); err != nil {
+			msg := "Unsupported features:\n- " + strings.Join(issues, "\n- ")
+			if err := r.rejectRouteStatus(ctx, gw, route,
+				string(gatewayv1.RouteReasonUnsupportedValue), msg); err != nil {
 				errs = append(errs, fmt.Sprintf("failed to update invalid HTTPRoute %s/%s status: %v", route.Namespace, route.Name, err))
 			}
 			continue
 		}
 		validRoutes = append(validRoutes, route)
 	}
+	// Reject routes that conflict on (hostname, pathPrefix) with an earlier route.
+	// Uses the existing route ConfigMap as source of truth for ownership.
+	validRoutes, conflictErrs, err := r.filterConflictingRoutes(ctx, gw, validRoutes)
+	if err != nil {
+		return r.reconcileError(ctx, gw, err)
+	}
+	errs = append(errs, conflictErrs...)
 
 	// Compute desired tunnel state and replicas.
 	replicas := resolveReplicas(params)
@@ -302,16 +311,16 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	}
 	changes = append(changes, secretChanges...)
 
-	// Reconcile sidecar resources when sidecar is enabled.
-	var sidecarDeniedRefs map[types.NamespacedName][]string
-	if sidecar {
-		var sidecarCMChanges []string
-		sidecarDeniedRefs, sidecarCMChanges, err = r.reconcileSidecarConfigMap(ctx, gw, validRoutes)
-		if err != nil {
-			return r.reconcileError(ctx, gw, err)
-		}
-		changes = append(changes, sidecarCMChanges...)
+	// Reconcile route ConfigMap (always, regardless of sidecar state).
+	var routeDeniedRefs map[types.NamespacedName][]string
+	routeDeniedRefs, routeCMChanges, err := r.reconcileRouteConfigMap(ctx, gw, validRoutes)
+	if err != nil {
+		return r.reconcileError(ctx, gw, err)
+	}
+	changes = append(changes, routeCMChanges...)
 
+	// Reconcile sidecar RBAC when sidecar is enabled.
+	if sidecar {
 		sidecarRBACChanges, err := r.reconcileSidecarRBAC(ctx, gw)
 		if err != nil {
 			return r.reconcileError(ctx, gw, err)
@@ -353,10 +362,10 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	changes = append(changes, vpaCleanupChanges...)
 	errs = append(errs, vpaCleanupErrs...)
 
-	// Clean up sidecar resources when sidecar is disabled (handles the case
+	// Clean up sidecar RBAC resources when sidecar is disabled (handles the case
 	// where sidecar was previously enabled and is now turned off).
 	if !sidecar {
-		sidecarCleanupChanges, sidecarCleanupErrs := r.cleanupStaleSidecarResources(ctx, gw)
+		sidecarCleanupChanges, sidecarCleanupErrs := r.cleanupStaleSidecarRBACResources(ctx, gw)
 		changes = append(changes, sidecarCleanupChanges...)
 		errs = append(errs, sidecarCleanupErrs...)
 	}
@@ -365,7 +374,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	desiredListeners := buildListenerStatuses(gw, countAttachedRoutes(validRoutes, gw))
 
 	// Reconcile tunnel ingress configuration.
-	routesWithDeniedRefs, configChanges, err := r.reconcileTunnelIngress(ctx, tc, params, tunnel, validRoutes, sidecarDeniedRefs)
+	routesWithDeniedRefs, configChanges, err := r.reconcileTunnelIngress(ctx, tc, params, tunnel, validRoutes, routeDeniedRefs)
 	if err != nil {
 		return r.reconcileError(ctx, gw, err)
 	}

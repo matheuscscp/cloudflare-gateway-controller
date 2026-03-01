@@ -12,155 +12,16 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
-	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
-	"github.com/matheuscscp/cloudflare-gateway-controller/internal/sidecar"
 )
 
-// sidecarConfigMapKey is the key used to store the sidecar config in the ConfigMap.
-const sidecarConfigMapKey = "config.yaml"
-
-// reconcileSidecarConfigMap builds the sidecar Config from valid routes and
-// creates/updates the ConfigMap. Returns denied refs, change messages, and error.
-func (r *GatewayReconciler) reconcileSidecarConfigMap(ctx context.Context, gw *gatewayv1.Gateway, routes []*gatewayv1.HTTPRoute) (map[types.NamespacedName][]string, []string, error) {
-	l := log.FromContext(ctx)
-
-	cfg, routesWithDeniedRefs, err := buildSidecarConfig(ctx, r.Client, routes)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	data, err := yaml.Marshal(cfg)
-	if err != nil {
-		return nil, nil, fmt.Errorf("marshaling sidecar config: %w", err)
-	}
-
-	cmName := apiv1.GatewayResourceName(gw)
-	cm := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      cmName,
-			Namespace: gw.Namespace,
-		},
-	}
-	if err := controllerutil.SetControllerReference(gw, cm, r.Scheme()); err != nil {
-		return nil, nil, fmt.Errorf("setting owner reference on sidecar configmap: %w", err)
-	}
-
-	result, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
-		cm.Labels = sidecarLabels(gw)
-		cm.Data = map[string]string{
-			sidecarConfigMapKey: string(data),
-		}
-		return controllerutil.SetControllerReference(gw, cm, r.Scheme())
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("creating/updating sidecar ConfigMap %s: %w", cmName, err)
-	}
-
-	var changes []string
-	if result != controllerutil.OperationResultNone {
-		changes = append(changes, fmt.Sprintf("sidecar ConfigMap %s %s", cmName, result))
-	}
-	l.V(1).Info("Reconciled sidecar ConfigMap", "configmap", cmName, "result", result)
-	return routesWithDeniedRefs, changes, nil
-}
-
-// buildSidecarConfig converts valid HTTPRoutes into sidecar.Config routes.
-// This parallels buildIngressRules but produces sidecar.Route structs.
-// Each rule's backendRefs are emitted as weighted backends on the sidecar route.
-// Returns the sidecar config, a map of routes with denied backend refs, and
-// any transient error from ReferenceGrant checks.
-func buildSidecarConfig(ctx context.Context, r client.Reader, routes []*gatewayv1.HTTPRoute) (sidecar.Config, map[types.NamespacedName][]string, error) {
-	var sidecarRoutes []sidecar.Route
-	routesWithDeniedRefs := make(map[types.NamespacedName][]string)
-	for _, route := range routes {
-		for _, rule := range route.Spec.Rules {
-			if len(rule.BackendRefs) == 0 {
-				continue
-			}
-			var backends []sidecar.Backend
-			denied := false
-			for _, ref := range rule.BackendRefs {
-				ns := route.Namespace
-				if ref.Namespace != nil {
-					ns = string(*ref.Namespace)
-				}
-				granted, err := backendReferenceGranted(ctx, r, route.Namespace, ns, string(ref.Name))
-				if err != nil {
-					return sidecar.Config{}, nil, fmt.Errorf("checking ReferenceGrant for backendRef %s/%s in HTTPRoute %s/%s: %w", ns, ref.Name, route.Namespace, route.Name, err)
-				}
-				if !granted {
-					key := types.NamespacedName{Namespace: route.Namespace, Name: route.Name}
-					routesWithDeniedRefs[key] = append(routesWithDeniedRefs[key], ns+"/"+string(ref.Name))
-					denied = true
-					continue
-				}
-				port := int32(80)
-				if ref.Port != nil {
-					port = *ref.Port
-				}
-				weight := int32(1)
-				if ref.Weight != nil {
-					weight = *ref.Weight
-				}
-				service := fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", string(ref.Name), ns, port)
-				backends = append(backends, sidecar.Backend{Service: service, Weight: weight})
-			}
-			if denied || len(backends) == 0 {
-				continue
-			}
-			var sp *sidecar.SessionPersistence
-			if rule.SessionPersistence != nil {
-				spType := "Cookie"
-				if rule.SessionPersistence.Type != nil {
-					spType = string(*rule.SessionPersistence.Type)
-				}
-				sessionName := "cgw-session"
-				if spType == "Header" {
-					sessionName = "X-Cgw-Session"
-				}
-				if rule.SessionPersistence.SessionName != nil {
-					sessionName = *rule.SessionPersistence.SessionName
-				}
-				sp = &sidecar.SessionPersistence{
-					Type:        spType,
-					SessionName: sessionName,
-				}
-				if rule.SessionPersistence.AbsoluteTimeout != nil {
-					sp.AbsoluteTimeout = string(*rule.SessionPersistence.AbsoluteTimeout)
-				}
-				if rule.SessionPersistence.IdleTimeout != nil {
-					sp.IdleTimeout = string(*rule.SessionPersistence.IdleTimeout)
-				}
-				if rule.SessionPersistence.CookieConfig != nil && rule.SessionPersistence.CookieConfig.LifetimeType != nil {
-					sp.CookieLifetimeType = string(*rule.SessionPersistence.CookieConfig.LifetimeType)
-				} else {
-					sp.CookieLifetimeType = "Session"
-				}
-			}
-			pathPrefix := pathFromMatches(rule.Matches)
-			for _, hostname := range route.Spec.Hostnames {
-				sidecarRoutes = append(sidecarRoutes, sidecar.Route{
-					Hostname:           string(hostname),
-					PathPrefix:         pathPrefix,
-					Backends:           backends,
-					SessionPersistence: sp,
-				})
-			}
-		}
-	}
-	return sidecar.Config{Routes: sidecarRoutes}, routesWithDeniedRefs, nil
-}
-
 // reconcileSidecarRBAC creates/updates the ServiceAccount, Role, and RoleBinding
-// for the sidecar's least-privilege ConfigMap access. Returns change messages.
+// granting the sidecar read access to the route ConfigMap. Returns change messages.
 func (r *GatewayReconciler) reconcileSidecarRBAC(ctx context.Context, gw *gatewayv1.Gateway) ([]string, error) {
 	l := log.FromContext(ctx)
 	var changes []string
@@ -278,9 +139,9 @@ func (r *GatewayReconciler) reconcileSidecarRBAC(ctx context.Context, gw *gatewa
 	return changes, nil
 }
 
-// cleanupStaleSidecarResources deletes sidecar ConfigMaps, ServiceAccounts,
+// cleanupStaleSidecarRBACResources deletes sidecar ServiceAccounts,
 // Roles, and RoleBindings that are no longer desired.
-func (r *GatewayReconciler) cleanupStaleSidecarResources(ctx context.Context, gw *gatewayv1.Gateway) ([]string, []string) {
+func (r *GatewayReconciler) cleanupStaleSidecarRBACResources(ctx context.Context, gw *gatewayv1.Gateway) ([]string, []string) {
 	l := log.FromContext(ctx)
 	matchLabels := client.MatchingLabels{
 		"app.kubernetes.io/name":       "cloudflared",
@@ -291,22 +152,6 @@ func (r *GatewayReconciler) cleanupStaleSidecarResources(ctx context.Context, gw
 
 	var changes []string
 	var errs []string
-
-	// Delete ConfigMaps
-	var cmList corev1.ConfigMapList
-	if err := r.List(ctx, &cmList, client.InNamespace(gw.Namespace), matchLabels); err != nil {
-		errs = append(errs, fmt.Sprintf("failed to list sidecar ConfigMaps for cleanup: %v", err))
-	} else {
-		for i := range cmList.Items {
-			cm := &cmList.Items[i]
-			if err := r.Delete(ctx, cm); client.IgnoreNotFound(err) != nil {
-				errs = append(errs, fmt.Sprintf("failed to delete sidecar ConfigMap %s: %v", cm.Name, err))
-				continue
-			}
-			changes = append(changes, fmt.Sprintf("deleted sidecar ConfigMap %s", cm.Name))
-			l.V(1).Info("Deleted sidecar ConfigMap", "configmap", cm.Name)
-		}
-	}
 
 	// Delete ServiceAccounts
 	var saList corev1.ServiceAccountList
@@ -393,10 +238,10 @@ func buildSidecarIngressCatchAll() string {
 	return "http://localhost:8080"
 }
 
-// removeOwnerReferencesFromSidecarResources removes the Gateway's owner references
-// from sidecar ConfigMaps, ServiceAccounts, Roles, and RoleBindings so they
-// survive garbage collection when the Gateway is deleted with reconciliation disabled.
-func (r *GatewayReconciler) removeOwnerReferencesFromSidecarResources(ctx context.Context, gw *gatewayv1.Gateway) ([]client.Object, error) {
+// removeOwnerReferencesFromSidecarRBACResources removes the Gateway's owner references
+// from sidecar ServiceAccounts, Roles, and RoleBindings so they survive garbage
+// collection when the Gateway is deleted with reconciliation disabled.
+func (r *GatewayReconciler) removeOwnerReferencesFromSidecarRBACResources(ctx context.Context, gw *gatewayv1.Gateway) ([]client.Object, error) {
 	l := log.FromContext(ctx)
 	var removed []client.Object
 	matchLabels := client.MatchingLabels{
@@ -404,34 +249,6 @@ func (r *GatewayReconciler) removeOwnerReferencesFromSidecarResources(ctx contex
 		"app.kubernetes.io/managed-by": apiv1.ShortControllerName,
 		"app.kubernetes.io/instance":   gw.Name,
 		"app.kubernetes.io/component":  "sidecar",
-	}
-
-	// ConfigMaps
-	var cmList corev1.ConfigMapList
-	if err := r.List(ctx, &cmList, client.InNamespace(gw.Namespace), matchLabels); err != nil {
-		return removed, fmt.Errorf("listing sidecar ConfigMaps: %w", err)
-	}
-	for i := range cmList.Items {
-		cm := &cmList.Items[i]
-		cmKey := client.ObjectKeyFromObject(cm)
-		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			if err := r.Get(ctx, cmKey, cm); err != nil {
-				return client.IgnoreNotFound(err)
-			}
-			cmPatch := client.MergeFromWithOptions(cm.DeepCopy(), client.MergeFromWithOptimisticLock{})
-			if !removeOwnerRef(cm, gw.UID) {
-				return nil
-			}
-			if err := r.Patch(ctx, cm, cmPatch); err != nil {
-				return fmt.Errorf("patching ConfigMap %s: %w", cm.Name, err)
-			}
-			cm.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind(apiv1.KindConfigMap))
-			removed = append(removed, cm)
-			return nil
-		}); err != nil {
-			return removed, err
-		}
-		l.V(1).Info("Removed owner reference from sidecar ConfigMap", "configmap", cmKey)
 	}
 
 	// ServiceAccounts

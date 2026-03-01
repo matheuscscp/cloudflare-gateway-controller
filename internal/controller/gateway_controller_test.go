@@ -1358,12 +1358,13 @@ func TestGatewayReconciler_SidecarDisabledViaCGP(t *testing.T) {
 	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
 	g.Expect(deploy.Spec.Template.Spec.Containers[0].Name).To(Equal("cloudflared"))
 
-	// Verify no sidecar ConfigMap
+	// Verify route ConfigMap EXISTS (decoupled from sidecar).
 	var cm corev1.ConfigMap
 	cmKey := client.ObjectKey{Name: "gateway-" + gw.Name, Namespace: gw.Namespace}
-	g.Expect(apierrors.IsNotFound(testClient.Get(testCtx, cmKey, &cm))).To(BeTrue())
+	g.Expect(testClient.Get(testCtx, cmKey, &cm)).To(Succeed())
+	g.Expect(cm.Labels["app.kubernetes.io/component"]).To(Equal("routes"))
 
-	// Verify no sidecar ServiceAccount
+	// Verify no sidecar ServiceAccount (RBAC resources absent).
 	var sa corev1.ServiceAccount
 	saKey := client.ObjectKey{Name: "gateway-" + gw.Name, Namespace: gw.Namespace}
 	g.Expect(apierrors.IsNotFound(testClient.Get(testCtx, saKey, &sa))).To(BeTrue())
@@ -4234,10 +4235,17 @@ func TestGatewayReconciler_SidecarSwitchToDisabled(t *testing.T) {
 		g.Expect(sidecar.Reason).To(Equal(apiv1.ReasonDisabled))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
-	// Sidecar ConfigMap should be deleted.
+	// Route ConfigMap should still exist (decoupled from sidecar).
 	g.Eventually(func(g Gomega) {
-		err := testClient.Get(testCtx, client.ObjectKey{Name: resourceName, Namespace: ns.Name}, &corev1.ConfigMap{})
-		g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "sidecar ConfigMap should be deleted")
+		var cm corev1.ConfigMap
+		g.Expect(testClient.Get(testCtx, client.ObjectKey{Name: resourceName, Namespace: ns.Name}, &cm)).To(Succeed())
+		g.Expect(cm.Labels["app.kubernetes.io/component"]).To(Equal("routes"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Sidecar ServiceAccount should be deleted.
+	g.Eventually(func(g Gomega) {
+		err := testClient.Get(testCtx, client.ObjectKey{Name: resourceName, Namespace: ns.Name}, &corev1.ServiceAccount{})
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "sidecar ServiceAccount should be deleted")
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
