@@ -167,6 +167,20 @@ func validateParameters(params *apiv1.CloudflareGatewayParameters, sidecarImage 
 				}
 			}
 			seen[r.Name] = struct{}{}
+
+			// Reject zone and affinity both set (defense-in-depth, mirrors CEL XValidation).
+			if r.Zone != "" && r.Affinity != nil {
+				msg := fmt.Sprintf("replica %q has both zone and affinity set (mutually exclusive)", r.Name)
+				return &gatewayValidationError{
+					err: reconcile.TerminalError(fmt.Errorf("%s", msg)),
+					cond: metav1.Condition{
+						Type:    string(gatewayv1.GatewayConditionAccepted),
+						Status:  metav1.ConditionFalse,
+						Reason:  string(gatewayv1.GatewayReasonInvalidParameters),
+						Message: msg,
+					},
+				}
+			}
 		}
 	}
 
