@@ -41,15 +41,7 @@ source "$SCRIPT_DIR/e2e-lib.sh"
 validate_prerequisites
 setup_cluster
 register_cleanup
-
-# Tests that use experimental Gateway API fields (e.g. sessionPersistence)
-# need the experimental CRD channel.
-helm_extra_args=()
-if [ -z "${TEST:-}" ] || [ "${TEST:-}" = "test_session_persistence" ]; then
-    helm_extra_args+=(--set api.channel=experimental)
-fi
-install_controller "${helm_extra_args[@]}"
-
+install_controller
 start_controller_log_stream
 create_test_namespace
 ensure_gatewayclass
