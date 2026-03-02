@@ -10,7 +10,7 @@ import (
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:shortName=cgs
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Tunnel Name",type=string,JSONPath=`.status.tunnel.name`
+// +kubebuilder:printcolumn:name="Tunnel Name",type=string,JSONPath=`.status.tunnel.name`,priority=1
 // +kubebuilder:printcolumn:name="Tunnel ID",type=string,JSONPath=`.status.tunnel.id`
 // +kubebuilder:printcolumn:name="DNS",type=string,JSONPath=`.status.conditions[?(@.type=="DNSManagement")].reason`
 // +kubebuilder:printcolumn:name="Sidecar",type=string,JSONPath=`.status.conditions[?(@.type=="Sidecar")].reason`

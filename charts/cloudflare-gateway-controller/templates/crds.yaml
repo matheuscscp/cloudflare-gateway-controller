@@ -1376,6 +1376,7 @@ spec:
   - additionalPrinterColumns:
     - jsonPath: .status.tunnel.name
       name: Tunnel Name
+      priority: 1
       type: string
     - jsonPath: .status.tunnel.id
       name: Tunnel ID

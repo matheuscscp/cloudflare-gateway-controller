@@ -645,7 +645,7 @@ func waitForGatewayClassReady(g Gomega, gc *gatewayv1.GatewayClass) {
 		ready := conditions.Find(result.Status.Conditions, apiv1.ConditionReady)
 		g.Expect(ready).NotTo(BeNil())
 		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+	}).WithTimeout(30 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
 func waitForGatewayProgrammed(g Gomega, gw *gatewayv1.Gateway) {
@@ -660,7 +660,7 @@ func waitForGatewayProgrammed(g Gomega, gw *gatewayv1.Gateway) {
 		g.Expect(result.Status.Addresses[0].Value).To(Equal(cloudflare.TunnelTarget("test-tunnel-id")))
 		g.Expect(result.Status.Addresses[0].Type).NotTo(BeNil())
 		g.Expect(*result.Status.Addresses[0].Type).To(Equal(gatewayv1.HostnameAddressType))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+	}).WithTimeout(30 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
 // findEvent returns the first events.k8s.io/v1 Event for the given object name

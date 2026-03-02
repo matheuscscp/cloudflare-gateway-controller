@@ -30,12 +30,9 @@ func testGateway() *gatewayv1.Gateway {
 func TestTunnelName(t *testing.T) {
 	g := NewWithT(t)
 	gw := testGateway()
-	name := apiv1.TunnelName(gw)
-	g.Expect(name).To(HavePrefix("gw-"))
-	// Full SHA256 = 64 hex chars, "gw-" prefix = 67 chars total.
-	g.Expect(name).To(HaveLen(67))
-	// Deterministic: same cluster/ns/gw always produces the same name.
-	g.Expect(apiv1.TunnelName(gw)).To(Equal(name))
+	g.Expect(apiv1.TunnelName(gw)).To(Equal(
+		"cloudflare-gateway-controller.io/clusters/test-cluster/namespaces/my-ns/gateways/my-gw",
+	))
 }
 
 func TestGatewayResourceName(t *testing.T) {

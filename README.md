@@ -179,8 +179,8 @@ Gateway, providing a quick view of tunnel info, conditions, and managed resource
 
 ```
 $ kubectl get cgs
-NAME         TUNNEL NAME   TUNNEL ID    DNS       SIDECAR   READY
-my-gateway   gw-a1b2c3…    abcd-1234…   Enabled   Enabled   True
+NAME         TUNNEL ID    DNS       SIDECAR   READY
+my-gateway   abcd-1234…   Enabled   Enabled   True
 ```
 
 ### Sidecar reverse proxy

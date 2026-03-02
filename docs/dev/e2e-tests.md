@@ -56,9 +56,8 @@ the header of `hack/e2e-lib.sh`.
 
 In CI, each test runs as a separate GitHub Actions matrix job with
 `KIND_CLUSTER_NAME` set to the test name. This makes each test produce unique
-Cloudflare resource names (the tunnel name includes a SHA256 of
-`clusterName/namespace/gatewayName`), so all tests safely share the same
-Cloudflare account concurrently.
+Cloudflare resource names (the tunnel name includes the cluster name), so all
+tests safely share the same Cloudflare account concurrently.
 
 ## Multi-zone tests
 
