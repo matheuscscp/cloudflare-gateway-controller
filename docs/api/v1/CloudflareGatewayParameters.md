@@ -285,9 +285,14 @@ the Gateway status.
 The `.spec.tunnel.sidecar` field configures the sidecar reverse proxy that runs
 alongside cloudflared for per-request load balancing through kube-proxy.
 
-By default (when this field is absent), the sidecar is **enabled**. Set
-`.spec.tunnel.sidecar.enabled` to `false` to disable the sidecar and let
-cloudflared connect directly to backend Services.
+The default depends on whether the controller has a sidecar image configured
+(via the `--sidecar-image` flag or the Helm `config.sidecar.enabled` value).
+When a sidecar image is configured, the sidecar is **enabled** by default.
+When no sidecar image is configured, the sidecar is **disabled** by default.
+Setting `.spec.tunnel.sidecar.enabled` to `true` when no sidecar image is
+configured is a **terminal error**. Set `.spec.tunnel.sidecar.enabled` to
+`false` to explicitly disable the sidecar and let cloudflared connect directly
+to backend Services.
 
 ```yaml
 spec:

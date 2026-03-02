@@ -188,9 +188,10 @@ type SidecarConfig struct {
 	ContainerConfig `json:",inline"`
 
 	// Enabled controls whether the sidecar reverse proxy runs alongside
-	// cloudflared. When absent, defaults to true — the sidecar is enabled.
-	// Set to false to disable the sidecar and let cloudflared connect
-	// directly to backend Services.
+	// cloudflared. When absent, the default depends on whether the controller
+	// has a sidecar image configured: enabled when set, disabled when empty.
+	// Setting this to true when no sidecar image is configured is a terminal
+	// error.
 	// +optional
 	Enabled *bool `json:"enabled,omitempty"`
 }

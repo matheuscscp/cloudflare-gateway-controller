@@ -207,9 +207,10 @@ func sidecarLabels(gw *gatewayv1.Gateway) map[string]string {
 }
 
 // sidecarEnabled returns true when the sidecar should run for the given Gateway.
-// The sidecar is enabled by default. It is disabled when the sidecar image is
-// not configured, or when the CloudflareGatewayParameters explicitly sets
-// tunnel.sidecar.enabled to false.
+// The default depends on whether the controller has a sidecar image configured:
+// when SidecarImage is set the sidecar is enabled by default; when it is empty
+// the sidecar is disabled by default. The case where the sidecar is explicitly
+// enabled but no sidecar image is configured is rejected by validateParameters.
 func (r *GatewayReconciler) sidecarEnabled(params *apiv1.CloudflareGatewayParameters) bool {
 	if r.SidecarImage == "" {
 		return false

@@ -125,8 +125,8 @@ without leaking Cloudflare resources — a reborn cluster with the same
 
 `clusterName` comes from the Helm value `config.clusterName` (required).
 Sidecar resources are only created when the sidecar is enabled per-Gateway
-(via [CloudflareGatewayParameters](CloudflareGatewayParameters.md#sidecar-configuration),
-default: enabled).
+(via [CloudflareGatewayParameters](CloudflareGatewayParameters.md#sidecar-configuration);
+the default depends on whether a sidecar image is configured).
 
 Source: `TunnelName()`, `GatewayResourceName()`, `GatewayReplicaName()` in `api/v1/meta_types.go`.
 
@@ -278,8 +278,8 @@ When DNS management is disabled:
 Custom condition, not part of the Gateway API spec. Reports whether the sidecar
 reverse proxy is enabled for this Gateway.
 
-The sidecar is enabled by default. It can be disabled per-Gateway via
-`.spec.tunnel.sidecar.enabled` in the
+The default depends on whether the controller has a sidecar image configured.
+It can be overridden per-Gateway via `.spec.tunnel.sidecar.enabled` in the
 [CloudflareGatewayParameters](CloudflareGatewayParameters.md#sidecar-configuration).
 
 When the sidecar is enabled:

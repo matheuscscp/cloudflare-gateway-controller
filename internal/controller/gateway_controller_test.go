@@ -4589,3 +4589,101 @@ func TestGatewayReconciler_FinalizeErrorStatusPatchFails(t *testing.T) {
 	g.Expect(err).To(MatchError(ContainSubstring(longErr[:50])))
 	g.Expect(result).To(Equal(ctrl.Result{}))
 }
+
+func TestGatewayReconciler_SidecarExplicitlyEnabledWithoutImage(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gc-sidecar-no-image", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+	waitForGatewayClassReady(g, gc)
+
+	params := createTestParameters(g, "test-sidecar-no-image-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		Tunnel: &apiv1.TunnelConfig{
+			Sidecar: &apiv1.SidecarConfig{
+				Enabled: new(true),
+			},
+		},
+	})
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-sidecar-no-image",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "https",
+					Protocol: gatewayv1.HTTPSProtocolType,
+					Port:     443,
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Create a reconciler with no sidecar image configured.
+	// Use a faultClient with listHandler that bypasses field-index-dependent
+	// GatewayClass list calls (indexes are only in the manager cache).
+	fc := &faultClient{
+		Client: testClient,
+		listHandler: func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+			switch list.(type) {
+			case *gatewayv1.GatewayClassList, *gatewayv1.HTTPRouteList:
+				return nil // Return empty list, skip field-index lookup.
+			}
+			return testClient.List(ctx, list, opts...)
+		},
+	}
+	r := &controller.GatewayReconciler{
+		Client:        fc,
+		EventRecorder: noopEventRecorder{},
+		ResourceManager: ssa.NewResourceManager(fc, nil, ssa.Owner{
+			Field: apiv1.ShortControllerName,
+		}),
+		NewCloudflareClient: func(_ cloudflare.ClientConfig) (cloudflare.Client, error) {
+			return testMock, nil
+		},
+		CloudflaredImage: controller.DefaultCloudflaredImage,
+		SidecarImage:     "", // No sidecar image configured.
+	}
+
+	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gw)}
+
+	// First reconcile adds the finalizer.
+	result, err := r.Reconcile(testCtx, req)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(BeNumerically(">", 0))
+
+	// Second reconcile hits the terminal validation error.
+	result, err = r.Reconcile(testCtx, req)
+	g.Expect(err).To(MatchError(ContainSubstring("sidecar explicitly enabled but no sidecar image is configured")))
+	g.Expect(result).To(Equal(ctrl.Result{}))
+
+	// Verify status was patched with Ready=False (terminal error).
+	var latest gatewayv1.Gateway
+	g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest)).To(Succeed())
+	ready := conditions.Find(latest.Status.Conditions, apiv1.ConditionReady)
+	g.Expect(ready).NotTo(BeNil())
+	g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(ready.Reason).To(Equal(apiv1.ReasonReconciliationFailed))
+	g.Expect(ready.Message).To(ContainSubstring("sidecar explicitly enabled but no sidecar image is configured"))
+}

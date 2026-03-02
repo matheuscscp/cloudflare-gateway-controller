@@ -113,7 +113,23 @@ func validateGateway(gw *gatewayv1.Gateway) *gatewayValidationError {
 }
 
 // validateParameters checks that the CloudflareGatewayParameters spec is valid.
-func validateParameters(params *apiv1.CloudflareGatewayParameters) *gatewayValidationError {
+func validateParameters(params *apiv1.CloudflareGatewayParameters, sidecarImage string) *gatewayValidationError {
+	// Reject sidecar explicitly enabled when no sidecar image is configured.
+	if sidecarImage == "" && params != nil && params.Spec.Tunnel != nil &&
+		params.Spec.Tunnel.Sidecar != nil && params.Spec.Tunnel.Sidecar.Enabled != nil &&
+		*params.Spec.Tunnel.Sidecar.Enabled {
+		msg := "Sidecar explicitly enabled but no sidecar image is configured"
+		return &gatewayValidationError{
+			err: reconcile.TerminalError(fmt.Errorf("%s", strings.ToLower(msg[:1])+msg[1:])),
+			cond: metav1.Condition{
+				Type:    string(gatewayv1.GatewayConditionAccepted),
+				Status:  metav1.ConditionFalse,
+				Reason:  string(gatewayv1.GatewayReasonInvalidParameters),
+				Message: msg,
+			},
+		}
+	}
+
 	if params != nil && params.Spec.DNS != nil && len(params.Spec.DNS.Zones) > 0 {
 		// Reject duplicate zone names.
 		seen := make(map[string]struct{}, len(params.Spec.DNS.Zones))
