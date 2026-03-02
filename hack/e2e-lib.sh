@@ -92,14 +92,9 @@ export -f cfgwctl
 export CFGWCTL CREDENTIALS_FILE
 
 # cf_resource_name computes a deterministic Cloudflare resource name from the
-# given parts, matching the Go ResourceName() function: "gw-" + hex(sha256(part1/part2/...)).
+# given parts, matching the Go TunnelName() function.
 cf_resource_name() {
-    local input=""
-    for part in "$@"; do
-        [ -n "$input" ] && input+="/"
-        input+="$part"
-    done
-    echo -n "gw-$(printf '%s' "$input" | sha256sum | cut -d' ' -f1)"
+    echo -n "cloudflare-gateway-controller.io/clusters/$1/namespaces/$2/gateways/$3"
 }
 export -f cf_resource_name
 

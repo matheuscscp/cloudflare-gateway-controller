@@ -4,7 +4,6 @@
 package v1
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"time"
 
@@ -143,14 +142,7 @@ func GatewayResourceLabels(gwName string, component ...string) map[string]string
 
 // TunnelName returns the deterministic Cloudflare tunnel name for a Gateway.
 func TunnelName(gw *gatewayv1.Gateway) string {
-	h := sha256.New()
-	for i, p := range []string{cfClusterName, gw.Namespace, gw.Name} {
-		if i > 0 {
-			h.Write([]byte("/"))
-		}
-		h.Write([]byte(p))
-	}
-	return fmt.Sprintf("gw-%x", h.Sum(nil))
+	return fmt.Sprintf("%s/clusters/%s/namespaces/%s/gateways/%s", Group, cfClusterName, gw.Namespace, gw.Name)
 }
 
 // ReconcileInterval returns the reconciliation interval for an object

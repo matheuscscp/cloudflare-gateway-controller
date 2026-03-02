@@ -114,11 +114,11 @@ without leaking Cloudflare resources — a reborn cluster with the same
 
 | Resource                | Name                                                        |
 |-------------------------|-------------------------------------------------------------|
-| Cloudflare Tunnel       | `gw-` + hex SHA256 of `clusterName/namespace/gatewayName` (67 chars) |
+| Cloudflare Tunnel       | `cloudflare-gateway-controller.io/clusters/<clusterName>/namespaces/<namespace>/gateways/<gatewayName>` |
 | cloudflared Deployment  | `gateway-<gatewayName>-<replicaName>` (default: `primary`)  |
 | VPA (when autoscaling)  | `gateway-<gatewayName>-<replicaName>` (default: `primary`)  |
 | Tunnel token Secret     | `gateway-<gatewayName>`                                     |
-| Sidecar ConfigMap       | `gateway-<gatewayName>`                                     |
+| Routes ConfigMap        | `gateway-<gatewayName>`                                     |
 | Sidecar ServiceAccount  | `gateway-<gatewayName>`                                     |
 | Sidecar Role            | `gateway-<gatewayName>`                                     |
 | Sidecar RoleBinding     | `gateway-<gatewayName>`                                     |
