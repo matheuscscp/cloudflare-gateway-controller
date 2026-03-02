@@ -2320,3 +2320,94 @@ func TestGatewayReconciler_HTTPRouteConflictingHostnamePath(t *testing.T) {
 		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
+
+func TestGatewayReconciler_HTTPRouteNoMatchingSectionName(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-no-match-section", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	// Gateway with a listener named "https" (default from createTestGateway)
+	gw := createTestGateway(g, "test-gw-no-match-section", ns.Name, gc.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+	waitForGatewayProgrammed(g, gw)
+
+	// Create an HTTPRoute with sectionName "nonexistent" (does not match "https")
+	nonexistent := gatewayv1.SectionName("nonexistent")
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-httproute-no-match-section",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{
+						Name:        gatewayv1.ObjectName(gw.Name),
+						SectionName: &nonexistent,
+					},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"nomatch.example.com"},
+			Rules: []gatewayv1.HTTPRouteRule{
+				{
+					BackendRefs: []gatewayv1.HTTPBackendRef{
+						{
+							BackendRef: gatewayv1.BackendRef{
+								BackendObjectReference: gatewayv1.BackendObjectReference{
+									Name: "my-service",
+									Port: new(gatewayv1.PortNumber(8080)),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.HTTPRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Verify the HTTPRoute is rejected: Accepted=False/NoMatchingParent
+	routeKey := client.ObjectKeyFromObject(route)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.HTTPRoute
+		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(HaveLen(1))
+		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.RouteReasonNoMatchingParent)))
+		g.Expect(accepted.Message).To(ContainSubstring("No listener matches the sectionName"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Verify the Gateway listener has 0 attached routes
+	gwKey := client.ObjectKeyFromObject(gw)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
+		g.Expect(result.Status.Listeners).To(HaveLen(1))
+		g.Expect(result.Status.Listeners[0].AttachedRoutes).To(Equal(int32(0)))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}

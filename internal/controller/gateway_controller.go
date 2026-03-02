@@ -270,10 +270,14 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 			errs = append(errs, fmt.Sprintf("failed to update denied HTTPRoute %s/%s status: %v", route.Namespace, route.Name, err))
 		}
 	}
+	// Reject routes where every parentRef to this Gateway specifies a
+	// sectionName that doesn't match any listener (NoMatchingParent).
+	matchedRoutes, noMatchErrs := r.filterNoMatchingParentRoutes(ctx, gw, gatewayRoutes)
+	errs = append(errs, noMatchErrs...)
 	// Set Accepted=False/UnsupportedValue on routes that use unsupported features.
 	sidecar := r.sidecarEnabled(params)
 	var validRoutes []*gatewayv1.HTTPRoute
-	for _, route := range gatewayRoutes {
+	for _, route := range matchedRoutes {
 		if issues := validateHTTPRoute(route, sidecar); len(issues) > 0 {
 			msg := "Unsupported features:\n- " + strings.Join(issues, "\n- ")
 			if err := r.rejectRouteStatus(ctx, gw, route,

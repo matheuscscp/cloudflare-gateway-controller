@@ -377,6 +377,47 @@ func addressesChanged(existing, desired []gatewayv1.GatewayStatusAddress) bool {
 	return false
 }
 
+// filterNoMatchingParentRoutes rejects routes where every parentRef to the
+// Gateway specifies a sectionName that doesn't match any listener, returning
+// the remaining routes and any non-fatal errors from status patches.
+func (r *GatewayReconciler) filterNoMatchingParentRoutes(ctx context.Context, gw *gatewayv1.Gateway, routes []*gatewayv1.HTTPRoute) ([]*gatewayv1.HTTPRoute, []string) {
+	var matched []*gatewayv1.HTTPRoute
+	var errs []string
+	for _, route := range routes {
+		if !hasMatchingListener(gw, route) {
+			msg := fmt.Sprintf("No listener matches the sectionName(s) in parentRefs for Gateway %s/%s", gw.Namespace, gw.Name)
+			if err := r.rejectRouteStatus(ctx, gw, route,
+				string(gatewayv1.RouteReasonNoMatchingParent), msg); err != nil {
+				errs = append(errs, fmt.Sprintf("failed to update no-matching-parent HTTPRoute %s/%s status: %v", route.Namespace, route.Name, err))
+			}
+			continue
+		}
+		matched = append(matched, route)
+	}
+	return matched, errs
+}
+
+// hasMatchingListener reports whether at least one parentRef targeting the
+// given Gateway has a valid sectionName (nil or matching an actual listener).
+// Routes where every parentRef specifies a non-existent sectionName should be
+// rejected with RouteReasonNoMatchingParent.
+func hasMatchingListener(gw *gatewayv1.Gateway, route *gatewayv1.HTTPRoute) bool {
+	for _, ref := range route.Spec.ParentRefs {
+		if !parentRefMatches(ref, gw, route.Namespace) {
+			continue
+		}
+		if ref.SectionName == nil {
+			return true
+		}
+		for _, l := range gw.Spec.Listeners {
+			if l.Name == *ref.SectionName {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // countAttachedRoutes counts the number of allowed HTTPRoutes attached to each
 // listener of the given Gateway. Routes without a sectionName count toward all listeners.
 func countAttachedRoutes(routes []*gatewayv1.HTTPRoute, gw *gatewayv1.Gateway) map[gatewayv1.SectionName]int32 {
@@ -387,7 +428,13 @@ func countAttachedRoutes(routes []*gatewayv1.HTTPRoute, gw *gatewayv1.Gateway) m
 				continue
 			}
 			if ref.SectionName != nil {
-				counts[*ref.SectionName]++
+				// Only count if the sectionName matches an actual listener.
+				for _, l := range gw.Spec.Listeners {
+					if l.Name == *ref.SectionName {
+						counts[*ref.SectionName]++
+						break
+					}
+				}
 			} else {
 				// Attach to all listeners.
 				for _, l := range gw.Spec.Listeners {
