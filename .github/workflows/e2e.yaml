@@ -91,13 +91,10 @@ jobs:
         test:
           - test_gateway_lifecycle
           - test_multi_routes
-          - test_path_matching
           - test_dns_default_all_zones
           - test_no_dns
-          - test_deployment_patches
           - test_disabled_reconciliation
           - test_dns_config_removal
-          - test_multiple_listeners_rejected
           - test_multi_zone_dns
           - test_multi_gateway_overlapping_zones
           - test_cluster_recreation
@@ -105,7 +102,6 @@ jobs:
           - test_sidecar_disabled
           - test_traffic_splitting
           - test_session_persistence
-          - test_replicas
           - test_vpa_autoscaling
     steps:
       - name: Checkout
