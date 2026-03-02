@@ -177,7 +177,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	// Skip reconciliation if the object is suspended.
-	if gw.Annotations[apiv1.AnnotationReconcile] == apiv1.ValueDisabled {
+	if gw.Annotations[apiv1.AnnotationReconcile] == apiv1.AnnotationReconcileDisabled {
 		l.V(1).Info("Reconciliation is disabled")
 		return ctrl.Result{}, nil
 	}
@@ -763,7 +763,7 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 	l := log.FromContext(ctx)
 
 	var changes []string
-	if gw.Annotations[apiv1.AnnotationReconcile] == apiv1.ValueDisabled {
+	if gw.Annotations[apiv1.AnnotationReconcile] == apiv1.AnnotationReconcileDisabled {
 		if err := r.finalizeDisabled(ctx, gw); err != nil {
 			return r.finalizeError(ctx, gw, changes, err)
 		}
@@ -850,11 +850,7 @@ func (r *GatewayReconciler) finalizeEnabled(ctx context.Context, gw *gatewayv1.G
 	var deployList appsv1.DeploymentList
 	if err := r.List(ctx, &deployList,
 		client.InNamespace(gw.Namespace),
-		client.MatchingLabels{
-			"app.kubernetes.io/name":       "cloudflared",
-			"app.kubernetes.io/managed-by": apiv1.ShortControllerName,
-			"app.kubernetes.io/instance":   gw.Name,
-		},
+		client.MatchingLabels(apiv1.GatewayResourceLabels(gw.Name)),
 	); err != nil {
 		return nil, fmt.Errorf("listing cloudflared deployments for deletion: %w", err)
 	}

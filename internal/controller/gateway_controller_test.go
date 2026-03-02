@@ -1605,7 +1605,7 @@ func TestGatewayReconciler_DeletionReconcileDisabled(t *testing.T) {
 		if latest.Annotations == nil {
 			latest.Annotations = make(map[string]string)
 		}
-		latest.Annotations[apiv1.AnnotationReconcile] = apiv1.ValueDisabled
+		latest.Annotations[apiv1.AnnotationReconcile] = apiv1.AnnotationReconcileDisabled
 		g.Expect(testClient.Update(testCtx, &latest)).To(Succeed())
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
@@ -1975,7 +1975,7 @@ func TestGatewayReconciler_ReconcileDisabled(t *testing.T) {
 		if latest.Annotations == nil {
 			latest.Annotations = make(map[string]string)
 		}
-		latest.Annotations[apiv1.AnnotationReconcile] = apiv1.ValueDisabled
+		latest.Annotations[apiv1.AnnotationReconcile] = apiv1.AnnotationReconcileDisabled
 		g.Expect(testClient.Update(testCtx, &latest)).To(Succeed())
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 

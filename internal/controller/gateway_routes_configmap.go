@@ -27,14 +27,8 @@ const routeConfigMapKey = "config.yaml"
 
 // routeConfigMapLabels returns the standard labels for the route ConfigMap.
 func routeConfigMapLabels(gw *gatewayv1.Gateway) map[string]string {
-	lbls := maps.Clone(infrastructureLabels(gw.Spec.Infrastructure))
-	if lbls == nil {
-		lbls = make(map[string]string)
-	}
-	lbls["app.kubernetes.io/name"] = "cloudflared" //nolint:goconst // shared label value across files
-	lbls["app.kubernetes.io/managed-by"] = apiv1.ShortControllerName
-	lbls["app.kubernetes.io/instance"] = gw.Name
-	lbls["app.kubernetes.io/component"] = "routes"
+	lbls := apiv1.GatewayResourceLabels(gw.Name, apiv1.LabelAppComponentRoutes)
+	maps.Copy(lbls, infrastructureLabels(gw.Spec.Infrastructure))
 	return lbls
 }
 
@@ -199,12 +193,7 @@ func (r *GatewayReconciler) getExistingRouteConfig(ctx context.Context, gw *gate
 func (r *GatewayReconciler) removeOwnerReferencesFromRouteConfigMap(ctx context.Context, gw *gatewayv1.Gateway) ([]client.Object, error) {
 	l := log.FromContext(ctx)
 	var removed []client.Object
-	matchLabels := client.MatchingLabels{
-		"app.kubernetes.io/name":       "cloudflared",
-		"app.kubernetes.io/managed-by": apiv1.ShortControllerName,
-		"app.kubernetes.io/instance":   gw.Name,
-		"app.kubernetes.io/component":  "routes",
-	}
+	matchLabels := client.MatchingLabels(apiv1.GatewayResourceLabels(gw.Name, apiv1.LabelAppComponentRoutes))
 
 	var cmList corev1.ConfigMapList
 	if err := r.List(ctx, &cmList, client.InNamespace(gw.Namespace), matchLabels); err != nil {

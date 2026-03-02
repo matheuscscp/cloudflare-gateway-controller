@@ -83,12 +83,7 @@ func (r *GatewayReconciler) reconcileVPAs(ctx context.Context, gw *gatewayv1.Gat
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      name,
 				Namespace: gw.Namespace,
-				Labels: map[string]string{
-					"app.kubernetes.io/name":       "cloudflared",
-					"app.kubernetes.io/managed-by": apiv1.ShortControllerName,
-					"app.kubernetes.io/instance":   gw.Name,
-					"app.kubernetes.io/component":  replicas[i].Name,
-				},
+				Labels:    apiv1.GatewayResourceLabels(gw.Name, replicas[i].Name),
 				OwnerReferences: []metav1.OwnerReference{{
 					APIVersion:         gatewayv1.GroupVersion.String(),
 					Kind:               apiv1.KindGateway,
@@ -141,11 +136,7 @@ func (r *GatewayReconciler) cleanupStaleVPAs(ctx context.Context, gw *gatewayv1.
 	var vpaList vpav1.VerticalPodAutoscalerList
 	if err := r.List(ctx, &vpaList,
 		client.InNamespace(gw.Namespace),
-		client.MatchingLabels{
-			"app.kubernetes.io/name":       "cloudflared",
-			"app.kubernetes.io/managed-by": apiv1.ShortControllerName,
-			"app.kubernetes.io/instance":   gw.Name,
-		},
+		client.MatchingLabels(apiv1.GatewayResourceLabels(gw.Name)),
 	); err != nil {
 		// CRD may not be installed — non-fatal.
 		l.V(1).Info("Failed to list VPAs for cleanup (CRD may not be installed)", "error", err)
@@ -180,11 +171,7 @@ func (r *GatewayReconciler) removeOwnerReferencesFromVPAs(ctx context.Context, g
 	var vpaList vpav1.VerticalPodAutoscalerList
 	if err := r.List(ctx, &vpaList,
 		client.InNamespace(gw.Namespace),
-		client.MatchingLabels{
-			"app.kubernetes.io/name":       "cloudflared",
-			"app.kubernetes.io/managed-by": apiv1.ShortControllerName,
-			"app.kubernetes.io/instance":   gw.Name,
-		},
+		client.MatchingLabels(apiv1.GatewayResourceLabels(gw.Name)),
 	); err != nil {
 		// CRD may not be installed — non-fatal.
 		l.V(1).Info("Failed to list VPAs for owner reference removal (CRD may not be installed)", "error", err)
