@@ -1103,7 +1103,24 @@ func TestGatewayReconciler_HTTPRoutePathMatches(t *testing.T) {
 					BackendRefs: []gatewayv1.HTTPBackendRef{
 						{BackendRef: gatewayv1.BackendRef{
 							BackendObjectReference: gatewayv1.BackendObjectReference{
-								Name: "my-service", Port: new(gatewayv1.PortNumber(8080)),
+								Name: "api-svc", Port: new(gatewayv1.PortNumber(80)),
+							},
+						}},
+					},
+				},
+				{
+					Matches: []gatewayv1.HTTPRouteMatch{
+						{
+							Path: &gatewayv1.HTTPPathMatch{
+								Type:  &pathPrefix,
+								Value: new(string),
+							},
+						},
+					},
+					BackendRefs: []gatewayv1.HTTPBackendRef{
+						{BackendRef: gatewayv1.BackendRef{
+							BackendObjectReference: gatewayv1.BackendObjectReference{
+								Name: "web-svc", Port: new(gatewayv1.PortNumber(80)),
 							},
 						}},
 					},
@@ -1111,8 +1128,8 @@ func TestGatewayReconciler_HTTPRoutePathMatches(t *testing.T) {
 			},
 		},
 	}
-	// Set path value after creation since we need a pointer.
-	*route.Spec.Rules[0].Matches[0].Path.Value = "/api/v1"
+	*route.Spec.Rules[0].Matches[0].Path.Value = "/api"
+	*route.Spec.Rules[1].Matches[0].Path.Value = "/web"
 
 	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
 	t.Cleanup(func() {
@@ -1122,14 +1139,20 @@ func TestGatewayReconciler_HTTPRoutePathMatches(t *testing.T) {
 		}
 	})
 
-	// Verify route ConfigMap has the path prefix route.
+	// Verify route ConfigMap has both path prefix routes with correct backends.
 	g.Eventually(func(g Gomega) {
 		cfg := getRouteConfig(g, gw)
-		g.Expect(cfg.Routes).To(HaveLen(1))
+		g.Expect(cfg.Routes).To(HaveLen(2))
+
 		g.Expect(cfg.Routes[0].Hostname).To(Equal("path.example.com"))
-		g.Expect(cfg.Routes[0].PathPrefix).To(Equal("/api/v1"))
+		g.Expect(cfg.Routes[0].PathPrefix).To(Equal("/api"))
 		g.Expect(cfg.Routes[0].Backends).To(HaveLen(1))
-		g.Expect(cfg.Routes[0].Backends[0].Service).To(Equal("http://my-service." + ns.Name + ".svc.cluster.local:8080"))
+		g.Expect(cfg.Routes[0].Backends[0].Service).To(Equal("http://api-svc." + ns.Name + ".svc.cluster.local:80"))
+
+		g.Expect(cfg.Routes[1].Hostname).To(Equal("path.example.com"))
+		g.Expect(cfg.Routes[1].PathPrefix).To(Equal("/web"))
+		g.Expect(cfg.Routes[1].Backends).To(HaveLen(1))
+		g.Expect(cfg.Routes[1].Backends[0].Service).To(Equal("http://web-svc." + ns.Name + ".svc.cluster.local:80"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 

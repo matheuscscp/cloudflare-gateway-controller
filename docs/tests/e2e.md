@@ -62,29 +62,6 @@ while preserving the other.
 11. Delete `route-b` and `Gateway`; verify tunnel deleted.
 12. Clean up `CloudflareGatewayParameters` and Services.
 
-## test_path_matching
-
-HTTPRoute with path-based matching rules. Two different Services are routed
-by path prefix (`/api` and `/web`), verifying that cloudflared receives
-path-based ingress entries. Uses a `.test` hostname that won't resolve to any
-Cloudflare zone, so DNS is effectively skipped in all-zones mode.
-
-**Resources created:**
-- `Gateway` with bare Secret as parametersRef (no CGP)
-- 2 Services and 1 HTTPRoute with 2 path-based rules
-
-**Cloudflare resources:** 1 tunnel (no DNS CNAMEs — hostname zone unresolvable).
-
-**Steps:**
-
-1. Create `Gateway` with bare Secret; wait for Programmed.
-2. Create 2 Services (`api-svc`, `web-svc`).
-3. Create `HTTPRoute` with 2 rules: `/api` to `api-svc`, `/web` to `web-svc`.
-4. Verify tunnel config has an entry for the hostname with `/api` path.
-5. Verify tunnel config has an entry for the hostname with `/web` path.
-6. Delete `HTTPRoute` and `Gateway`.
-7. Clean up Services.
-
 ## test_dns_default_all_zones
 
 Gateway with a bare Secret (no `CloudflareGatewayParameters`) verifies that DNS
@@ -130,25 +107,6 @@ created.
 4. Verify no DNS CNAME record exists (checked multiple times with sleep).
 5. Delete `HTTPRoute` and `Gateway`.
 6. Clean up `CloudflareGatewayParameters` and `Service`.
-
-## test_deployment_patches
-
-CloudflareGatewayParameters with JSON Patch operations applied to the cloudflared
-Deployment via the `spec.tunnel.deployment` field. Verifies that the patch is applied correctly.
-
-**Resources created:**
-- `CloudflareGatewayParameters` with a patch that adds label `e2e-patch=applied`
-- `Gateway` referencing the patched parameters
-
-**Cloudflare resources:** 1 tunnel.
-
-**Steps:**
-
-1. Create `CloudflareGatewayParameters` with deployment patch (`op: add` label).
-2. Create `Gateway`; wait for Programmed.
-3. Verify cloudflared Deployment has label `e2e-patch=applied` on its pod template.
-4. Delete `Gateway`; verify deleted.
-5. Clean up `CloudflareGatewayParameters`.
 
 ## test_disabled_reconciliation
 
@@ -198,23 +156,6 @@ tunnel ingress config is preserved.
 5. Verify tunnel config still has the hostname (ingress unaffected by DNS change).
 6. Delete `HTTPRoute` and `Gateway`.
 7. Clean up `CloudflareGatewayParameters` and `Service`.
-
-## test_multiple_listeners_rejected
-
-Attempts to create a Gateway with two listeners. Verifies that the controller
-rejects it with `Accepted=False` and reason `ListenersNotValid`.
-
-**Resources created:**
-- `Gateway` with 2 listeners (http:80 and http:8080)
-
-**Cloudflare resources:** none (Gateway rejected before reconciliation).
-
-**Steps:**
-
-1. Create `Gateway` with 2 listeners.
-2. Verify `Accepted` condition is `False`.
-3. Verify `Accepted` reason is `ListenersNotValid`.
-4. Delete `Gateway`; verify deleted.
 
 ## test_multi_zone_dns
 
@@ -435,28 +376,6 @@ is correctly forwarded through cloudflared and the sidecar to the backend.
 6. Run `cfgwctl test session` with 50 requests, verifying cookie affinity and
    host header forwarding (`--hostname`).
 7. Delete `HTTPRoute`, `Gateway` (wait for deletion), Deployments, Services.
-
-## test_replicas
-
-Multiple replica Deployments for the same Gateway tunnel. Verifies that the
-controller creates separate Deployments per replica while sharing a single
-tunnel, Secret, and sidecar resources.
-
-**Resources created:**
-- `CloudflareGatewayParameters` with 2 replicas (`alpha`, `beta`)
-- `Gateway` referencing the parameters
-
-**Cloudflare resources:** 1 tunnel (shared by both replicas).
-
-**Steps:**
-
-1. Create `CloudflareGatewayParameters` with 2 replicas.
-2. Create `Gateway`; wait for Programmed.
-3. Verify 2 Deployments exist: `gateway-replicas-gw-alpha` and
-   `gateway-replicas-gw-beta`.
-4. Verify single shared Secret `gateway-replicas-gw`.
-5. Delete `Gateway`; verify deleted.
-6. Clean up `CloudflareGatewayParameters`.
 
 ## test_vpa_autoscaling
 

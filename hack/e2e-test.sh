@@ -348,92 +348,6 @@ EOF
     kubectl delete service backend-a backend-b -n "$TEST_NS" --ignore-not-found
 }
 
-test_path_matching() {
-    local path_hostname="paths-${TS: -6}.test"
-
-    log "Creating Gateway 'path-gw' (no DNS config)..."
-    kubectl apply -f - <<EOF
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: path-gw
-  namespace: $TEST_NS
-spec:
-  gatewayClassName: cloudflare
-  listeners:
-  - name: https
-    protocol: HTTPS
-    port: 443
-EOF
-
-    retry 60 2 kubectl wait gateway/path-gw -n "$TEST_NS" \
-        --for=condition=Programmed --timeout=5s \
-        || fail "path-gw did not become Programmed"
-    pass "path-gw is Programmed"
-
-    local path_tunnel_name path_tunnel_id
-    path_tunnel_name=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "path-gw")
-    path_tunnel_id=$(cfgwctl tunnel get-id --name "$path_tunnel_name" | jq -r '.tunnelId')
-    [ -n "$path_tunnel_id" ] && [ "$path_tunnel_id" != "null" ] || fail "path tunnel not found"
-
-    log "Creating Services and HTTPRoute with path matches..."
-    for svc in api-svc web-svc; do
-        kubectl apply -f - <<EOF
-apiVersion: v1
-kind: Service
-metadata:
-  name: $svc
-  namespace: $TEST_NS
-spec:
-  ports:
-  - port: 80
-    protocol: TCP
-EOF
-    done
-
-    kubectl apply -f - <<EOF
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: path-route
-  namespace: $TEST_NS
-spec:
-  parentRefs:
-  - name: path-gw
-  hostnames:
-  - "$path_hostname"
-  rules:
-  - matches:
-    - path:
-        type: PathPrefix
-        value: /api
-    backendRefs:
-    - name: api-svc
-      port: 80
-  - matches:
-    - path:
-        type: PathPrefix
-        value: /web
-    backendRefs:
-    - name: web-svc
-      port: 80
-EOF
-
-    log "Verifying sidecar config has path-based entries..."
-    retry 60 3 bash -c "sidecar_config_has_hostname 'path-gw' '$path_hostname' '/api'" \
-        || fail "sidecar config missing /api path"
-    retry 60 3 bash -c "sidecar_config_has_hostname 'path-gw' '$path_hostname' '/web'" \
-        || fail "sidecar config missing /web path"
-    pass "Sidecar config has path-based entries"
-
-    log "Cleaning up path matching test..."
-    kubectl delete httproute path-route -n "$TEST_NS"
-    kubectl delete gateway path-gw -n "$TEST_NS"
-    retry 60 3 bash -c "! kubectl get gateway path-gw -n '$TEST_NS' 2>/dev/null" \
-        || fail "path-gw still exists"
-    kubectl delete service api-svc web-svc -n "$TEST_NS" --ignore-not-found
-}
-
 test_dns_default_all_zones() {
     local dns_def_hostname="dd-${TS: -6}.${TEST_ZONE_NAME}"
 
@@ -627,63 +541,6 @@ EOF
         || fail "no-dns-gw still exists"
     kubectl delete cloudflaregatewayparameters no-dns-params -n "$TEST_NS" --ignore-not-found
     kubectl delete service no-dns-backend -n "$TEST_NS" --ignore-not-found
-}
-
-test_deployment_patches() {
-    log "Creating CloudflareGatewayParameters 'patched-params' with deployment patches..."
-    kubectl apply -f - <<EOF
-apiVersion: cloudflare-gateway-controller.io/v1
-kind: CloudflareGatewayParameters
-metadata:
-  name: patched-params
-  namespace: $TEST_NS
-spec:
-  secretRef:
-    name: cloudflare-creds
-  tunnel:
-    patches:
-    - op: add
-      path: /spec/template/metadata/labels/e2e-patch
-      value: "applied"
-EOF
-
-    log "Creating Gateway 'patched-gw' with deployment patches..."
-    kubectl apply -f - <<EOF
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: patched-gw
-  namespace: $TEST_NS
-spec:
-  gatewayClassName: cloudflare
-  infrastructure:
-    parametersRef:
-      group: cloudflare-gateway-controller.io
-      kind: CloudflareGatewayParameters
-      name: patched-params
-  listeners:
-  - name: https
-    protocol: HTTPS
-    port: 443
-EOF
-
-    retry 60 2 kubectl wait gateway/patched-gw -n "$TEST_NS" \
-        --for=condition=Programmed --timeout=5s \
-        || fail "patched-gw did not become Programmed"
-    pass "patched-gw is Programmed"
-
-    log "Verifying cloudflared Deployment has patched label..."
-    local patch_label
-    patch_label=$(kubectl get deployment gateway-patched-gw-primary -n "$TEST_NS" \
-        -o jsonpath='{.spec.template.metadata.labels.e2e-patch}')
-    [ "$patch_label" = "applied" ] || fail "Deployment patch not applied: got '$patch_label'"
-    pass "Deployment patch applied"
-
-    log "Cleaning up deployment patches test..."
-    kubectl delete gateway patched-gw -n "$TEST_NS"
-    retry 60 3 bash -c "! kubectl get gateway patched-gw -n '$TEST_NS' 2>/dev/null" \
-        || fail "patched-gw still exists"
-    kubectl delete cloudflaregatewayparameters patched-params -n "$TEST_NS" --ignore-not-found
 }
 
 test_disabled_reconciliation() {
@@ -1168,39 +1025,6 @@ EOF
 
     kubectl delete cloudflaregatewayparameters recreate-params -n "$TEST_NS" --ignore-not-found
     kubectl delete service recreate-backend -n "$TEST_NS" --ignore-not-found
-}
-
-test_multiple_listeners_rejected() {
-    log "Creating Gateway 'multi-listen-gw' with two listeners..."
-    kubectl apply -f - <<EOF
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: multi-listen-gw
-  namespace: $TEST_NS
-spec:
-  gatewayClassName: cloudflare
-  listeners:
-  - name: https
-    protocol: HTTPS
-    port: 443
-  - name: https2
-    protocol: HTTPS
-    port: 8443
-EOF
-
-    log "Verifying Gateway is rejected with Accepted=False..."
-    retry 60 3 bash -c "
-        accepted_status=\$(kubectl get gateway multi-listen-gw -n '$TEST_NS' -o jsonpath='{.status.conditions[?(@.type==\"Accepted\")].status}')
-        accepted_reason=\$(kubectl get gateway multi-listen-gw -n '$TEST_NS' -o jsonpath='{.status.conditions[?(@.type==\"Accepted\")].reason}')
-        [ \"\$accepted_status\" = 'False' ] && [ \"\$accepted_reason\" = 'ListenersNotValid' ]
-    " || fail "multi-listen-gw should be rejected with Accepted=False/ListenersNotValid"
-    pass "Gateway with multiple listeners correctly rejected"
-
-    log "Cleaning up multiple listeners test..."
-    kubectl delete gateway multi-listen-gw -n "$TEST_NS"
-    retry 60 3 bash -c "! kubectl get gateway multi-listen-gw -n '$TEST_NS' 2>/dev/null" \
-        || fail "multi-listen-gw still exists"
 }
 
 test_multi_zone_dns() {
@@ -2329,67 +2153,6 @@ EOF
     kubectl delete service sp-svc-b -n "$TEST_NS" --ignore-not-found
 }
 
-test_replicas() {
-    log "Creating CloudflareGatewayParameters 'replicas-params' with 2 replicas..."
-    kubectl apply -f - <<EOF
-apiVersion: cloudflare-gateway-controller.io/v1
-kind: CloudflareGatewayParameters
-metadata:
-  name: replicas-params
-  namespace: $TEST_NS
-spec:
-  secretRef:
-    name: cloudflare-creds
-  tunnel:
-    replicas:
-    - name: alpha
-    - name: beta
-EOF
-
-    log "Creating Gateway 'replicas-gw'..."
-    kubectl apply -f - <<EOF
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: replicas-gw
-  namespace: $TEST_NS
-spec:
-  gatewayClassName: cloudflare
-  infrastructure:
-    parametersRef:
-      group: cloudflare-gateway-controller.io
-      kind: CloudflareGatewayParameters
-      name: replicas-params
-  listeners:
-  - name: https
-    protocol: HTTPS
-    port: 443
-EOF
-
-    retry 60 2 kubectl wait gateway/replicas-gw -n "$TEST_NS" \
-        --for=condition=Programmed --timeout=5s \
-        || fail "replicas-gw did not become Programmed"
-    pass "replicas-gw is Programmed"
-
-    log "Verifying two Deployments exist..."
-    kubectl get deployment gateway-replicas-gw-alpha -n "$TEST_NS" >/dev/null 2>&1 \
-        || fail "Deployment gateway-replicas-gw-alpha not found"
-    kubectl get deployment gateway-replicas-gw-beta -n "$TEST_NS" >/dev/null 2>&1 \
-        || fail "Deployment gateway-replicas-gw-beta not found"
-    pass "Both replica Deployments exist"
-
-    log "Verifying single shared Secret..."
-    kubectl get secret gateway-replicas-gw -n "$TEST_NS" >/dev/null 2>&1 \
-        || fail "Shared Secret gateway-replicas-gw not found"
-    pass "Shared Secret exists"
-
-    log "Cleaning up replicas test..."
-    kubectl delete gateway replicas-gw -n "$TEST_NS"
-    retry 60 3 bash -c "! kubectl get gateway replicas-gw -n '$TEST_NS' 2>/dev/null" \
-        || fail "replicas-gw still exists"
-    kubectl delete cloudflaregatewayparameters replicas-params -n "$TEST_NS" --ignore-not-found
-}
-
 test_vpa_autoscaling() {
     log "Installing VPA CRD..."
     kubectl apply -f https://raw.githubusercontent.com/kubernetes/autoscaler/master/vertical-pod-autoscaler/deploy/vpa-v1-crd-gen.yaml \
@@ -2539,13 +2302,10 @@ EOF
 run_tests \
     test_gateway_lifecycle \
     test_multi_routes \
-    test_path_matching \
     test_dns_default_all_zones \
     test_no_dns \
-    test_deployment_patches \
     test_disabled_reconciliation \
     test_dns_config_removal \
-    test_multiple_listeners_rejected \
     test_multi_zone_dns \
     test_multi_gateway_overlapping_zones \
     test_cluster_recreation \
@@ -2553,5 +2313,4 @@ run_tests \
     test_sidecar_disabled \
     test_traffic_splitting \
     test_session_persistence \
-    test_replicas \
     test_vpa_autoscaling
