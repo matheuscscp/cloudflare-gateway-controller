@@ -500,6 +500,7 @@ type faultClient struct {
 	ctrlclient.Client
 	getInterceptor         func(ctx context.Context, key ctrlclient.ObjectKey, obj ctrlclient.Object) error
 	listInterceptor        func(ctx context.Context, list ctrlclient.ObjectList, opts ...ctrlclient.ListOption) error
+	listHandler            func(ctx context.Context, list ctrlclient.ObjectList, opts ...ctrlclient.ListOption) error
 	statusPatchInterceptor func(ctx context.Context, obj ctrlclient.Object, patch ctrlclient.Patch, opts ...ctrlclient.SubResourcePatchOption) error
 }
 
@@ -513,6 +514,9 @@ func (f *faultClient) Get(ctx context.Context, key ctrlclient.ObjectKey, obj ctr
 }
 
 func (f *faultClient) List(ctx context.Context, list ctrlclient.ObjectList, opts ...ctrlclient.ListOption) error {
+	if f.listHandler != nil {
+		return f.listHandler(ctx, list, opts...)
+	}
 	if f.listInterceptor != nil {
 		if err := f.listInterceptor(ctx, list, opts...); err != nil {
 			return err

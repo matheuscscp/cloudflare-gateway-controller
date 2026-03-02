@@ -16,12 +16,15 @@ replicas: 1
 
 config:
   clusterName: "" # Required. Unique cluster identifier for deterministic Cloudflare resource naming.
-  cloudflaredImage:
-    repository: "" # Defaults to the built-in DefaultCloudflaredImage repository.
-    tag: "" # Defaults to the built-in DefaultCloudflaredImage tag.
-  sidecarImage:
-    repository: "" # Defaults to .Values.image.repository.
-    tag: "" # Defaults to .Values.image.tag.
+  cloudflared:
+    image:
+      repository: "" # Defaults to the built-in DefaultCloudflaredImage repository.
+      tag: "" # Defaults to the built-in DefaultCloudflaredImage tag.
+  sidecar:
+    enabled: true
+    image:
+      repository: "" # Defaults to .Values.image.repository.
+      tag: "" # Defaults to .Values.image.tag.
 
 resources:
   limits:

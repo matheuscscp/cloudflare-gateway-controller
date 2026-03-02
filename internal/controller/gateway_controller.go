@@ -225,7 +225,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	}
 
 	// Validate parameters (defense-in-depth, mirrors CEL XValidation rules).
-	if err := validateParameters(params); err != nil {
+	if err := validateParameters(params, r.SidecarImage); err != nil {
 		return r.reconcileError(ctx, gw, err.err, err.cond)
 	}
 
