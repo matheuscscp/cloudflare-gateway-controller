@@ -57,6 +57,32 @@ func TestFinalizerGatewayClass(t *testing.T) {
 	g.Expect(apiv1.FinalizerGatewayClass(gw)).To(Equal("gateway-exists-finalizer.gateway.networking.k8s.io/my-gw.my-ns"))
 }
 
+func TestClusterName(t *testing.T) {
+	g := NewWithT(t)
+	g.Expect(apiv1.ClusterName()).To(Equal("test-cluster"))
+}
+
+func TestGatewayResourceLabels(t *testing.T) {
+	g := NewWithT(t)
+
+	// Without component.
+	lbls := apiv1.GatewayResourceLabels("my-gw")
+	g.Expect(lbls).To(Equal(map[string]string{
+		"app.kubernetes.io/name":       apiv1.LabelAppNameCloudflared,
+		"app.kubernetes.io/managed-by": apiv1.ShortControllerName,
+		"app.kubernetes.io/instance":   "my-gw",
+	}))
+
+	// With component.
+	lbls = apiv1.GatewayResourceLabels("my-gw", "routes")
+	g.Expect(lbls).To(Equal(map[string]string{
+		"app.kubernetes.io/name":       apiv1.LabelAppNameCloudflared,
+		"app.kubernetes.io/managed-by": apiv1.ShortControllerName,
+		"app.kubernetes.io/instance":   "my-gw",
+		"app.kubernetes.io/component":  "routes",
+	}))
+}
+
 func TestReconcileInterval(t *testing.T) {
 	tests := []struct {
 		name        string

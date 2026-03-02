@@ -93,6 +93,7 @@ for high availability, vertical autoscaling, restrict DNS zones, and more:
 ```yaml
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
+metadata:
   name: my-gateway
   namespace: default
 spec:

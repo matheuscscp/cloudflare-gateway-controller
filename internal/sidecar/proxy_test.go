@@ -867,9 +867,17 @@ func TestProxy_SessionPersistence_MalformedCookieValues(t *testing.T) {
 	g.Expect(rec.Code).To(Equal(http.StatusOK))
 	g.Expect(rec.Result().Cookies()).To(HaveLen(1))
 
-	// Too many segments.
+	// Too many segments (non-numeric timestamps, fails at createdAt parse).
 	req = httptest.NewRequest("GET", "http://app.example.com/", nil)
 	req.AddCookie(&http.Cookie{Name: "cgw-session", Value: "a.b.c.d"})
+	rec = httptest.NewRecorder()
+	p.ServeHTTP(rec, req)
+	g.Expect(rec.Code).To(Equal(http.StatusOK))
+	g.Expect(rec.Result().Cookies()).To(HaveLen(1))
+
+	// Too many segments (numeric timestamps, extra dot rejected).
+	req = httptest.NewRequest("GET", "http://app.example.com/", nil)
+	req.AddCookie(&http.Cookie{Name: "cgw-session", Value: "backend.1.2.3"})
 	rec = httptest.NewRecorder()
 	p.ServeHTTP(rec, req)
 	g.Expect(rec.Code).To(Equal(http.StatusOK))
@@ -907,6 +915,38 @@ func TestProxy_CookieSessionPersistence_PermanentIdleTimeoutOnly(t *testing.T) {
 	cookies := rec.Result().Cookies()
 	g.Expect(cookies).To(HaveLen(1))
 	g.Expect(cookies[0].MaxAge).To(Equal(300)) // 5 minutes = 300 seconds
+}
+
+func TestProxy_CookieSessionPersistence_PermanentNoTimeouts(t *testing.T) {
+	g := NewWithT(t)
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+
+	p := &sidecar.Proxy{}
+	setConfig(t, p, &sidecar.Config{
+		Routes: []sidecar.Route{
+			{
+				Hostname: "app.example.com",
+				Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}},
+				SessionPersistence: &sidecar.SessionPersistence{
+					Type:               "Cookie",
+					SessionName:        "cgw-session",
+					CookieLifetimeType: "Permanent",
+				},
+			},
+		},
+	})
+
+	req := httptest.NewRequest("GET", "http://app.example.com/", nil)
+	rec := httptest.NewRecorder()
+	p.ServeHTTP(rec, req)
+	g.Expect(rec.Code).To(Equal(http.StatusOK))
+	cookies := rec.Result().Cookies()
+	g.Expect(cookies).To(HaveLen(1))
+	g.Expect(cookies[0].MaxAge).To(Equal(0)) // No timeouts → MaxAge 0.
 }
 
 func TestProxy_CookieSessionPersistence_BothTimeoutsRemainingSmaller(t *testing.T) {

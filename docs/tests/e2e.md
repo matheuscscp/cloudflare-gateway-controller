@@ -13,7 +13,7 @@ deletion of all Kubernetes and Cloudflare resources.
 
 **Resources created:**
 - `CloudflareGatewayParameters` with DNS zone config
-- `Gateway` with HTTP listener
+- `Gateway` with HTTPS listener
 - `Service` and `HTTPRoute` with one hostname
 
 **Cloudflare resources:** 1 tunnel, 1 DNS CNAME record.
@@ -42,7 +42,7 @@ while preserving the other.
 
 **Resources created:**
 - `CloudflareGatewayParameters` with DNS zone config
-- `Gateway` with HTTP listener
+- `Gateway` with HTTPS listener
 - 2 Services and 2 HTTPRoutes with different hostnames
 
 **Cloudflare resources:** 1 tunnel (shared), 2 DNS CNAME records.
@@ -100,7 +100,7 @@ resolved dynamically via the Cloudflare API.
 **Steps:**
 
 1. Create `Gateway` with bare Secret; wait for Programmed.
-2. Verify `DNSManagement` condition is `True/Managed` with message "All hostnames".
+2. Verify `DNSManagement` condition is `True/Enabled` with message "All hostnames".
 3. Create `Service` and `HTTPRoute`.
 4. Verify DNS CNAME record created for the hostname (all-zones mode).
 5. Verify HTTPRoute `DNSRecordsApplied` condition has "Applied hostnames" and no
@@ -223,7 +223,7 @@ Multi-zone DNS management with zone additions and removals. Requires
 
 **Resources created:**
 - `CloudflareGatewayParameters` with 2 DNS zones (initially)
-- `Gateway` with HTTP listener
+- `Gateway` with HTTPS listener
 - `Service` and `HTTPRoute` with hostnames across 3 zones plus one unmanaged hostname
 
 **Cloudflare resources:** 1 tunnel, DNS CNAMEs in multiple zones.
