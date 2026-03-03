@@ -22,7 +22,7 @@ import (
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/conditions"
-	"github.com/matheuscscp/cloudflare-gateway-controller/internal/sidecar"
+	"github.com/matheuscscp/cloudflare-gateway-controller/internal/proxy"
 )
 
 // gatewayValidationError holds a terminal error and the condition to set on the Gateway.
@@ -113,23 +113,7 @@ func validateGateway(gw *gatewayv1.Gateway) *gatewayValidationError {
 }
 
 // validateParameters checks that the CloudflareGatewayParameters spec is valid.
-func validateParameters(params *apiv1.CloudflareGatewayParameters, sidecarImage string) *gatewayValidationError {
-	// Reject sidecar explicitly enabled when no sidecar image is configured.
-	if sidecarImage == "" && params != nil && params.Spec.Tunnel != nil &&
-		params.Spec.Tunnel.Sidecar != nil && params.Spec.Tunnel.Sidecar.Enabled != nil &&
-		*params.Spec.Tunnel.Sidecar.Enabled {
-		msg := "Sidecar explicitly enabled but no sidecar image is configured"
-		return &gatewayValidationError{
-			err: reconcile.TerminalError(fmt.Errorf("%s", strings.ToLower(msg[:1])+msg[1:])),
-			cond: metav1.Condition{
-				Type:    string(gatewayv1.GatewayConditionAccepted),
-				Status:  metav1.ConditionFalse,
-				Reason:  string(gatewayv1.GatewayReasonInvalidParameters),
-				Message: msg,
-			},
-		}
-	}
-
+func validateParameters(params *apiv1.CloudflareGatewayParameters) *gatewayValidationError {
 	if params != nil && params.Spec.DNS != nil && len(params.Spec.DNS.Zones) > 0 {
 		// Reject duplicate zone names.
 		seen := make(map[string]struct{}, len(params.Spec.DNS.Zones))
@@ -607,11 +591,9 @@ func (r *GatewayReconciler) updateDeniedRouteStatus(ctx context.Context, gw *gat
 }
 
 // validateHTTPRoute checks that the HTTPRoute only uses features supported by
-// Cloudflare tunnels. When sidecarEnabled is false, multiple backendRefs per
-// rule are rejected because cloudflared ingress rules only support a single
-// service per hostname+path. Returns a list of unsupported feature descriptions,
+// Cloudflare tunnels. Returns a list of unsupported feature descriptions,
 // or nil if valid.
-func validateHTTPRoute(route *gatewayv1.HTTPRoute, sidecarEnabled bool) []string {
+func validateHTTPRoute(route *gatewayv1.HTTPRoute) []string {
 	var issues []string
 	for i, ref := range route.Spec.ParentRefs {
 		if ref.Port != nil {
@@ -629,10 +611,6 @@ func validateHTTPRoute(route *gatewayv1.HTTPRoute, sidecarEnabled bool) []string
 			issues = append(issues, fmt.Sprintf("spec.rules[%d].retry is not supported", i))
 		}
 		if sp := rule.SessionPersistence; sp != nil {
-			if !sidecarEnabled {
-				issues = append(issues, fmt.Sprintf(
-					"spec.rules[%d].sessionPersistence is not supported when sidecar is disabled", i))
-			}
 			if sp.IdleTimeout != nil && sp.Type != nil && *sp.Type == gatewayv1.HeaderBasedSessionPersistence {
 				issues = append(issues, fmt.Sprintf(
 					"spec.rules[%d].sessionPersistence.idleTimeout is not supported for header-based sessions", i))
@@ -640,9 +618,6 @@ func validateHTTPRoute(route *gatewayv1.HTTPRoute, sidecarEnabled bool) []string
 		}
 		if len(rule.BackendRefs) == 0 {
 			issues = append(issues, fmt.Sprintf("spec.rules[%d].backendRefs: at least one backend is required", i))
-		}
-		if len(rule.BackendRefs) > 1 && !sidecarEnabled {
-			issues = append(issues, fmt.Sprintf("spec.rules[%d].backendRefs: multiple backends are not supported when sidecar is disabled; use a Kubernetes Service instead", i))
 		}
 		for j, ref := range rule.BackendRefs {
 			if len(ref.Filters) > 0 {
@@ -722,7 +697,7 @@ type hostnamePathKey struct {
 // Owner field pre-claim their (hostname, pathPrefix) keys, protecting existing traffic
 // from rogue/malicious tenants. Among routes with the same priority, the first one
 // encountered in the input order claims the key.
-func findConflictingRoutes(existingConfig *sidecar.Config, routes []*gatewayv1.HTTPRoute) map[types.NamespacedName][]string {
+func findConflictingRoutes(existingConfig *proxy.Config, routes []*gatewayv1.HTTPRoute) map[types.NamespacedName][]string {
 	type owner struct {
 		namespace string
 		name      string
@@ -1044,4 +1019,20 @@ func routeDNSMessage(route *gatewayv1.HTTPRoute, dns dnsPolicy) string {
 		}
 	}
 	return msg.String()
+}
+
+// pathFromMatches extracts a path prefix from the first HTTPRouteMatch that has
+// a PathPrefix match. Returns empty string if no path match is specified.
+func pathFromMatches(matches []gatewayv1.HTTPRouteMatch) string {
+	for _, m := range matches {
+		if m.Path == nil {
+			continue
+		}
+		if m.Path.Type == nil || *m.Path.Type == gatewayv1.PathMatchPathPrefix {
+			if m.Path.Value != nil {
+				return *m.Path.Value
+			}
+		}
+	}
+	return ""
 }

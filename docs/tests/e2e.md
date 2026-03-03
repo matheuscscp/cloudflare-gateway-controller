@@ -3,8 +3,8 @@
 **Script:** `hack/e2e-test.sh` | **Make target:** `make test-e2e` | **Kind config:** single node
 
 The controller uses a single Cloudflare tunnel with optional DNS CNAME records.
-The sidecar reverse proxy is enabled by default in all tests, so cloudflared
-forwards all traffic through the sidecar for hostname/path-based routing.
+The tunnel container embeds both cloudflared and the reverse proxy, handling
+hostname/path-based routing for all traffic.
 
 ## test_gateway_lifecycle
 
@@ -245,14 +245,14 @@ existing Cloudflare resources (tunnel, DNS CNAME) instead of creating duplicates
 ## test_load_balancing
 
 Sends real HTTP traffic through the Cloudflare tunnel and verifies that the
-sidecar proxy distributes requests evenly across backend pods via kube-proxy.
-Uses `cfgwctl test serve` as the backend and `cfgwctl test load` as the
-load generator.
+embedded reverse proxy distributes requests evenly across backend pods via
+kube-proxy. Uses `cfgwctl test serve` as the backend and `cfgwctl test load`
+as the load generator.
 
 **Resources created:**
 - 10-replica `Deployment` running `cfgwctl test serve` (selector `app=lb-test`)
 - `Service` `lb-backend` (port 80 → targetPort 8080)
-- `Gateway` with bare Secret (no CGP — sidecar enabled by default)
+- `Gateway` with bare Secret (no CGP)
 - `HTTPRoute` with one hostname
 
 **Cloudflare resources:** 1 tunnel, 1 DNS CNAME record.
@@ -262,7 +262,7 @@ load generator.
 - Every pod receives at least 1 request.
 - Coefficient of variation (CV = stddev / mean) of per-pod counts ≤ 0.5.
 - Every response's `host` field matches the public hostname (verifies correct
-  Host header forwarding through cloudflared and the sidecar).
+  Host header forwarding through the tunnel).
 
 **Steps:**
 
@@ -276,53 +276,18 @@ load generator.
    and host header verification (`--hostname`).
 7. Delete `HTTPRoute`, `Gateway` (wait for deletion), `Deployment`, `Service`.
 
-## test_sidecar_disabled
-
-Verifies end-to-end HTTP traffic through the tunnel when the sidecar reverse
-proxy is explicitly disabled. Cloudflared connects directly to backend Services.
-
-When the sidecar is disabled, traffic splitting (weighted backendRefs) is not
-available, and cloudflared's persistent connections prevent effective kube-proxy
-load balancing across pods. Multiple backendRefs per rule are rejected.
-
-**Resources created:**
-- 1-replica `Deployment` running `cfgwctl test serve` (selector `app=sd-test`)
-- `Service` `sd-backend` (port 80 → targetPort 8080)
-- `CloudflareGatewayParameters` with `tunnel.sidecar.enabled: false`
-- `Gateway` referencing the parameters
-- `HTTPRoute` with one hostname
-
-**Cloudflare resources:** 1 tunnel, 1 DNS CNAME record.
-
-**Pass criteria:**
-- Sidecar condition is `status=False, reason=Disabled`.
-- 10 requests return 2xx (zero 5xx).
-- Every response's `host` field matches the public hostname.
-
-**Steps:**
-
-1. Deploy 1-replica test server and `Service`.
-2. Create `CloudflareGatewayParameters` with sidecar disabled.
-3. Create `Gateway`; wait for Programmed.
-4. Verify Sidecar condition is `False/Disabled`.
-5. Create `HTTPRoute`.
-6. Wait for HTTPS endpoint reachable.
-7. Run `cfgwctl test load` with 10 requests, concurrency 1, and host header
-   verification (`--hostname`).
-8. Delete `HTTPRoute`, `Gateway` (wait for deletion), CGP, `Deployment`, `Service`.
-
 ## test_traffic_splitting
 
 Sends real HTTP traffic through the Cloudflare tunnel and verifies that the
-sidecar proxy distributes requests across two backend Services according to
-their weights (80/20). Uses `cfgwctl test serve` as the backend and
-`cfgwctl test load` as the load generator.
+embedded reverse proxy distributes requests across two backend Services
+according to their weights (80/20). Uses `cfgwctl test serve` as the backend
+and `cfgwctl test load` as the load generator.
 
 **Resources created:**
 - 1-replica `Deployment` `ts-svc-a` running `cfgwctl test serve` (selector `app=ts-svc-a`)
 - 1-replica `Deployment` `ts-svc-b` running `cfgwctl test serve` (selector `app=ts-svc-b`)
 - `Service` `ts-svc-a` and `ts-svc-b` (port 80 → targetPort 8080)
-- `Gateway` with bare Secret (no CGP — sidecar enabled by default)
+- `Gateway` with bare Secret (no CGP)
 - `HTTPRoute` with one rule, 2 backendRefs: `ts-svc-a` weight 80, `ts-svc-b` weight 20
 
 **Cloudflare resources:** 1 tunnel, 1 DNS CNAME record.
@@ -347,16 +312,16 @@ their weights (80/20). Uses `cfgwctl test serve` as the backend and
 ## test_session_persistence
 
 Sends real HTTP traffic through the Cloudflare tunnel and verifies that the
-sidecar proxy correctly implements cookie-based session persistence. With two
-equally-weighted backends, all requests after the initial one (which sets the
-cookie) must go to the same backend pod. Also verifies that the public hostname
-is correctly forwarded through cloudflared and the sidecar to the backend.
+embedded reverse proxy correctly implements cookie-based session persistence.
+With two equally-weighted backends, all requests after the initial one (which
+sets the cookie) must go to the same backend pod. Also verifies that the
+public hostname is correctly forwarded through the tunnel to the backend.
 
 **Resources created:**
 - 1-replica `Deployment` `sp-svc-a` running `cfgwctl test serve` (selector `app=sp-svc-a`)
 - 1-replica `Deployment` `sp-svc-b` running `cfgwctl test serve` (selector `app=sp-svc-b`)
 - `Service` `sp-svc-a` and `sp-svc-b` (port 80 → targetPort 8080)
-- `Gateway` with bare Secret (no CGP — sidecar enabled by default)
+- `Gateway` with bare Secret (no CGP)
 - `HTTPRoute` with one rule, 2 backendRefs (weight 50/50) and `sessionPersistence: { type: Cookie }`
 
 **Cloudflare resources:** 1 tunnel, 1 DNS CNAME record.
@@ -385,9 +350,8 @@ upstream before testing.
 
 **Resources created:**
 - VPA CRD (cluster-scoped, installed from upstream)
-- `CloudflareGatewayParameters` with autoscaling enabled for cloudflared
-  (minAllowed, maxAllowed, controlledResources, controlledValues) and sidecar
-  (controlledValues)
+- `CloudflareGatewayParameters` with autoscaling enabled for the tunnel
+  container (minAllowed, maxAllowed, controlledResources, controlledValues)
 - `Gateway` referencing the parameters
 
 **Cloudflare resources:** 1 tunnel.
@@ -395,18 +359,17 @@ upstream before testing.
 **Steps:**
 
 1. Install VPA CRD from upstream; verify CRD is available.
-2. Create `CloudflareGatewayParameters` with autoscaling enabled for both
-   cloudflared and sidecar containers.
+2. Create `CloudflareGatewayParameters` with autoscaling enabled for the
+   tunnel container.
 3. Create `Gateway`; wait for Programmed.
 4. Verify VPA `gateway-vpa-gw-primary` exists.
 5. Verify VPA `updateMode` is `InPlaceOrRecreate`.
 6. Verify VPA `targetRef` points to the Deployment.
-7. Verify container policies: wildcard `*` set to `Off`, `cloudflared` set to
-   `Auto`, `sidecar` set to `Auto`.
-8. Verify cloudflared `minAllowed`/`maxAllowed` values.
-9. Verify cloudflared `controlledValues` is `RequestsAndLimits`.
-10. Verify sidecar `controlledValues` is `RequestsOnly`.
-11. Disable autoscaling by updating CGP (remove tunnel config).
-12. Verify VPA is deleted (cleanup).
-13. Delete `Gateway`; verify deleted.
-14. Clean up `CloudflareGatewayParameters`.
+7. Verify container policies: wildcard `*` set to `Off`, `tunnel` set to
+   `Auto`.
+8. Verify tunnel `minAllowed`/`maxAllowed` values.
+9. Verify tunnel `controlledValues` is `RequestsAndLimits`.
+10. Disable autoscaling by updating CGP (remove tunnel config).
+11. Verify VPA is deleted (cleanup).
+12. Delete `Gateway`; verify deleted.
+13. Clean up `CloudflareGatewayParameters`.

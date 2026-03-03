@@ -7,7 +7,7 @@ for Gateways managed by this controller. It is referenced via
 ## Example
 
 The following example shows a CloudflareGatewayParameters that configures
-DNS record management, tunnel patches, and sidecar settings:
+DNS record management and tunnel patches:
 
 ```yaml
 apiVersion: cloudflare-gateway-controller.io/v1
@@ -27,8 +27,6 @@ spec:
         path: /spec/template/spec/nodeSelector
         value:
           kubernetes.io/os: linux
-    sidecar:
-      enabled: true
 ```
 
 The Secret referenced by `.spec.secretRef.name` must contain the Cloudflare API
@@ -124,17 +122,14 @@ The `.spec.tunnel.patches` field is optional and specifies
 [RFC 6902](https://datatracker.ietf.org/doc/html/rfc6902) JSON Patch operations
 applied to the cloudflared Deployment.
 
-Patches run **after** the controller builds the base Deployment (which includes
-the sidecar container when enabled) but **before** replica placement fields
-(`affinity`, `zone`, `nodeSelector`) are applied on top. This means:
+Patches run **after** the controller builds the base Deployment but **before**
+replica placement fields (`affinity`, `zone`, `nodeSelector`) are applied on top.
+This means:
 
-- Patches can target any field of the base Deployment, including sidecar
+- Patches can target any field of the base Deployment, including tunnel
   container fields (resources, probes, etc.).
 - Replica placement always takes priority over user patches — setting affinity
   or nodeSelector via patches will be overwritten by the replica config.
-- Removing the sidecar container via patches when the sidecar is enabled is a
-  **terminal error**. Use `.spec.tunnel.sidecar.enabled: false` to disable the
-  sidecar instead.
 - Patch errors are terminal — the controller stops retrying until the
   CloudflareGatewayParameters resource is updated.
 
@@ -165,8 +160,8 @@ Each patch operation has the following fields:
 
 The `.spec.tunnel.replicas` field configures multiple replicas of the tunnel pods
 for high availability. There are no guarantees about how requests from Cloudflare
-will be distributed among replicas, but the sidecar reverse proxy, if enabled, can
-improve load balancing when proxying to backend Services.
+will be distributed among replicas, but the embedded reverse proxy improves load
+balancing when proxying to backend Services.
 
 There are three behaviors:
 
@@ -197,7 +192,7 @@ spec:
 
 Each entry creates a separate Deployment named
 `gateway-<gatewayName>-<replicaName>`. All replicas share the same tunnel,
-Secret, and sidecar resources.
+Secret, and ConfigMap resources.
 
 Each replica has the following fields:
 
@@ -213,61 +208,59 @@ Each replica has the following fields:
 Replica placement fields (`affinity`, `zone`, `nodeSelector`) are applied after
 base Deployment construction and user patches, so they always take priority.
 
-#### Cloudflared container configuration
+#### Tunnel container configuration
 
-The `.spec.tunnel.cloudflared` field configures the cloudflared container.
+The `.spec.tunnel` field configures the tunnel container, which embeds both
+cloudflared and the reverse proxy in a single container.
 
 ##### Container resources
 
-The `.spec.tunnel.cloudflared.resources` field configures compute resource
-requirements for the cloudflared container. When absent, the controller uses
-defaults (requests: 50m CPU, 64Mi memory; limits: 500m CPU, 256Mi memory).
-When set, the provided values replace the defaults entirely.
+The `.spec.tunnel.resources` field configures compute resource requirements
+for the tunnel container. When absent, the controller uses defaults
+(requests: 50m CPU, 64Mi memory; limits: 500m CPU, 256Mi memory). When set,
+the provided values replace the defaults entirely.
 
 ```yaml
 spec:
   tunnel:
-    cloudflared:
-      resources:
-        requests:
-          cpu: 100m
-          memory: 128Mi
-        limits:
-          cpu: "1"
-          memory: 512Mi
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: "1"
+        memory: 512Mi
 ```
 
 ##### Container autoscaling
 
-The `.spec.tunnel.cloudflared.autoscaling` field configures vertical pod
-autoscaling for the cloudflared container.
+The `.spec.tunnel.autoscaling` field configures vertical pod autoscaling
+for the tunnel container.
 
 ```yaml
 spec:
   tunnel:
-    cloudflared:
-      autoscaling:
-        enabled: true
-        minAllowed:
-          cpu: 50m
-          memory: 64Mi
-        maxAllowed:
-          cpu: "2"
-          memory: 1Gi
-        controlledResources: [cpu, memory]
-        controlledValues: RequestsAndLimits
+    autoscaling:
+      enabled: true
+      minAllowed:
+        cpu: 50m
+        memory: 64Mi
+      maxAllowed:
+        cpu: "2"
+        memory: 1Gi
+      controlledResources: [cpu, memory]
+      controlledValues: RequestsAndLimits
 ```
 
 When `autoscaling.enabled` is `true`, the controller creates a
 [VerticalPodAutoscaler](https://github.com/kubernetes/autoscaler/tree/master/vertical-pod-autoscaler)
 (VPA) resource for each Deployment replica. The VPA produces resource
 recommendations and applies them automatically using the `InPlaceOrRecreate`
-update mode. A container policy with mode `Auto` is added for each container
-that has autoscaling enabled.
+update mode.
 
 The autoscaling fields are:
 
-- `enabled` (required): Whether to enable VPA for this container.
+- `enabled` (required): Whether to enable VPA for the tunnel container.
 - `minAllowed` (optional): Minimum recommended resources (floor).
 - `maxAllowed` (optional): Maximum recommended resources (ceiling).
 - `controlledResources` (optional): Which resource types to autoscale. Allowed
@@ -279,65 +272,3 @@ The autoscaling fields are:
 The VPA CRD must be installed in the cluster for autoscaling to work. If the
 CRD is not installed, VPA creation will fail and the error will be reported in
 the Gateway status.
-
-#### Sidecar configuration
-
-The `.spec.tunnel.sidecar` field configures the sidecar reverse proxy that runs
-alongside cloudflared for per-request load balancing through kube-proxy.
-
-The default depends on whether the controller has a sidecar image configured
-(via the `--sidecar-image` flag or the Helm `config.sidecar.enabled` value).
-When a sidecar image is configured, the sidecar is **enabled** by default.
-When no sidecar image is configured, the sidecar is **disabled** by default.
-Setting `.spec.tunnel.sidecar.enabled` to `true` when no sidecar image is
-configured is a **terminal error**. Set `.spec.tunnel.sidecar.enabled` to
-`false` to explicitly disable the sidecar and let cloudflared connect directly
-to backend Services.
-
-```yaml
-spec:
-  tunnel:
-    sidecar:
-      enabled: false
-```
-
-When the sidecar is disabled, the cloudflared Deployment has a single container,
-no ConfigMap/ServiceAccount/Role/RoleBinding resources are created, and tunnel
-ingress rules point directly to backend Services instead of the sidecar proxy.
-Because cloudflared uses persistent connections, kube-proxy cannot effectively
-distribute traffic across pods. Traffic splitting (weighted `backendRefs`) and
-session persistence are also not available, and HTTPRoutes with multiple
-`backendRefs` in a single rule or `sessionPersistence` are rejected.
-
-##### Sidecar container resources
-
-The `.spec.tunnel.sidecar.resources` field configures compute resource
-requirements for the sidecar container. Follows the same semantics as
-`.spec.tunnel.cloudflared.resources`.
-
-```yaml
-spec:
-  tunnel:
-    sidecar:
-      resources:
-        requests:
-          cpu: 100m
-          memory: 128Mi
-        limits:
-          cpu: "1"
-          memory: 512Mi
-```
-
-##### Sidecar container autoscaling
-
-The `.spec.tunnel.sidecar.autoscaling` field configures vertical pod
-autoscaling for the sidecar container. Follows the same semantics as
-`.spec.tunnel.cloudflared.autoscaling`.
-
-```yaml
-spec:
-  tunnel:
-    sidecar:
-      autoscaling:
-        enabled: true
-```

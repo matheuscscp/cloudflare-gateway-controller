@@ -16,8 +16,8 @@ func newTestCmd() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&credentialsFile, "credentials-file", "",
 		"path to credentials file (KEY=VALUE format with CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN)")
 
-	cmd.AddCommand(newTunnelCmd(&credentialsFile))
-	cmd.AddCommand(newDNSCmd(&credentialsFile))
+	cmd.AddCommand(newTestTunnelCmd(&credentialsFile))
+	cmd.AddCommand(newTestDNSCmd(&credentialsFile))
 	cmd.AddCommand(newTestServeCmd())
 	cmd.AddCommand(newTestLoadCmd())
 	cmd.AddCommand(newTestSessionCmd())

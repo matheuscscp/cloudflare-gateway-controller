@@ -52,11 +52,9 @@ The following fields are not supported and must not be set:
 
 - Only `core` `Service` backends are supported. Other `group`/`kind`
   combinations (e.g. custom backend resources) are rejected.
-- Multiple `backendRefs` in a single rule are supported only when the sidecar
-  reverse proxy is enabled (default). The sidecar distributes requests across
-  backends according to their `weight` fields (traffic splitting). When the
-  sidecar is [disabled](CloudflareGatewayParameters.md#sidecar-configuration),
-  multiple `backendRefs` per rule are rejected.
+- Multiple `backendRefs` in a single rule are supported. The embedded reverse
+  proxy distributes requests across backends according to their `weight` fields
+  (traffic splitting).
 - Cross-namespace `backendRefs` must be allowed by a `ReferenceGrant`.
   Without one, the HTTPRoute is accepted but the condition
   `ResolvedRefs=False/RefNotPermitted` is set.
@@ -72,11 +70,9 @@ The following fields are not supported and must not be set:
 
 ### Session persistence
 
-Session persistence pins a client to the same backend across requests. It is
-supported only when the sidecar reverse proxy is enabled (default). When the
-sidecar is disabled, `sessionPersistence` is rejected.
+Session persistence pins a client to the same backend across requests.
 
-**Cookie-based** (default): The sidecar sets a cookie on the first response.
+**Cookie-based** (default): The proxy sets a cookie on the first response.
 Subsequent requests with that cookie are routed to the same backend.
 
 ```yaml
@@ -113,7 +109,7 @@ rules:
 **Cookie lifetime types:**
 
 - `Session` (default): Browser session cookie (no `Max-Age`). If
-  `absoluteTimeout` is set, the sidecar enforces it server-side by checking
+  `absoluteTimeout` is set, the proxy enforces it server-side by checking
   the timestamp encoded in the cookie value.
 - `Permanent`: Sets `Max-Age` on the cookie. When only `absoluteTimeout` is
   set, `Max-Age` equals `absoluteTimeout`. When only `idleTimeout` is set,
@@ -121,7 +117,7 @@ rules:
   of the remaining absolute timeout and `idleTimeout`.
 
 **Idle timeout** (`idleTimeout`): Supported for cookie-based sessions only. When
-configured, the sidecar re-issues the cookie on every response with an updated
+configured, the proxy re-issues the cookie on every response with an updated
 last-activity timestamp. If the time since the last activity exceeds
 `idleTimeout`, the session expires and a new backend is selected. When both
 `absoluteTimeout` and `idleTimeout` are set, both are enforced independently —

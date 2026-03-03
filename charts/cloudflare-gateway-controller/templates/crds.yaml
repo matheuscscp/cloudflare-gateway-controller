@@ -88,138 +88,66 @@ spec:
               tunnel:
                 description: Tunnel configures Cloudflare tunnel settings.
                 properties:
-                  cloudflared:
-                    description: Cloudflared configures the cloudflared container.
+                  autoscaling:
+                    description: Autoscaling configures vertical autoscaling for the
+                      tunnel container.
                     properties:
-                      autoscaling:
-                        description: Autoscaling configures vertical autoscaling for
-                          the container.
-                        properties:
-                          controlledResources:
-                            description: |-
-                              ControlledResources specifies which resource types are subject to
-                              autoscaling. Allowed values are "cpu" and "memory". The default
-                              is both cpu and memory.
-                            items:
-                              description: ResourceName is the name identifying various
-                                resources in a ResourceList.
-                              type: string
-                            type: array
-                          controlledValues:
-                            description: |-
-                              ControlledValues specifies which resource values are subject to
-                              autoscaling. Allowed values are "RequestsAndLimits" and
-                              "RequestsOnly". The default is "RequestsAndLimits".
-                            enum:
-                            - RequestsAndLimits
-                            - RequestsOnly
-                            type: string
-                          enabled:
-                            description: |-
-                              Enabled controls whether VPA recommendations are produced and
-                              applied for this container. Defaults to false.
-                            type: boolean
-                          maxAllowed:
-                            additionalProperties:
-                              anyOf:
-                              - type: integer
-                              - type: string
-                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                              x-kubernetes-int-or-string: true
-                            description: |-
-                              MaxAllowed specifies the maximum amount of resources that will be
-                              recommended for the container. The default is no maximum.
-                            type: object
-                          minAllowed:
-                            additionalProperties:
-                              anyOf:
-                              - type: integer
-                              - type: string
-                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                              x-kubernetes-int-or-string: true
-                            description: |-
-                              MinAllowed specifies the minimum amount of resources that will be
-                              recommended for the container. The default is no minimum.
-                            type: object
-                        required:
-                        - enabled
-                        type: object
-                      resources:
+                      controlledResources:
                         description: |-
-                          Resources configures compute resource requirements for the container.
-                          When absent, the controller uses defaults (requests: 50m CPU, 64Mi
-                          memory; limits: 500m CPU, 256Mi memory). When set, replaces defaults.
-                        properties:
-                          claims:
-                            description: |-
-                              Claims lists the names of resources, defined in spec.resourceClaims,
-                              that are used by this container.
-
-                              This field depends on the
-                              DynamicResourceAllocation feature gate.
-
-                              This field is immutable. It can only be set for containers.
-                            items:
-                              description: ResourceClaim references one entry in PodSpec.ResourceClaims.
-                              properties:
-                                name:
-                                  description: |-
-                                    Name must match the name of one entry in pod.spec.resourceClaims of
-                                    the Pod where this field is used. It makes that resource available
-                                    inside a container.
-                                  type: string
-                                request:
-                                  description: |-
-                                    Request is the name chosen for a request in the referenced claim.
-                                    If empty, everything from the claim is made available, otherwise
-                                    only the result of this request.
-                                  type: string
-                              required:
-                              - name
-                              type: object
-                            type: array
-                            x-kubernetes-list-map-keys:
-                            - name
-                            x-kubernetes-list-type: map
-                          limits:
-                            additionalProperties:
-                              anyOf:
-                              - type: integer
-                              - type: string
-                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                              x-kubernetes-int-or-string: true
-                            description: |-
-                              Limits describes the maximum amount of compute resources allowed.
-                              More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
-                            type: object
-                          requests:
-                            additionalProperties:
-                              anyOf:
-                              - type: integer
-                              - type: string
-                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                              x-kubernetes-int-or-string: true
-                            description: |-
-                              Requests describes the minimum amount of compute resources required.
-                              If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
-                              otherwise to an implementation-defined value. Requests cannot exceed Limits.
-                              More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
-                            type: object
+                          ControlledResources specifies which resource types are subject to
+                          autoscaling. Allowed values are "cpu" and "memory". The default
+                          is both cpu and memory.
+                        items:
+                          description: ResourceName is the name identifying various
+                            resources in a ResourceList.
+                          type: string
+                        type: array
+                      controlledValues:
+                        description: |-
+                          ControlledValues specifies which resource values are subject to
+                          autoscaling. Allowed values are "RequestsAndLimits" and
+                          "RequestsOnly". The default is "RequestsAndLimits".
+                        enum:
+                        - RequestsAndLimits
+                        - RequestsOnly
+                        type: string
+                      enabled:
+                        description: |-
+                          Enabled controls whether VPA recommendations are produced and
+                          applied for this container. Defaults to false.
+                        type: boolean
+                      maxAllowed:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          MaxAllowed specifies the maximum amount of resources that will be
+                          recommended for the container. The default is no maximum.
                         type: object
+                      minAllowed:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          MinAllowed specifies the minimum amount of resources that will be
+                          recommended for the container. The default is no minimum.
+                        type: object
+                    required:
+                    - enabled
                     type: object
                   patches:
                     description: |-
                       Patches are RFC 6902 JSON Patch operations applied to the
-                      cloudflared Deployment. Patches run after the controller builds the
-                      base Deployment (which includes the sidecar container when enabled)
-                      but before replica placement fields (affinity, zone, nodeSelector)
-                      are applied on top. Replica placement always takes priority over
-                      user patches.
-
-                      Patches may target any field of the base Deployment, including
-                      sidecar container fields. However, removing the sidecar container
-                      via patches when the sidecar is enabled is a terminal error — use
-                      .spec.tunnel.sidecar.enabled=false to disable it instead.
+                      tunnel Deployment. Patches run after the controller builds the
+                      base Deployment but before replica placement fields (affinity,
+                      zone, nodeSelector) are applied on top. Replica placement always
+                      takes priority over user patches.
 
                       Patch errors are terminal — the controller stops retrying until the
                       CloudflareGatewayParameters resource is updated.
@@ -256,9 +184,9 @@ spec:
                     description: |-
                       Replicas configures multiple replicas of the tunnel pods for high
                       availability. There are no guarantees about how requests coming
-                      from Cloudflare will be distributed among replicas, but the sidecar
-                      reverse proxy, if enabled, can improve load balancing when proxying
-                      to backend Services by leveraging either kube-proxy or a service mesh.
+                      from Cloudflare will be distributed among replicas, but the
+                      reverse proxy can improve load balancing when proxying to backend
+                      Services by leveraging either kube-proxy or a service mesh.
 
                       When absent (nil), the controller creates a single replica named "primary".
                       When explicitly empty ([]), no Deployments are created (scale to zero).
@@ -1217,133 +1145,66 @@ spec:
                         rule: '!(has(self.zone) && has(self.affinity))'
                     maxItems: 128
                     type: array
-                  sidecar:
+                  resources:
                     description: |-
-                      Sidecar configures the sidecar reverse proxy that runs alongside
-                      cloudflared for per-request load balancing through kube-proxy.
+                      Resources configures compute resource requirements for the tunnel container.
+                      When absent, the controller uses defaults (requests: 50m CPU, 64Mi
+                      memory; limits: 500m CPU, 256Mi memory). When set, replaces defaults.
                     properties:
-                      autoscaling:
-                        description: Autoscaling configures vertical autoscaling for
-                          the container.
-                        properties:
-                          controlledResources:
-                            description: |-
-                              ControlledResources specifies which resource types are subject to
-                              autoscaling. Allowed values are "cpu" and "memory". The default
-                              is both cpu and memory.
-                            items:
-                              description: ResourceName is the name identifying various
-                                resources in a ResourceList.
+                      claims:
+                        description: |-
+                          Claims lists the names of resources, defined in spec.resourceClaims,
+                          that are used by this container.
+
+                          This field depends on the
+                          DynamicResourceAllocation feature gate.
+
+                          This field is immutable. It can only be set for containers.
+                        items:
+                          description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                          properties:
+                            name:
+                              description: |-
+                                Name must match the name of one entry in pod.spec.resourceClaims of
+                                the Pod where this field is used. It makes that resource available
+                                inside a container.
                               type: string
-                            type: array
-                          controlledValues:
-                            description: |-
-                              ControlledValues specifies which resource values are subject to
-                              autoscaling. Allowed values are "RequestsAndLimits" and
-                              "RequestsOnly". The default is "RequestsAndLimits".
-                            enum:
-                            - RequestsAndLimits
-                            - RequestsOnly
-                            type: string
-                          enabled:
-                            description: |-
-                              Enabled controls whether VPA recommendations are produced and
-                              applied for this container. Defaults to false.
-                            type: boolean
-                          maxAllowed:
-                            additionalProperties:
-                              anyOf:
-                              - type: integer
-                              - type: string
-                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                              x-kubernetes-int-or-string: true
-                            description: |-
-                              MaxAllowed specifies the maximum amount of resources that will be
-                              recommended for the container. The default is no maximum.
-                            type: object
-                          minAllowed:
-                            additionalProperties:
-                              anyOf:
-                              - type: integer
-                              - type: string
-                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                              x-kubernetes-int-or-string: true
-                            description: |-
-                              MinAllowed specifies the minimum amount of resources that will be
-                              recommended for the container. The default is no minimum.
-                            type: object
-                        required:
-                        - enabled
+                            request:
+                              description: |-
+                                Request is the name chosen for a request in the referenced claim.
+                                If empty, everything from the claim is made available, otherwise
+                                only the result of this request.
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                      limits:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Limits describes the maximum amount of compute resources allowed.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                         type: object
-                      enabled:
+                      requests:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
                         description: |-
-                          Enabled controls whether the sidecar reverse proxy runs alongside
-                          cloudflared. When absent, the default depends on whether the controller
-                          has a sidecar image configured: enabled when set, disabled when empty.
-                          Setting this to true when no sidecar image is configured is a terminal
-                          error.
-                        type: boolean
-                      resources:
-                        description: |-
-                          Resources configures compute resource requirements for the container.
-                          When absent, the controller uses defaults (requests: 50m CPU, 64Mi
-                          memory; limits: 500m CPU, 256Mi memory). When set, replaces defaults.
-                        properties:
-                          claims:
-                            description: |-
-                              Claims lists the names of resources, defined in spec.resourceClaims,
-                              that are used by this container.
-
-                              This field depends on the
-                              DynamicResourceAllocation feature gate.
-
-                              This field is immutable. It can only be set for containers.
-                            items:
-                              description: ResourceClaim references one entry in PodSpec.ResourceClaims.
-                              properties:
-                                name:
-                                  description: |-
-                                    Name must match the name of one entry in pod.spec.resourceClaims of
-                                    the Pod where this field is used. It makes that resource available
-                                    inside a container.
-                                  type: string
-                                request:
-                                  description: |-
-                                    Request is the name chosen for a request in the referenced claim.
-                                    If empty, everything from the claim is made available, otherwise
-                                    only the result of this request.
-                                  type: string
-                              required:
-                              - name
-                              type: object
-                            type: array
-                            x-kubernetes-list-map-keys:
-                            - name
-                            x-kubernetes-list-type: map
-                          limits:
-                            additionalProperties:
-                              anyOf:
-                              - type: integer
-                              - type: string
-                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                              x-kubernetes-int-or-string: true
-                            description: |-
-                              Limits describes the maximum amount of compute resources allowed.
-                              More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
-                            type: object
-                          requests:
-                            additionalProperties:
-                              anyOf:
-                              - type: integer
-                              - type: string
-                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                              x-kubernetes-int-or-string: true
-                            description: |-
-                              Requests describes the minimum amount of compute resources required.
-                              If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
-                              otherwise to an implementation-defined value. Requests cannot exceed Limits.
-                              More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
-                            type: object
+                          Requests describes the minimum amount of compute resources required.
+                          If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                          otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                         type: object
                     type: object
                 type: object
@@ -1384,9 +1245,6 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="DNSManagement")].reason
       name: DNS
       type: string
-    - jsonPath: .status.conditions[?(@.type=="Sidecar")].reason
-      name: Sidecar
-      type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
@@ -1426,7 +1284,7 @@ spec:
                 description: |-
                   Conditions report the current state of the Gateway's Cloudflare resources.
                   Condition types mirror the Gateway's own conditions (Accepted, Programmed,
-                  DNSManagement, Sidecar, Ready) so users can inspect them on the CGS directly.
+                  DNSManagement, Ready) so users can inspect them on the CGS directly.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

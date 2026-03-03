@@ -5,7 +5,7 @@ package main
 
 import "github.com/spf13/cobra"
 
-func newDNSCmd(credentialsFile *string) *cobra.Command {
+func newTestDNSCmd(credentialsFile *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "dns",
 		Short: "Manage Cloudflare DNS records",

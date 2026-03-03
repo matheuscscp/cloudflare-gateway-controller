@@ -71,11 +71,11 @@ test-e2e: build ## Run e2e tests against a kind cluster.
 
 .PHONY: run
 run: ## Run the controller locally against the current kubeconfig cluster.
-	go run ./cmd/cfgwctl controller --enable-leader-election=false 2>&1 | stdbuf -oL tee run.log
+	go run ./cmd/cfgwctl controller --cluster-name=dev --enable-leader-election=false 2>&1 | stdbuf -oL tee run.log
 
 .PHONY: run-debug
 run-debug: ## Run the controller locally with debug logging (verbosity level 1).
-	go run ./cmd/cfgwctl controller --enable-leader-election=false --log-level=debug 2>&1 | stdbuf -oL tee run.log
+	go run ./cmd/cfgwctl controller --cluster-name=dev--enable-leader-election=false --log-level=debug 2>&1 | stdbuf -oL tee run.log
 
 ##@ Dependencies
 

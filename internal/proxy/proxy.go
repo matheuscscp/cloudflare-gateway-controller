@@ -1,26 +1,40 @@
 // Copyright 2026 Matheus Pimenta.
 // SPDX-License-Identifier: AGPL-3.0
 
-package sidecar
+package proxy
 
 import (
+	"context"
+	"crypto/tls"
+	"fmt"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/net/http2"
 )
 
 // HeaderConfigNotLoaded is set on responses when the proxy has no configuration
 // loaded yet. The health check uses this to distinguish an internal 503 from a
 // proxied one.
-const HeaderConfigNotLoaded = "X-Sidecar-Config-Not-Loaded"
+const HeaderConfigNotLoaded = "X-Proxy-Config-Not-Loaded"
 
 // noKeepAliveTransport is a shared http.Transport with keep-alives disabled.
 // Each request opens a fresh TCP connection through kube-proxy.
 var noKeepAliveTransport = &http.Transport{DisableKeepAlives: true}
+
+// h2cTransport is a shared HTTP/2 cleartext transport for gRPC backends.
+var h2cTransport http.RoundTripper = &http2.Transport{
+	AllowHTTP: true,
+	DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, addr)
+	},
+}
 
 // Proxy is a reverse proxy that routes requests based on hostname and path
 // prefix matching. The routing table is swapped atomically when the ConfigMap
@@ -34,22 +48,18 @@ func (p *Proxy) SetConfig(cfg *Config) {
 	p.config.Store(cfg)
 }
 
-// ServeHTTP implements http.Handler. It matches the request by hostname (exact)
-// then longest PathPrefix, picks a weighted backend, and forwards the request
-// with DisableKeepAlives so each request opens a fresh TCP connection through
-// kube-proxy.
-func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+// resolveBackend matches a request to a route and picks a backend.
+// Returns the route, backend, whether a session was hit, and the
+// session createdAt timestamp (for cookie re-issue).
+func (p *Proxy) resolveBackend(r *http.Request) (*Route, *Backend, bool, int64, error) {
 	cfg := p.config.Load()
 	if cfg == nil {
-		w.Header().Set(HeaderConfigNotLoaded, "true")
-		http.Error(w, "no configuration loaded", http.StatusServiceUnavailable)
-		return
+		return nil, nil, false, 0, errConfigNotLoaded
 	}
 
 	route := matchRoute(cfg, r.Host, r.URL.Path)
 	if route == nil {
-		http.NotFound(w, r)
-		return
+		return nil, nil, false, 0, errNoRoute
 	}
 
 	// Session persistence: try to resolve an existing session.
@@ -65,7 +75,34 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		backend = pickBackend(route)
 	}
 	if backend == nil {
-		http.Error(w, "no available backend", http.StatusBadGateway)
+		return nil, nil, false, 0, errNoBackend
+	}
+
+	return route, backend, sessionHit, sessionCreatedAt, nil
+}
+
+var (
+	errConfigNotLoaded = fmt.Errorf("no configuration loaded")
+	errNoRoute         = fmt.Errorf("no matching route")
+	errNoBackend       = fmt.Errorf("no available backend")
+)
+
+// ServeHTTP implements http.Handler. It matches the request by hostname (exact)
+// then longest PathPrefix, picks a weighted backend, and forwards the request
+// with DisableKeepAlives so each request opens a fresh TCP connection through
+// kube-proxy.
+func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	route, backend, sessionHit, sessionCreatedAt, err := p.resolveBackend(r)
+	if err != nil {
+		switch err {
+		case errConfigNotLoaded:
+			w.Header().Set(HeaderConfigNotLoaded, "true")
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		case errNoRoute:
+			http.NotFound(w, r)
+		case errNoBackend:
+			http.Error(w, err.Error(), http.StatusBadGateway)
+		}
 		return
 	}
 
@@ -74,7 +111,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			req.URL.Scheme = backend.serviceURL.Scheme
 			req.URL.Host = backend.serviceURL.Host
 		},
-		Transport: noKeepAliveTransport,
+		Transport: transportForRoute(route),
 	}
 
 	// Set or re-issue cookie (cookie-based persistence only).
@@ -108,6 +145,30 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	proxy.ServeHTTP(w, r)
+}
+
+// RoundTrip implements http.RoundTripper. It resolves the backend using the
+// same routing logic as ServeHTTP, rewrites the request URL, and performs a
+// direct HTTP round-trip to the backend. This is used by the tunnel's origin
+// proxy for WebSocket upgrades, where httputil.ReverseProxy's Hijack-based
+// handling doesn't work with QUIC streams.
+func (p *Proxy) RoundTrip(r *http.Request) (*http.Response, error) {
+	route, backend, _, _, err := p.resolveBackend(r)
+	if err != nil {
+		return nil, err
+	}
+
+	r.URL.Scheme = backend.serviceURL.Scheme
+	r.URL.Host = backend.serviceURL.Host
+	return transportForRoute(route).RoundTrip(r)
+}
+
+// transportForRoute returns the appropriate HTTP transport for the route's protocol.
+func transportForRoute(route *Route) http.RoundTripper {
+	if route.Protocol == "h2c" {
+		return h2cTransport
+	}
+	return noKeepAliveTransport
 }
 
 // resolveSession attempts to find the backend for an existing session.

@@ -16,8 +16,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # for creating OIDC tokens for signing.
-      packages: write # for pushing and signing container images.
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -25,104 +23,59 @@ jobs:
           token: ${{ secrets.BOT_GITHUB_TOKEN }}
           persist-credentials: false
 
-      - name: Get latest cloudflared release
+      - name: Get latest fork release
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag=$(gh api repos/cloudflare/cloudflared/releases/latest --jq '.tag_name')
+          tag=$(gh release view --repo matheuscscp/cloudflared --json tagName -q .tagName)
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-      - name: Set up crane
-        uses: imjasonh/setup-crane@6da1ae018866400525525ce74ff892880c099987 # v0.5
-
-      - name: Log in to GHCR
+      - name: Get fork commit for release
+        id: commit
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
         run: |
-          # Use a dedicated Docker config for GHCR so the login
-          # does not corrupt the default config used to pull from
-          # Docker Hub.
-          mkdir -p "$RUNNER_TEMP/ghcr-docker"
-          echo "$GITHUB_TOKEN" | DOCKER_CONFIG="$RUNNER_TEMP/ghcr-docker" \
-            crane auth login ghcr.io --username=token --password-stdin
+          commit_info=$(gh api repos/matheuscscp/cloudflared/commits/$TAG)
+          sha=$(echo "$commit_info" | jq -r '.sha')
+          date=$(echo "$commit_info" | jq -r '.commit.committer.date')
+          timestamp=$(date -u -d "$date" +%Y%m%d%H%M%S)
+          short=${sha:0:12}
+          pseudo="v0.0.0-${timestamp}-${short}"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "pseudo=$pseudo" >> "$GITHUB_OUTPUT"
 
-      - name: Get upstream digest and check GHCR
+      - name: Check if update needed
         id: check
         env:
-          TAG: ${{ steps.release.outputs.tag }}
-          DOCKER_CONFIG: ${{ runner.temp }}/ghcr-docker
-          REPOSITORY: ${{ github.repository }}
+          PSEUDO: ${{ steps.commit.outputs.pseudo }}
         run: |
-          dst="ghcr.io/$REPOSITORY/cloudflared"
-          echo "dst=$dst" >> "$GITHUB_OUTPUT"
-          upstream_digest=$(crane digest "cloudflare/cloudflared:$TAG")
-          echo "digest=$upstream_digest" >> "$GITHUB_OUTPUT"
-          if ghcr_digest=$(crane digest "$dst:$TAG" 2>/dev/null) && [ "$ghcr_digest" = "$upstream_digest" ]; then
-            echo "needs_copy=false" >> "$GITHUB_OUTPUT"
+          current=$(grep 'matheuscscp/cloudflared' go.mod | grep -oP 'v0\.0\.0-\S+' || echo "")
+          if [ "$current" = "$PSEUDO" ]; then
+            echo "Already up to date"
+            echo "needed=false" >> "$GITHUB_OUTPUT"
           else
-            echo "needs_copy=true" >> "$GITHUB_OUTPUT"
+            echo "Update needed: $current -> $PSEUDO"
+            echo "needed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Copy image
-        if: steps.check.outputs.needs_copy == 'true'
-        env:
-          DST: ${{ steps.check.outputs.dst }}
-          TAG: ${{ steps.release.outputs.tag }}
-          DOCKER_CONFIG: ${{ runner.temp }}/ghcr-docker
-        run: |
-          crane copy "cloudflare/cloudflared:$TAG" "$DST:$TAG"
+      - name: Setup Go
+        if: steps.check.outputs.needed == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
 
-      - name: Install cosign
-        uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
-
-      - name: Verify signature
-        id: verify
+      - name: Update go.mod
+        if: steps.check.outputs.needed == 'true'
         env:
-          DST: ${{ steps.check.outputs.dst }}
-          TAG: ${{ steps.release.outputs.tag }}
-          DIGEST: ${{ steps.check.outputs.digest }}
-          REPOSITORY: ${{ github.repository }}
-        continue-on-error: true
+          PSEUDO: ${{ steps.commit.outputs.pseudo }}
         run: |
-          cosign verify \
-            --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
-            --certificate-identity="https://github.com/${REPOSITORY}/.github/workflows/upgrade-cloudflared.yaml@refs/heads/main" \
-            "$DST:$TAG@$DIGEST"
-
-      - name: Sign image
-        if: steps.verify.outcome != 'success'
-        env:
-          DST: ${{ steps.check.outputs.dst }}
-          TAG: ${{ steps.release.outputs.tag }}
-          DIGEST: ${{ steps.check.outputs.digest }}
-          DOCKER_CONFIG: ${{ runner.temp }}/ghcr-docker
-        run: |
-          cosign sign --yes "$DST:$TAG@$DIGEST"
-
-      - name: Verify signature after signing
-        if: steps.verify.outcome != 'success'
-        env:
-          DST: ${{ steps.check.outputs.dst }}
-          TAG: ${{ steps.release.outputs.tag }}
-          DIGEST: ${{ steps.check.outputs.digest }}
-          REPOSITORY: ${{ github.repository }}
-        run: |
-          cosign verify \
-            --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
-            --certificate-identity="https://github.com/${REPOSITORY}/.github/workflows/upgrade-cloudflared.yaml@refs/heads/main" \
-            "$DST:$TAG@$DIGEST"
-
-      - name: Update Go code
-        env:
-          DST: ${{ steps.check.outputs.dst }}
-          TAG: ${{ steps.release.outputs.tag }}
-          DIGEST: ${{ steps.check.outputs.digest }}
-        run: |
-          sed -i "s|DefaultCloudflaredImage = \"[^\"]*\"|DefaultCloudflaredImage = \"${DST}:${TAG}@${DIGEST}\"|" \
-            internal/controller/gateway_controller.go
+          sed -i "s|github.com/matheuscscp/cloudflared v[^ ]*|github.com/matheuscscp/cloudflared $PSEUDO|" go.mod
+          GONOSUMCHECK=github.com/matheuscscp/cloudflared go mod tidy
 
       - name: Create Pull Request
+        if: steps.check.outputs.needed == 'true'
         uses: peter-evans/create-pull-request@c0f553fe549906ede9cf27b5156039d195d2ece0 # v8.1.0
         with:
           token: ${{ secrets.BOT_GITHUB_TOKEN }}
@@ -134,6 +87,6 @@ jobs:
           body: |
             Automated cloudflared upgrade to `${{ steps.release.outputs.tag }}`.
 
-            Image: `${{ steps.check.outputs.dst }}:${{ steps.release.outputs.tag }}@${{ steps.check.outputs.digest }}`
+            Fork commit: `${{ steps.commit.outputs.sha }}`
 
             Generated by: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

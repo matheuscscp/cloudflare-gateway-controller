@@ -133,10 +133,10 @@ spec:
       port: 80
 EOF
 
-    log "Waiting for sidecar config to include '$test_hostname'..."
-    retry 60 3 bash -c "sidecar_config_has_hostname 'test-gateway' '$test_hostname'" \
-        || fail "sidecar config does not contain hostname"
-    pass "Sidecar config has hostname"
+    log "Waiting for route config to include '$test_hostname'..."
+    retry 60 3 bash -c "route_config_has_hostname 'test-gateway' '$test_hostname'" \
+        || fail "route config does not contain hostname"
+    pass "Route config has hostname"
 
     log "Finding zone ID for '$TEST_ZONE_NAME'..."
     local zone_id tunnel_target
@@ -156,10 +156,10 @@ EOF
     log "Deleting HTTPRoute 'test-route'..."
     kubectl delete httproute test-route -n "$TEST_NS"
 
-    log "Waiting for sidecar config to remove '$test_hostname'..."
-    retry 60 3 bash -c "! sidecar_config_has_hostname 'test-gateway' '$test_hostname'" \
-        || fail "sidecar config still contains hostname"
-    pass "Sidecar config updated after route deletion"
+    log "Waiting for route config to remove '$test_hostname'..."
+    retry 60 3 bash -c "! route_config_has_hostname 'test-gateway' '$test_hostname'" \
+        || fail "route config still contains hostname"
+    pass "Route config updated after route deletion"
 
     log "Verifying DNS CNAME removed for '$test_hostname'..."
     check_dns_cname_removed() {
@@ -291,12 +291,12 @@ spec:
       port: 80
 EOF
 
-    log "Verifying sidecar config has both hostnames..."
-    retry 60 3 bash -c "sidecar_config_has_hostname 'multi-route-gw' '$hostname_a'" \
-        || fail "sidecar config missing hostname A"
-    retry 60 3 bash -c "sidecar_config_has_hostname 'multi-route-gw' '$hostname_b'" \
-        || fail "sidecar config missing hostname B"
-    pass "Sidecar config has both hostnames"
+    log "Verifying route config has both hostnames..."
+    retry 60 3 bash -c "route_config_has_hostname 'multi-route-gw' '$hostname_a'" \
+        || fail "route config missing hostname A"
+    retry 60 3 bash -c "route_config_has_hostname 'multi-route-gw' '$hostname_b'" \
+        || fail "route config missing hostname B"
+    pass "Route config has both hostnames"
 
     local mr_zone_id
     mr_zone_id=$(cfgwctl dns find-zone --hostname "$hostname_a" | jq -r '.zoneId')
@@ -312,11 +312,11 @@ EOF
     kubectl delete httproute route-a -n "$TEST_NS"
 
     log "Verifying hostname A removed but hostname B still present..."
-    retry 60 3 bash -c "! sidecar_config_has_hostname 'multi-route-gw' '$hostname_a'" \
-        || fail "sidecar config still has hostname A"
-    sidecar_config_has_hostname "multi-route-gw" "$hostname_b" \
-        || fail "sidecar config lost hostname B"
-    pass "Sidecar config correctly updated after partial route deletion"
+    retry 60 3 bash -c "! route_config_has_hostname 'multi-route-gw' '$hostname_a'" \
+        || fail "route config still has hostname A"
+    route_config_has_hostname "multi-route-gw" "$hostname_b" \
+        || fail "route config lost hostname B"
+    pass "Route config correctly updated after partial route deletion"
 
     log "Verifying DNS CNAME A removed but B still exists..."
     retry 60 3 bash -c "! cfgwctl dns list-cnames --zone-id '$mr_zone_id' --target '$mr_tunnel_target' | jq -e '.hostnames[] | select(. == \"$hostname_a\")' >/dev/null 2>&1" \
@@ -508,10 +508,10 @@ spec:
       port: 80
 EOF
 
-    log "Verifying sidecar config has hostname..."
-    retry 60 3 bash -c "sidecar_config_has_hostname 'no-dns-gw' '$no_dns_hostname'" \
-        || fail "no-dns sidecar config missing hostname"
-    pass "Sidecar config has hostname"
+    log "Verifying route config has hostname..."
+    retry 60 3 bash -c "route_config_has_hostname 'no-dns-gw' '$no_dns_hostname'" \
+        || fail "no-dns route config missing hostname"
+    pass "Route config has hostname"
 
     log "Verifying NO DNS CNAME was created..."
     local nd_zone_id nd_tunnel_target
@@ -764,10 +764,10 @@ EOF
         || fail "DNS CNAME still exists after DNS disabled"
     pass "DNS CNAME removed after DNS disabled"
 
-    log "Verifying sidecar config still has hostname (sidecar config unaffected)..."
-    sidecar_config_has_hostname "zone-rm-gw" "$zone_rm_hostname" \
-        || fail "sidecar config lost hostname after DNS config removal"
-    pass "Sidecar config still has hostname"
+    log "Verifying route config still has hostname (route config unaffected)..."
+    route_config_has_hostname "zone-rm-gw" "$zone_rm_hostname" \
+        || fail "route config lost hostname after DNS config removal"
+    pass "Route config still has hostname"
 
     log "Cleaning up DNS config removal test..."
     kubectl delete httproute zone-rm-route -n "$TEST_NS"
@@ -979,10 +979,10 @@ EOF
         || fail "tunnel ID changed: before=$tunnel_id_before after=$tunnel_id_after (resource leaked!)"
     pass "Tunnel adopted: same ID $tunnel_id_before"
 
-    log "Verifying sidecar config has hostname after adoption..."
-    retry 60 3 bash -c "sidecar_config_has_hostname 'recreate-gw' '$test_hostname'" \
-        || fail "sidecar config missing hostname after adoption"
-    pass "Sidecar config has hostname after adoption"
+    log "Verifying route config has hostname after adoption..."
+    retry 60 3 bash -c "route_config_has_hostname 'recreate-gw' '$test_hostname'" \
+        || fail "route config missing hostname after adoption"
+    pass "Route config has hostname after adoption"
 
     log "Verifying DNS CNAME still exists after adoption..."
     retry 60 3 bash -c "cfgwctl dns list-cnames --zone-id '$zone_id' --target '$tunnel_target' | jq -e '.hostnames[] | select(. == \"$test_hostname\")' >/dev/null" \
@@ -1636,153 +1636,6 @@ EOF
     kubectl delete service lb-backend -n "$TEST_NS" --ignore-not-found
 }
 
-test_sidecar_disabled() {
-    local hostname="sd-${TS: -6}.${TEST_TRAFFIC_ZONE_NAME}"
-
-    log "Deploying 1-replica test server for sidecar-disabled test..."
-    kubectl apply -f - <<EOF
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: sd-test
-  namespace: $TEST_NS
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: sd-test
-  template:
-    metadata:
-      labels:
-        app: sd-test
-    spec:
-      containers:
-      - name: server
-        image: $IMAGE
-        args: ["test", "serve"]
-        env:
-        - name: POD_NAME
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.name
-        ports:
-        - containerPort: 8080
-        readinessProbe:
-          httpGet:
-            path: /_healthz
-            port: 8080
-          initialDelaySeconds: 1
-          periodSeconds: 2
-EOF
-
-    kubectl apply -f - <<EOF
-apiVersion: v1
-kind: Service
-metadata:
-  name: sd-backend
-  namespace: $TEST_NS
-spec:
-  selector:
-    app: sd-test
-  ports:
-  - port: 80
-    targetPort: 8080
-    protocol: TCP
-EOF
-
-    log "Waiting for sd-test rollout..."
-    kubectl rollout status deployment/sd-test -n "$TEST_NS" --timeout=120s \
-        || fail "sd-test deployment did not become ready"
-    pass "sd-test deployment ready"
-
-    log "Creating CloudflareGatewayParameters 'sd-params' with sidecar disabled..."
-    kubectl apply -f - <<EOF
-apiVersion: cloudflare-gateway-controller.io/v1
-kind: CloudflareGatewayParameters
-metadata:
-  name: sd-params
-  namespace: $TEST_NS
-spec:
-  secretRef:
-    name: cloudflare-creds
-  tunnel:
-    sidecar:
-      enabled: false
-EOF
-
-    log "Creating Gateway 'sd-gw' referencing sd-params..."
-    kubectl apply -f - <<EOF
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: sd-gw
-  namespace: $TEST_NS
-spec:
-  gatewayClassName: cloudflare
-  infrastructure:
-    parametersRef:
-      group: cloudflare-gateway-controller.io
-      kind: CloudflareGatewayParameters
-      name: sd-params
-  listeners:
-  - name: https
-    protocol: HTTPS
-    port: 443
-EOF
-
-    retry 60 5 kubectl wait gateway/sd-gw -n "$TEST_NS" \
-        --for=condition=Programmed --timeout=5s \
-        || fail "sd-gw did not become Programmed"
-    pass "sd-gw is Programmed"
-
-    log "Verifying Sidecar condition is False/Disabled..."
-    check_sidecar_disabled() {
-        local reason
-        reason=$(kubectl get gateway sd-gw -n "$TEST_NS" \
-            -o jsonpath='{.status.conditions[?(@.type=="Sidecar")].reason}')
-        [ "$reason" = "Disabled" ]
-    }
-    retry 30 2 check_sidecar_disabled || fail "Sidecar condition not Disabled"
-    pass "Sidecar condition is False/Disabled"
-
-    kubectl apply -f - <<EOF
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: sd-route
-  namespace: $TEST_NS
-spec:
-  parentRefs:
-  - name: sd-gw
-  hostnames:
-  - "$hostname"
-  rules:
-  - backendRefs:
-    - name: sd-backend
-      port: 80
-EOF
-
-    wait_for_https "https://$hostname/"
-
-    log "Running traffic check (sidecar disabled)..."
-    "$CFGWCTL" test load \
-        --url "https://$hostname/" \
-        --requests 10 \
-        --concurrency 1 \
-        --hostname "$hostname" \
-        || fail "traffic check failed"
-    pass "Traffic flows end-to-end with sidecar disabled"
-
-    log "Cleaning up sidecar-disabled test..."
-    kubectl delete httproute sd-route -n "$TEST_NS"
-    kubectl delete gateway sd-gw -n "$TEST_NS"
-    retry 60 3 bash -c "! kubectl get gateway sd-gw -n '$TEST_NS' 2>/dev/null" \
-        || fail "sd-gw still exists"
-    kubectl delete cloudflaregatewayparameters sd-params -n "$TEST_NS" --ignore-not-found
-    kubectl delete deployment sd-test -n "$TEST_NS" --ignore-not-found
-    kubectl delete service sd-backend -n "$TEST_NS" --ignore-not-found
-}
-
 test_traffic_splitting() {
     local hostname="ts-${TS: -6}.${TEST_TRAFFIC_ZONE_NAME}"
 
@@ -2164,21 +2017,16 @@ spec:
   secretRef:
     name: cloudflare-creds
   tunnel:
-    cloudflared:
-      autoscaling:
-        enabled: true
-        minAllowed:
-          cpu: 25m
-          memory: 32Mi
-        maxAllowed:
-          cpu: "1"
-          memory: 512Mi
-        controlledResources: [cpu, memory]
-        controlledValues: RequestsAndLimits
-    sidecar:
-      autoscaling:
-        enabled: true
-        controlledValues: RequestsOnly
+    autoscaling:
+      enabled: true
+      minAllowed:
+        cpu: 25m
+        memory: 32Mi
+      maxAllowed:
+        cpu: "1"
+        memory: 512Mi
+      controlledResources: [cpu, memory]
+      controlledValues: RequestsAndLimits
 EOF
 
     log "Creating Gateway 'vpa-gw'..."
@@ -2226,7 +2074,7 @@ EOF
         || fail "VPA targetRef.name expected gateway-vpa-gw-primary, got '$target_name'"
     pass "VPA targetRef is correct"
 
-    # Verify container policies: wildcard Off + cloudflared Auto + sidecar Auto.
+    # Verify container policies: wildcard Off + tunnel Auto.
     # Use -o json (not jsonpath) so jq can parse the output.
     local policies
     policies=$(kubectl get vpa gateway-vpa-gw-primary -n "$TEST_NS" \
@@ -2236,35 +2084,24 @@ EOF
         || fail "VPA missing wildcard '*' Off policy"
     pass "VPA has wildcard Off policy"
 
-    echo "$policies" | jq -e '.[] | select(.containerName == "cloudflared" and .mode == "Auto")' >/dev/null \
-        || fail "VPA missing cloudflared Auto policy"
-    pass "VPA has cloudflared Auto policy"
+    echo "$policies" | jq -e '.[] | select(.containerName == "tunnel" and .mode == "Auto")' >/dev/null \
+        || fail "VPA missing tunnel Auto policy"
+    pass "VPA has tunnel Auto policy"
 
-    echo "$policies" | jq -e '.[] | select(.containerName == "sidecar" and .mode == "Auto")' >/dev/null \
-        || fail "VPA missing sidecar Auto policy"
-    pass "VPA has sidecar Auto policy"
+    # Verify tunnel minAllowed/maxAllowed.
+    local tn_min_cpu tn_max_cpu
+    tn_min_cpu=$(echo "$policies" | jq -r '.[] | select(.containerName == "tunnel") | .minAllowed.cpu')
+    tn_max_cpu=$(echo "$policies" | jq -r '.[] | select(.containerName == "tunnel") | .maxAllowed.cpu')
+    [ "$tn_min_cpu" = "25m" ] || fail "tunnel minAllowed.cpu expected 25m, got '$tn_min_cpu'"
+    [ "$tn_max_cpu" = "1" ] || fail "tunnel maxAllowed.cpu expected 1, got '$tn_max_cpu'"
+    pass "tunnel minAllowed/maxAllowed are correct"
 
-    # Verify cloudflared minAllowed/maxAllowed.
-    local cf_min_cpu cf_max_cpu
-    cf_min_cpu=$(echo "$policies" | jq -r '.[] | select(.containerName == "cloudflared") | .minAllowed.cpu')
-    cf_max_cpu=$(echo "$policies" | jq -r '.[] | select(.containerName == "cloudflared") | .maxAllowed.cpu')
-    [ "$cf_min_cpu" = "25m" ] || fail "cloudflared minAllowed.cpu expected 25m, got '$cf_min_cpu'"
-    [ "$cf_max_cpu" = "1" ] || fail "cloudflared maxAllowed.cpu expected 1, got '$cf_max_cpu'"
-    pass "cloudflared minAllowed/maxAllowed are correct"
-
-    # Verify cloudflared controlledValues.
-    local cf_cv
-    cf_cv=$(echo "$policies" | jq -r '.[] | select(.containerName == "cloudflared") | .controlledValues')
-    [ "$cf_cv" = "RequestsAndLimits" ] \
-        || fail "cloudflared controlledValues expected RequestsAndLimits, got '$cf_cv'"
-    pass "cloudflared controlledValues is correct"
-
-    # Verify sidecar controlledValues.
-    local sc_cv
-    sc_cv=$(echo "$policies" | jq -r '.[] | select(.containerName == "sidecar") | .controlledValues')
-    [ "$sc_cv" = "RequestsOnly" ] \
-        || fail "sidecar controlledValues expected RequestsOnly, got '$sc_cv'"
-    pass "sidecar controlledValues is correct"
+    # Verify tunnel controlledValues.
+    local tn_cv
+    tn_cv=$(echo "$policies" | jq -r '.[] | select(.containerName == "tunnel") | .controlledValues')
+    [ "$tn_cv" = "RequestsAndLimits" ] \
+        || fail "tunnel controlledValues expected RequestsAndLimits, got '$tn_cv'"
+    pass "tunnel controlledValues is correct"
 
     log "Disabling autoscaling and verifying VPA cleanup..."
     kubectl apply -f - <<EOF
@@ -2302,7 +2139,6 @@ run_tests \
     test_multi_gateway_overlapping_zones \
     test_cluster_recreation \
     test_load_balancing \
-    test_sidecar_disabled \
     test_traffic_splitting \
     test_session_persistence \
     test_vpa_autoscaling

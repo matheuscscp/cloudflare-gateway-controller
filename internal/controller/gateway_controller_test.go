@@ -117,10 +117,8 @@ func TestGatewayReconciler_AcceptedAndProgrammed(t *testing.T) {
 	var deploy appsv1.Deployment
 	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name + "-primary", Namespace: gw.Namespace}
 	g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
-	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(2))
-	g.Expect(deploy.Spec.Template.Spec.Containers[0].Image).To(Equal(controller.DefaultCloudflaredImage))
-	g.Expect(deploy.Spec.Template.Spec.Containers[1].Name).To(Equal("sidecar"))
-	g.Expect(deploy.Spec.Template.Spec.Containers[1].Image).To(Equal("test-sidecar-image:latest"))
+	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
+	g.Expect(deploy.Spec.Template.Spec.Containers[0].Image).To(Equal("test-tunnel-image:latest"))
 
 	// Verify env uses secretKeyRef, not plain Value
 	env := deploy.Spec.Template.Spec.Containers[0].Env
@@ -132,7 +130,7 @@ func TestGatewayReconciler_AcceptedAndProgrammed(t *testing.T) {
 	g.Expect(env[0].ValueFrom.SecretKeyRef.Name).To(Equal("gateway-" + gw.Name))
 	g.Expect(env[0].ValueFrom.SecretKeyRef.Key).To(Equal("TUNNEL_TOKEN"))
 
-	// Verify default resource limits are set on cloudflared container
+	// Verify default resource limits are set on tunnel container
 	resources := deploy.Spec.Template.Spec.Containers[0].Resources
 	g.Expect(resources.Requests.Cpu().String()).To(Equal("50m"))
 	g.Expect(resources.Requests.Memory().String()).To(Equal("64Mi"))
@@ -168,7 +166,7 @@ func TestGatewayReconciler_AcceptedAndProgrammed(t *testing.T) {
 	g.Expect(cgs.Status.Tunnel).NotTo(BeNil())
 	g.Expect(cgs.Status.Tunnel.ID).To(Equal("test-tunnel-id"))
 
-	// Inventory lists managed Kubernetes objects (sidecar enabled in tests).
+	// Inventory lists managed Kubernetes objects.
 	g.Expect(cgs.Status.Inventory).To(ConsistOf(
 		apiv1.ResourceRef{APIVersion: apiv1.APIVersionApps, Kind: apiv1.KindDeployment, Name: "gateway-" + gw.Name + "-primary"},
 		apiv1.ResourceRef{APIVersion: apiv1.APIVersionCore, Kind: apiv1.KindSecret, Name: "gateway-" + gw.Name},
@@ -636,7 +634,7 @@ func TestGatewayReconciler_Deletion(t *testing.T) {
 		e := findEvent(g, ns.Name, gw.Name, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded, apiv1.EventActionFinalize, "")
 		g.Expect(e).NotTo(BeNil())
 		g.Expect(e.Note).To(HavePrefix("Gateway finalized"))
-		g.Expect(e.Note).To(ContainSubstring("deleted cloudflared Deployment"))
+		g.Expect(e.Note).To(ContainSubstring("deleted tunnel Deployment"))
 		g.Expect(e.Note).To(ContainSubstring("deleted tunnel"))
 	}).WithTimeout(5 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
 }
@@ -1154,7 +1152,7 @@ func TestGatewayReconciler_DeploymentPatchesResourceRequests(t *testing.T) {
 	var deploy appsv1.Deployment
 	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name + "-primary", Namespace: gw.Namespace}
 	g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
-	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(2))
+	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
 	resources := deploy.Spec.Template.Spec.Containers[0].Resources
 	g.Expect(resources.Requests.Memory().String()).To(Equal("128Mi"))
 	g.Expect(resources.Requests.Cpu().String()).To(Equal("250m"))
@@ -1294,170 +1292,6 @@ func TestGatewayReconciler_DeploymentPatchesInvalidOps(t *testing.T) {
 		g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
 		g.Expect(ready.Reason).To(Equal(apiv1.ReasonReconciliationFailed))
 		g.Expect(ready.Message).To(ContainSubstring("deployment patches"))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-}
-
-func TestGatewayReconciler_SidecarDisabledViaCGP(t *testing.T) {
-	g := NewWithT(t)
-
-	ns := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
-
-	createTestSecret(g, ns.Name)
-	gc := createTestGatewayClass(g, "test-gw-class-sidecar-disabled", ns.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	waitForGatewayClassReady(g, gc)
-
-	sidecarDisabled := false
-	params := createTestParameters(g, "test-gw-sidecar-disabled-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
-		Tunnel: &apiv1.TunnelConfig{
-			Sidecar: &apiv1.SidecarConfig{
-				Enabled: &sidecarDisabled,
-			},
-		},
-	})
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-gw-sidecar-disabled",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.GatewaySpec{
-			GatewayClassName: gatewayv1.ObjectName(gc.Name),
-			Infrastructure: &gatewayv1.GatewayInfrastructure{
-				ParametersRef: parametersRef(params.Name),
-			},
-			Listeners: []gatewayv1.Listener{
-				{
-					Name:     "https",
-					Protocol: gatewayv1.HTTPSProtocolType,
-					Port:     443,
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	waitForGatewayProgrammed(g, gw)
-
-	// Verify Deployment has 1 container (no sidecar)
-	var deploy appsv1.Deployment
-	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name + "-primary", Namespace: gw.Namespace}
-	g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
-	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
-	g.Expect(deploy.Spec.Template.Spec.Containers[0].Name).To(Equal("cloudflared"))
-
-	// Verify route ConfigMap EXISTS (decoupled from sidecar).
-	var cm corev1.ConfigMap
-	cmKey := client.ObjectKey{Name: "gateway-" + gw.Name, Namespace: gw.Namespace}
-	g.Expect(testClient.Get(testCtx, cmKey, &cm)).To(Succeed())
-	g.Expect(cm.Labels["app.kubernetes.io/component"]).To(Equal("routes"))
-
-	// Verify no sidecar ServiceAccount (RBAC resources absent).
-	var sa corev1.ServiceAccount
-	saKey := client.ObjectKey{Name: "gateway-" + gw.Name, Namespace: gw.Namespace}
-	g.Expect(apierrors.IsNotFound(testClient.Get(testCtx, saKey, &sa))).To(BeTrue())
-
-	// Verify tunnel ingress has per-hostname rules (catch-all 404), not sidecar catch-all
-	g.Expect(testMock.lastTunnelConfigIngress).To(HaveLen(1))
-	g.Expect(testMock.lastTunnelConfigIngress[0].Service).To(Equal("http_status:404"))
-
-	// Verify Sidecar condition is False/Disabled
-	gwKey := client.ObjectKeyFromObject(gw)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.Gateway
-		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
-		sidecarCond := conditions.Find(result.Status.Conditions, apiv1.ConditionSidecar)
-		g.Expect(sidecarCond).NotTo(BeNil())
-		g.Expect(sidecarCond.Status).To(Equal(metav1.ConditionFalse))
-		g.Expect(sidecarCond.Reason).To(Equal(apiv1.ReasonDisabled))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-
-	// Explicitly delete the Gateway and wait for finalization to complete,
-	// so the async DeleteTunnel mock call doesn't leak into the next test.
-	g.Expect(testClient.Delete(testCtx, gw)).To(Succeed())
-	g.Eventually(func() error {
-		return testClient.Get(testCtx, gwKey, &gatewayv1.Gateway{})
-	}).WithTimeout(30 * time.Second).WithPolling(100 * time.Millisecond).Should(Satisfy(apierrors.IsNotFound))
-}
-
-func TestGatewayReconciler_DeploymentPatchesRemoveSidecar(t *testing.T) {
-	g := NewWithT(t)
-
-	ns := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
-
-	createTestSecret(g, ns.Name)
-	gc := createTestGatewayClass(g, "test-gw-class-patches-rm-sidecar", ns.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	waitForGatewayClassReady(g, gc)
-
-	// Sidecar is enabled (default). Patch removes the sidecar container (index 1).
-	params := createTestParameters(g, "test-gw-patches-rm-sidecar-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
-		Tunnel: &apiv1.TunnelConfig{
-			Patches: []apiv1.JSONPatchOperation{
-				{
-					Op:   "remove",
-					Path: "/spec/template/spec/containers/1",
-				},
-			},
-		},
-	})
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-gw-patches-rm-sidecar",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.GatewaySpec{
-			GatewayClassName: gatewayv1.ObjectName(gc.Name),
-			Infrastructure: &gatewayv1.GatewayInfrastructure{
-				ParametersRef: parametersRef(params.Name),
-			},
-			Listeners: []gatewayv1.Listener{
-				{
-					Name:     "https",
-					Protocol: gatewayv1.HTTPSProtocolType,
-					Port:     443,
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	// The Gateway should report a terminal error about the removed sidecar.
-	gwKey := client.ObjectKeyFromObject(gw)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.Gateway
-		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
-		ready := conditions.Find(result.Status.Conditions, apiv1.ConditionReady)
-		g.Expect(ready).NotTo(BeNil())
-		g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
-		g.Expect(ready.Reason).To(Equal(apiv1.ReasonReconciliationFailed))
-		g.Expect(ready.Message).To(ContainSubstring("sidecar container"))
-		g.Expect(ready.Message).To(ContainSubstring("sidecar.enabled=false"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
@@ -1982,9 +1816,10 @@ func TestGatewayReconciler_ReconcileDisabled(t *testing.T) {
 	// Wait a bit for any pending reconciliation to complete.
 	time.Sleep(1 * time.Second)
 
-	// Reset tunnel config tracking.
-	testMock.lastTunnelConfigID = ""
-	prevIngress := testMock.lastTunnelConfigIngress
+	// Record the current Ready condition generation.
+	var snapshot gatewayv1.Gateway
+	g.Expect(testClient.Get(testCtx, gwKey, &snapshot)).To(Succeed())
+	prevGen := snapshot.Status.Conditions
 
 	// Trigger re-reconciliation via another annotation change.
 	g.Eventually(func(g Gomega) {
@@ -1997,13 +1832,12 @@ func TestGatewayReconciler_ReconcileDisabled(t *testing.T) {
 		g.Expect(testClient.Update(testCtx, &latest)).To(Succeed())
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
-	// Tunnel config should NOT be updated (reconciliation was skipped).
-	g.Consistently(func() string {
-		return testMock.lastTunnelConfigID
-	}).WithTimeout(3 * time.Second).WithPolling(100 * time.Millisecond).Should(BeEmpty())
-
-	// Ingress should remain unchanged.
-	g.Expect(testMock.lastTunnelConfigIngress).To(Equal(prevIngress))
+	// Status conditions should remain unchanged (reconciliation was skipped).
+	g.Consistently(func(g Gomega) {
+		var latest gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &latest)).To(Succeed())
+		g.Expect(latest.Status.Conditions).To(Equal(prevGen))
+	}).WithTimeout(3 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
 func TestGatewayReconciler_CloudflareTunnelLookupError(t *testing.T) {
@@ -2095,50 +1929,6 @@ func TestGatewayReconciler_CloudflareTunnelTokenError(t *testing.T) {
 		g.Expect(ready.Status).To(Equal(metav1.ConditionUnknown))
 		g.Expect(ready.Reason).To(Equal(apiv1.ReasonProgressingWithRetry))
 		g.Expect(ready.Message).To(ContainSubstring("tunnel token"))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-}
-
-func TestGatewayReconciler_CloudflareUpdateConfigError(t *testing.T) {
-	g := NewWithT(t)
-	resetMockErrors(t)
-
-	ns := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
-
-	createTestSecret(g, ns.Name)
-	gc := createTestGatewayClass(g, "test-gw-class-config-err", ns.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	waitForGatewayClassReady(g, gc)
-
-	// Inject config update error before creating Gateway so the initial
-	// tunnel configuration update (catch-all for sidecar or 404 fallback)
-	// fails on the first reconcile.
-	testMock.updateTunnelConfigErr = fmt.Errorf("config update failed")
-
-	gw := createTestGateway(g, "test-gw-config-err", ns.Name, gc.Name)
-	t.Cleanup(func() {
-		testMock.updateTunnelConfigErr = nil
-		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	gwKey := client.ObjectKeyFromObject(gw)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.Gateway
-		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
-		ready := conditions.Find(result.Status.Conditions, apiv1.ConditionReady)
-		g.Expect(ready).NotTo(BeNil())
-		g.Expect(ready.Status).To(Equal(metav1.ConditionUnknown))
-		g.Expect(ready.Reason).To(Equal(apiv1.ReasonProgressingWithRetry))
-		g.Expect(ready.Message).To(ContainSubstring("configuration: config update failed"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
@@ -2556,82 +2346,6 @@ func TestGatewayReconciler_CloudflareCreateTunnelError(t *testing.T) {
 		g.Expect(ready.Status).To(Equal(metav1.ConditionUnknown))
 		g.Expect(ready.Reason).To(Equal(apiv1.ReasonProgressingWithRetry))
 		g.Expect(ready.Message).To(ContainSubstring("creating tunnel"))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-}
-
-func TestGatewayReconciler_CloudflareGetTunnelConfigError(t *testing.T) {
-	g := NewWithT(t)
-	resetMockErrors(t)
-
-	ns := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
-
-	createTestSecret(g, ns.Name)
-	gc := createTestGatewayClass(g, "test-gw-class-get-config-err", ns.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	waitForGatewayClassReady(g, gc)
-
-	gw := createTestGateway(g, "test-gw-get-config-err", ns.Name, gc.Name)
-	t.Cleanup(func() {
-		testMock.getTunnelConfigurationErr = nil
-		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-	waitForGatewayProgrammed(g, gw)
-
-	// Inject error and create HTTPRoute to trigger reconcileTunnelIngress.
-	testMock.getTunnelConfigurationErr = fmt.Errorf("config fetch failed")
-
-	route := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-route-get-config-err",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.HTTPRouteSpec{
-			CommonRouteSpec: gatewayv1.CommonRouteSpec{
-				ParentRefs: []gatewayv1.ParentReference{
-					{Name: gatewayv1.ObjectName(gw.Name)},
-				},
-			},
-			Hostnames: []gatewayv1.Hostname{"get-config-err.example.com"},
-			Rules: []gatewayv1.HTTPRouteRule{
-				{
-					BackendRefs: []gatewayv1.HTTPBackendRef{
-						{BackendRef: gatewayv1.BackendRef{
-							BackendObjectReference: gatewayv1.BackendObjectReference{
-								Name: "my-service", Port: new(gatewayv1.PortNumber(8080)),
-							},
-						}},
-					},
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.HTTPRoute
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	gwKey := client.ObjectKeyFromObject(gw)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.Gateway
-		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
-		ready := conditions.Find(result.Status.Conditions, apiv1.ConditionReady)
-		g.Expect(ready).NotTo(BeNil())
-		g.Expect(ready.Status).To(Equal(metav1.ConditionUnknown))
-		g.Expect(ready.Reason).To(Equal(apiv1.ReasonProgressingWithRetry))
-		g.Expect(ready.Message).To(ContainSubstring("configuration: config fetch failed"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
@@ -3566,133 +3280,6 @@ func TestGatewayReconciler_ReplicasDefault(t *testing.T) {
 	g.Expect(deploy.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/component", "primary"))
 }
 
-func TestGatewayReconciler_SidecarDisabledWithHTTPRoute(t *testing.T) {
-	g := NewWithT(t)
-
-	ns := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
-
-	createTestSecret(g, ns.Name)
-	gc := createTestGatewayClass(g, "test-gw-class-sd-route", ns.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	waitForGatewayClassReady(g, gc)
-
-	sidecarDisabled := false
-	params := createTestParameters(g, "test-sd-route-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
-		Tunnel: &apiv1.TunnelConfig{
-			Sidecar: &apiv1.SidecarConfig{
-				Enabled: &sidecarDisabled,
-			},
-		},
-	})
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-gw-sd-route",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.GatewaySpec{
-			GatewayClassName: gatewayv1.ObjectName(gc.Name),
-			Infrastructure: &gatewayv1.GatewayInfrastructure{
-				ParametersRef: parametersRef(params.Name),
-			},
-			Listeners: []gatewayv1.Listener{
-				{Name: "https", Protocol: gatewayv1.HTTPSProtocolType, Port: 443},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	waitForGatewayProgrammed(g, gw)
-
-	// Create an HTTPRoute with path-based matching.
-	pathPrefix := gatewayv1.PathMatchPathPrefix
-	route := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-sd-route",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.HTTPRouteSpec{
-			CommonRouteSpec: gatewayv1.CommonRouteSpec{
-				ParentRefs: []gatewayv1.ParentReference{
-					{Name: gatewayv1.ObjectName(gw.Name)},
-				},
-			},
-			Hostnames: []gatewayv1.Hostname{"app.example.com"},
-			Rules: []gatewayv1.HTTPRouteRule{
-				{
-					Matches: []gatewayv1.HTTPRouteMatch{
-						{
-							Path: &gatewayv1.HTTPPathMatch{
-								Type:  &pathPrefix,
-								Value: new(string),
-							},
-						},
-					},
-					BackendRefs: []gatewayv1.HTTPBackendRef{
-						{
-							BackendRef: gatewayv1.BackendRef{
-								BackendObjectReference: gatewayv1.BackendObjectReference{
-									Name: "api-svc",
-									Port: new(gatewayv1.PortNumber(8080)),
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-	*route.Spec.Rules[0].Matches[0].Path.Value = "/api"
-	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.HTTPRoute
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	// Wait for tunnel ingress to include per-hostname rules from buildIngressRules.
-	gwKey := client.ObjectKeyFromObject(gw)
-	g.Eventually(func(g Gomega) {
-		// Tunnel config should have the hostname rule + catch-all 404.
-		g.Expect(testMock.lastTunnelConfigIngress).To(HaveLen(2))
-		g.Expect(testMock.lastTunnelConfigIngress[0].Hostname).To(Equal("app.example.com"))
-		g.Expect(testMock.lastTunnelConfigIngress[0].Service).To(Equal(fmt.Sprintf("http://api-svc.%s.svc.cluster.local:8080", ns.Name)))
-		g.Expect(testMock.lastTunnelConfigIngress[0].Path).To(Equal("/api"))
-		g.Expect(testMock.lastTunnelConfigIngress[1].Service).To(Equal("http_status:404"))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-
-	// Verify HTTPRoute is accepted.
-	routeKey := client.ObjectKeyFromObject(route)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.HTTPRoute
-		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
-		g.Expect(result.Status.Parents).To(HaveLen(1))
-		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
-		g.Expect(accepted).NotTo(BeNil())
-		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-
-	// Explicitly delete route and gateway so async cleanup doesn't leak.
-	g.Expect(testClient.Delete(testCtx, route)).To(Succeed())
-	g.Expect(testClient.Delete(testCtx, gw)).To(Succeed())
-	g.Eventually(func() error {
-		return testClient.Get(testCtx, gwKey, &gatewayv1.Gateway{})
-	}).WithTimeout(30 * time.Second).WithPolling(100 * time.Millisecond).Should(Satisfy(apierrors.IsNotFound))
-}
-
 func TestCGP_XValidation_DuplicateReplicaNames(t *testing.T) {
 	g := NewWithT(t)
 
@@ -3840,32 +3427,14 @@ func TestGatewayReconciler_CustomContainerResources(t *testing.T) {
 
 	params := createTestParameters(g, "test-gw-custom-resources-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
 		Tunnel: &apiv1.TunnelConfig{
-			Cloudflared: &apiv1.CloudflaredConfig{
-				ContainerConfig: apiv1.ContainerConfig{
-					Resources: &corev1.ResourceRequirements{
-						Requests: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse("100m"),
-							corev1.ResourceMemory: resource.MustParse("128Mi"),
-						},
-						Limits: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse("1"),
-							corev1.ResourceMemory: resource.MustParse("512Mi"),
-						},
-					},
+			Resources: &corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("100m"),
+					corev1.ResourceMemory: resource.MustParse("128Mi"),
 				},
-			},
-			Sidecar: &apiv1.SidecarConfig{
-				ContainerConfig: apiv1.ContainerConfig{
-					Resources: &corev1.ResourceRequirements{
-						Requests: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse("50m"),
-							corev1.ResourceMemory: resource.MustParse("32Mi"),
-						},
-						Limits: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse("200m"),
-							corev1.ResourceMemory: resource.MustParse("128Mi"),
-						},
-					},
+				Limits: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("1"),
+					corev1.ResourceMemory: resource.MustParse("512Mi"),
 				},
 			},
 		},
@@ -3903,21 +3472,14 @@ func TestGatewayReconciler_CustomContainerResources(t *testing.T) {
 	var deploy appsv1.Deployment
 	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name + "-primary", Namespace: gw.Namespace}
 	g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
-	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(2))
+	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
 
-	// cloudflared container (index 0)
-	cfResources := deploy.Spec.Template.Spec.Containers[0].Resources
-	g.Expect(cfResources.Requests.Cpu().String()).To(Equal("100m"))
-	g.Expect(cfResources.Requests.Memory().String()).To(Equal("128Mi"))
-	g.Expect(cfResources.Limits.Cpu().String()).To(Equal("1"))
-	g.Expect(cfResources.Limits.Memory().String()).To(Equal("512Mi"))
-
-	// sidecar container (index 1)
-	sidecarResources := deploy.Spec.Template.Spec.Containers[1].Resources
-	g.Expect(sidecarResources.Requests.Cpu().String()).To(Equal("50m"))
-	g.Expect(sidecarResources.Requests.Memory().String()).To(Equal("32Mi"))
-	g.Expect(sidecarResources.Limits.Cpu().String()).To(Equal("200m"))
-	g.Expect(sidecarResources.Limits.Memory().String()).To(Equal("128Mi"))
+	// tunnel container
+	resources := deploy.Spec.Template.Spec.Containers[0].Resources
+	g.Expect(resources.Requests.Cpu().String()).To(Equal("100m"))
+	g.Expect(resources.Requests.Memory().String()).To(Equal("128Mi"))
+	g.Expect(resources.Limits.Cpu().String()).To(Equal("1"))
+	g.Expect(resources.Limits.Memory().String()).To(Equal("512Mi"))
 }
 
 func TestGatewayReconciler_DuplicateZonesRejected(t *testing.T) {
@@ -4041,73 +3603,6 @@ func TestGatewayReconciler_CloudflareClientError(t *testing.T) {
 	}).WithTimeout(30 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
-func TestGatewayReconciler_PatchRemovesSidecarRejected(t *testing.T) {
-	g := NewWithT(t)
-
-	ns := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
-
-	createTestSecret(g, ns.Name)
-	gc := createTestGatewayClass(g, "test-gw-class-rm-sidecar", ns.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	waitForGatewayClassReady(g, gc)
-
-	// Patch that removes the sidecar container while sidecar is enabled (default).
-	params := createTestParameters(g, "test-gw-rm-sidecar-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
-		Tunnel: &apiv1.TunnelConfig{
-			Patches: []apiv1.JSONPatchOperation{
-				{
-					Op:   "remove",
-					Path: "/spec/template/spec/containers/1",
-				},
-			},
-		},
-	})
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-gw-rm-sidecar",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.GatewaySpec{
-			GatewayClassName: gatewayv1.ObjectName(gc.Name),
-			Infrastructure: &gatewayv1.GatewayInfrastructure{
-				ParametersRef: parametersRef(params.Name),
-			},
-			Listeners: []gatewayv1.Listener{
-				{
-					Name:     "https",
-					Protocol: gatewayv1.HTTPSProtocolType,
-					Port:     443,
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	// Gateway should be rejected with Ready=False (terminal error).
-	key := client.ObjectKeyFromObject(gw)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.Gateway
-		g.Expect(testClient.Get(testCtx, key, &result)).To(Succeed())
-		ready := conditions.Find(result.Status.Conditions, apiv1.ConditionReady)
-		g.Expect(ready).NotTo(BeNil())
-		g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
-		g.Expect(ready.Message).To(ContainSubstring("sidecar container"))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-}
-
 func TestGatewayReconciler_TunnelCreateConflictRecovery(t *testing.T) {
 	g := NewWithT(t)
 	resetMockErrors(t)
@@ -4151,101 +3646,6 @@ func TestGatewayReconciler_TunnelCreateConflictRecovery(t *testing.T) {
 		g.Expect(programmed.Status).To(Equal(metav1.ConditionTrue))
 		g.Expect(result.Status.Addresses).To(HaveLen(1))
 		g.Expect(result.Status.Addresses[0].Value).To(Equal(cloudflare.TunnelTarget("conflict-tunnel-id")))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-}
-
-func TestGatewayReconciler_SidecarSwitchToDisabled(t *testing.T) {
-	g := NewWithT(t)
-	resetMockErrors(t)
-
-	ns := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
-
-	createTestSecret(g, ns.Name)
-	gc := createTestGatewayClass(g, "test-gc-sidecar-switch", ns.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-	waitForGatewayClassReady(g, gc)
-
-	// Create Gateway with sidecar enabled (default).
-	params := createTestParameters(g, "test-params-sidecar-switch", ns.Name, apiv1.CloudflareGatewayParametersSpec{})
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-gw-sidecar-switch",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.GatewaySpec{
-			GatewayClassName: gatewayv1.ObjectName(gc.Name),
-			Infrastructure: &gatewayv1.GatewayInfrastructure{
-				ParametersRef: parametersRef(params.Name),
-			},
-			Listeners: []gatewayv1.Listener{{
-				Name:     "https",
-				Protocol: gatewayv1.HTTPSProtocolType,
-				Port:     443,
-			}},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	// Wait for Gateway to be programmed with sidecar enabled.
-	key := client.ObjectKeyFromObject(gw)
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.Gateway
-		g.Expect(testClient.Get(testCtx, key, &result)).To(Succeed())
-		sidecar := conditions.Find(result.Status.Conditions, apiv1.ConditionSidecar)
-		g.Expect(sidecar).NotTo(BeNil())
-		g.Expect(sidecar.Status).To(Equal(metav1.ConditionTrue))
-		programmed := conditions.Find(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
-		g.Expect(programmed).NotTo(BeNil())
-		g.Expect(programmed.Status).To(Equal(metav1.ConditionTrue))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-
-	// Verify sidecar resources exist.
-	resourceName := apiv1.GatewayResourceName(gw)
-	g.Expect(testClient.Get(testCtx, client.ObjectKey{Name: resourceName, Namespace: ns.Name}, &corev1.ConfigMap{})).To(Succeed())
-	g.Expect(testClient.Get(testCtx, client.ObjectKey{Name: resourceName, Namespace: ns.Name}, &corev1.ServiceAccount{})).To(Succeed())
-
-	// Switch sidecar to disabled.
-	g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(params), params)).To(Succeed())
-	params.Spec.Tunnel = &apiv1.TunnelConfig{
-		Sidecar: &apiv1.SidecarConfig{
-			Enabled: new(false),
-		},
-	}
-	g.Expect(testClient.Update(testCtx, params)).To(Succeed())
-
-	// Wait for Gateway to report Sidecar=False and sidecar resources to be cleaned up.
-	g.Eventually(func(g Gomega) {
-		var result gatewayv1.Gateway
-		g.Expect(testClient.Get(testCtx, key, &result)).To(Succeed())
-		sidecar := conditions.Find(result.Status.Conditions, apiv1.ConditionSidecar)
-		g.Expect(sidecar).NotTo(BeNil())
-		g.Expect(sidecar.Status).To(Equal(metav1.ConditionFalse))
-		g.Expect(sidecar.Reason).To(Equal(apiv1.ReasonDisabled))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-
-	// Route ConfigMap should still exist (decoupled from sidecar).
-	g.Eventually(func(g Gomega) {
-		var cm corev1.ConfigMap
-		g.Expect(testClient.Get(testCtx, client.ObjectKey{Name: resourceName, Namespace: ns.Name}, &cm)).To(Succeed())
-		g.Expect(cm.Labels["app.kubernetes.io/component"]).To(Equal("routes"))
-	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
-
-	// Sidecar ServiceAccount should be deleted.
-	g.Eventually(func(g Gomega) {
-		err := testClient.Get(testCtx, client.ObjectKey{Name: resourceName, Namespace: ns.Name}, &corev1.ServiceAccount{})
-		g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "sidecar ServiceAccount should be deleted")
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
@@ -4434,8 +3834,7 @@ func TestGatewayReconciler_TransientError(t *testing.T) {
 		NewCloudflareClient: func(_ cloudflare.ClientConfig) (cloudflare.Client, error) {
 			return nil, fmt.Errorf("should not be called")
 		},
-		CloudflaredImage: controller.DefaultCloudflaredImage,
-		SidecarImage:     "test-sidecar-image:latest",
+		TunnelImage: "test-tunnel-image:latest",
 	}
 
 	result, err := r.Reconcile(testCtx, ctrl.Request{
@@ -4500,8 +3899,7 @@ func TestGatewayReconciler_TransientErrorStatusPatchFails(t *testing.T) {
 		NewCloudflareClient: func(_ cloudflare.ClientConfig) (cloudflare.Client, error) {
 			return nil, fmt.Errorf("should not be called")
 		},
-		CloudflaredImage: controller.DefaultCloudflaredImage,
-		SidecarImage:     "test-sidecar-image:latest",
+		TunnelImage: "test-tunnel-image:latest",
 	}
 
 	result, err := r.Reconcile(testCtx, ctrl.Request{
@@ -4579,8 +3977,7 @@ func TestGatewayReconciler_FinalizeErrorStatusPatchFails(t *testing.T) {
 		NewCloudflareClient: func(_ cloudflare.ClientConfig) (cloudflare.Client, error) {
 			return nil, fmt.Errorf("should not be called")
 		},
-		CloudflaredImage: controller.DefaultCloudflaredImage,
-		SidecarImage:     "test-sidecar-image:latest",
+		TunnelImage: "test-tunnel-image:latest",
 	}
 
 	result, err := r.Reconcile(testCtx, ctrl.Request{
@@ -4588,102 +3985,4 @@ func TestGatewayReconciler_FinalizeErrorStatusPatchFails(t *testing.T) {
 	})
 	g.Expect(err).To(MatchError(ContainSubstring(longErr[:50])))
 	g.Expect(result).To(Equal(ctrl.Result{}))
-}
-
-func TestGatewayReconciler_SidecarExplicitlyEnabledWithoutImage(t *testing.T) {
-	g := NewWithT(t)
-
-	ns := createTestNamespace(g)
-	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
-
-	createTestSecret(g, ns.Name)
-	gc := createTestGatewayClass(g, "test-gc-sidecar-no-image", ns.Name)
-	t.Cleanup(func() {
-		var latest gatewayv1.GatewayClass
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-	waitForGatewayClassReady(g, gc)
-
-	params := createTestParameters(g, "test-sidecar-no-image-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
-		Tunnel: &apiv1.TunnelConfig{
-			Sidecar: &apiv1.SidecarConfig{
-				Enabled: new(true),
-			},
-		},
-	})
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-gw-sidecar-no-image",
-			Namespace: ns.Name,
-		},
-		Spec: gatewayv1.GatewaySpec{
-			GatewayClassName: gatewayv1.ObjectName(gc.Name),
-			Infrastructure: &gatewayv1.GatewayInfrastructure{
-				ParametersRef: parametersRef(params.Name),
-			},
-			Listeners: []gatewayv1.Listener{
-				{
-					Name:     "https",
-					Protocol: gatewayv1.HTTPSProtocolType,
-					Port:     443,
-				},
-			},
-		},
-	}
-	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
-	t.Cleanup(func() {
-		var latest gatewayv1.Gateway
-		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
-			_ = testClient.Delete(testCtx, &latest)
-		}
-	})
-
-	// Create a reconciler with no sidecar image configured.
-	// Use a faultClient with listHandler that bypasses field-index-dependent
-	// GatewayClass list calls (indexes are only in the manager cache).
-	fc := &faultClient{
-		Client: testClient,
-		listHandler: func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
-			switch list.(type) {
-			case *gatewayv1.GatewayClassList, *gatewayv1.HTTPRouteList:
-				return nil // Return empty list, skip field-index lookup.
-			}
-			return testClient.List(ctx, list, opts...)
-		},
-	}
-	r := &controller.GatewayReconciler{
-		Client:        fc,
-		EventRecorder: noopEventRecorder{},
-		ResourceManager: ssa.NewResourceManager(fc, nil, ssa.Owner{
-			Field: apiv1.ShortControllerName,
-		}),
-		NewCloudflareClient: func(_ cloudflare.ClientConfig) (cloudflare.Client, error) {
-			return testMock, nil
-		},
-		CloudflaredImage: controller.DefaultCloudflaredImage,
-		SidecarImage:     "", // No sidecar image configured.
-	}
-
-	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gw)}
-
-	// First reconcile adds the finalizer.
-	result, err := r.Reconcile(testCtx, req)
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(BeNumerically(">", 0))
-
-	// Second reconcile hits the terminal validation error.
-	result, err = r.Reconcile(testCtx, req)
-	g.Expect(err).To(MatchError(ContainSubstring("sidecar explicitly enabled but no sidecar image is configured")))
-	g.Expect(result).To(Equal(ctrl.Result{}))
-
-	// Verify status was patched with Ready=False (terminal error).
-	var latest gatewayv1.Gateway
-	g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest)).To(Succeed())
-	ready := conditions.Find(latest.Status.Conditions, apiv1.ConditionReady)
-	g.Expect(ready).NotTo(BeNil())
-	g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(ready.Reason).To(Equal(apiv1.ReasonReconciliationFailed))
-	g.Expect(ready.Message).To(ContainSubstring("sidecar explicitly enabled but no sidecar image is configured"))
 }

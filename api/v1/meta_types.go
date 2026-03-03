@@ -96,8 +96,8 @@ const (
 	// LabelAppComponentRoutes is the app.kubernetes.io/component value for the route ConfigMap.
 	LabelAppComponentRoutes = "routes"
 
-	// LabelAppComponentSidecar is the app.kubernetes.io/component value for sidecar RBAC resources.
-	LabelAppComponentSidecar = "sidecar"
+	// LabelAppComponentTunnel is the app.kubernetes.io/component value for tunnel RBAC resources.
+	LabelAppComponentTunnel = "tunnel"
 )
 
 // Annotation values.

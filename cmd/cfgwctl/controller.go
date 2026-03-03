@@ -60,130 +60,129 @@ func getGatewayAPIVersion() (*semver.Version, error) {
 	return nil, fmt.Errorf("gateway-api dependency not found in build info")
 }
 
-func newControllerCmd() *cobra.Command {
-	var (
-		clusterName      string
-		cloudflaredImage string
-		sidecarImage     string
-	)
+type controllerOptions struct {
+	clusterName           string
+	tunnelImage           string
+	logOptions            logger.Options
+	leaderElectionOptions leaderelection.Options
+}
 
-	logOptions := logger.Options{}
-	leaderElectionOptions := leaderelection.Options{}
+func newControllerCmd() *cobra.Command {
+	opts := &controllerOptions{}
 
 	cmd := &cobra.Command{
 		Use:   "controller",
 		Short: "Run the Kubernetes controller",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-
-			apiv1.SetClusterName(clusterName)
-
-			// Enable leader election by default.
-			if !cmd.Flags().Changed("enable-leader-election") {
-				leaderElectionOptions.Enable = true
-			}
-
-			logger.SetLogger(logger.NewLogger(logOptions))
-
-			setupLog := ctrl.Log.WithName("setup")
-
-			gatewayAPIVersion, err := getGatewayAPIVersion()
-			if err != nil {
-				return fmt.Errorf("error determining gateway-api version: %w", err)
-			}
-
-			mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-				Scheme: controllerScheme,
-				Metrics: metricsserver.Options{
-					BindAddress: ":8080",
-				},
-				HealthProbeBindAddress:        ":8081",
-				LeaderElection:                leaderElectionOptions.Enable,
-				LeaderElectionID:              apiv1.ShortControllerName,
-				LeaderElectionReleaseOnCancel: leaderElectionOptions.ReleaseOnCancel,
-				LeaseDuration:                 &leaderElectionOptions.LeaseDuration,
-				RenewDeadline:                 &leaderElectionOptions.RenewDeadline,
-				RetryPeriod:                   &leaderElectionOptions.RetryPeriod,
-				Client: ctrlclient.Options{
-					Cache: &ctrlclient.CacheOptions{
-						DisableFor: []ctrlclient.Object{
-							&corev1.Secret{},
-							&corev1.ConfigMap{},
-							&apiextensionsv1.CustomResourceDefinition{},
-						},
-					},
-				},
-			})
-			if err != nil {
-				setupLog.Error(err, "unable to create manager")
-				return err
-			}
-
-			controller.SetupIndexes(ctx, mgr)
-
-			client := mgr.GetClient()
-			eventRecorder := mgr.GetEventRecorder(apiv1.ShortControllerName)
-			resourceManager := ssa.NewResourceManager(client, nil, ssa.Owner{
-				Field: apiv1.ShortControllerName,
-			})
-
-			if err := (&controller.GatewayClassReconciler{
-				Client:            client,
-				EventRecorder:     eventRecorder,
-				GatewayAPIVersion: *gatewayAPIVersion,
-			}).SetupWithManager(mgr); err != nil {
-				setupLog.Error(err, "unable to create controller", "controller", "GatewayClass")
-				return err
-			}
-
-			if err := (&controller.GatewayReconciler{
-				Client:          client,
-				EventRecorder:   eventRecorder,
-				ResourceManager: resourceManager,
-				NewCloudflareClient: func(cfg cloudflare.ClientConfig) (cloudflare.Client, error) {
-					c, err := cloudflare.NewClient(cfg)
-					if err != nil {
-						return nil, err
-					}
-					return cloudflare.WithRetry(c), nil
-				},
-				CloudflaredImage: cloudflaredImage,
-				SidecarImage:     sidecarImage,
-			}).SetupWithManager(mgr); err != nil {
-				setupLog.Error(err, "unable to create controller", "controller", "Gateway")
-				return err
-			}
-
-			if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
-				setupLog.Error(err, "unable to set up health check")
-				return err
-			}
-			if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-				setupLog.Error(err, "unable to set up ready check")
-				return err
-			}
-
-			if err := mgr.Start(ctx); err != nil {
-				setupLog.Error(err, "unable to start controller")
-				return err
-			}
-
-			return nil
-		},
+		RunE:  opts.run,
 	}
 
-	cmd.Flags().StringVar(&clusterName, "cluster-name", "",
+	cmd.Flags().StringVar(&opts.clusterName, "cluster-name", "",
 		"unique cluster identifier for deterministic Cloudflare resource naming (required)")
 	cobra.CheckErr(cmd.MarkFlagRequired("cluster-name"))
 
-	cmd.Flags().StringVar(&cloudflaredImage, "cloudflared-image",
-		controller.DefaultCloudflaredImage, "cloudflared container image")
+	cmd.Flags().StringVar(&opts.tunnelImage, "tunnel-image", "",
+		"tunnel container image (required)")
+	cobra.CheckErr(cmd.MarkFlagRequired("tunnel-image"))
 
-	cmd.Flags().StringVar(&sidecarImage, "sidecar-image", "",
-		"sidecar reverse proxy container image")
-
-	logOptions.BindFlags(cmd.Flags())
-	leaderElectionOptions.BindFlags(cmd.Flags())
+	opts.logOptions.BindFlags(cmd.Flags())
+	opts.leaderElectionOptions.BindFlags(cmd.Flags())
 
 	return cmd
+}
+
+func (o *controllerOptions) run(cmd *cobra.Command, _ []string) error {
+	ctx := cmd.Context()
+
+	apiv1.SetClusterName(o.clusterName)
+
+	// Enable leader election by default.
+	if !cmd.Flags().Changed("enable-leader-election") {
+		o.leaderElectionOptions.Enable = true
+	}
+
+	logger.SetLogger(logger.NewLogger(o.logOptions))
+
+	setupLog := ctrl.Log.WithName("setup")
+
+	gatewayAPIVersion, err := getGatewayAPIVersion()
+	if err != nil {
+		return fmt.Errorf("error determining gateway-api version: %w", err)
+	}
+
+	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+		Scheme: controllerScheme,
+		Metrics: metricsserver.Options{
+			BindAddress: ":8080",
+		},
+		HealthProbeBindAddress:        ":8081",
+		LeaderElection:                o.leaderElectionOptions.Enable,
+		LeaderElectionID:              apiv1.ShortControllerName,
+		LeaderElectionReleaseOnCancel: o.leaderElectionOptions.ReleaseOnCancel,
+		LeaseDuration:                 &o.leaderElectionOptions.LeaseDuration,
+		RenewDeadline:                 &o.leaderElectionOptions.RenewDeadline,
+		RetryPeriod:                   &o.leaderElectionOptions.RetryPeriod,
+		Client: ctrlclient.Options{
+			Cache: &ctrlclient.CacheOptions{
+				DisableFor: []ctrlclient.Object{
+					&corev1.Secret{},
+					&corev1.ConfigMap{},
+					&apiextensionsv1.CustomResourceDefinition{},
+				},
+			},
+		},
+	})
+	if err != nil {
+		setupLog.Error(err, "unable to create manager")
+		return err
+	}
+
+	controller.SetupIndexes(ctx, mgr)
+
+	client := mgr.GetClient()
+	eventRecorder := mgr.GetEventRecorder(apiv1.ShortControllerName)
+	resourceManager := ssa.NewResourceManager(client, nil, ssa.Owner{
+		Field: apiv1.ShortControllerName,
+	})
+
+	if err := (&controller.GatewayClassReconciler{
+		Client:            client,
+		EventRecorder:     eventRecorder,
+		GatewayAPIVersion: *gatewayAPIVersion,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "GatewayClass")
+		return err
+	}
+
+	if err := (&controller.GatewayReconciler{
+		Client:          client,
+		EventRecorder:   eventRecorder,
+		ResourceManager: resourceManager,
+		TunnelImage:     o.tunnelImage,
+		NewCloudflareClient: func(cfg cloudflare.ClientConfig) (cloudflare.Client, error) {
+			c, err := cloudflare.NewClient(cfg)
+			if err != nil {
+				return nil, err
+			}
+			return cloudflare.WithRetry(c), nil
+		},
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Gateway")
+		return err
+	}
+
+	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
+		setupLog.Error(err, "unable to set up health check")
+		return err
+	}
+	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+		setupLog.Error(err, "unable to set up ready check")
+		return err
+	}
+
+	if err := mgr.Start(ctx); err != nil {
+		setupLog.Error(err, "unable to start controller")
+		return err
+	}
+
+	return nil
 }

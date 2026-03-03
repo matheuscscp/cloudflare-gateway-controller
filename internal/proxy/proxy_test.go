@@ -1,7 +1,7 @@
 // Copyright 2026 Matheus Pimenta.
 // SPDX-License-Identifier: AGPL-3.0
 
-package sidecar_test
+package proxy_test
 
 import (
 	"fmt"
@@ -15,10 +15,10 @@ import (
 
 	. "github.com/onsi/gomega"
 
-	"github.com/matheuscscp/cloudflare-gateway-controller/internal/sidecar"
+	"github.com/matheuscscp/cloudflare-gateway-controller/internal/proxy"
 )
 
-func setConfig(t *testing.T, p *sidecar.Proxy, cfg *sidecar.Config) {
+func setConfig(t *testing.T, p *proxy.Proxy, cfg *proxy.Config) {
 	t.Helper()
 	g := NewWithT(t)
 	g.Expect(cfg.Parse()).To(Succeed())
@@ -33,10 +33,10 @@ func TestProxy_HostnameRouting(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := &sidecar.Proxy{}
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
-			{Hostname: "app.example.com", Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}}},
+	p := &proxy.Proxy{}
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
+			{Hostname: "app.example.com", Backends: []proxy.Backend{{Service: backend.URL, Weight: 1}}},
 		},
 	})
 
@@ -50,10 +50,10 @@ func TestProxy_HostnameRouting(t *testing.T) {
 func TestProxy_NoMatch404(t *testing.T) {
 	g := NewWithT(t)
 
-	p := &sidecar.Proxy{}
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
-			{Hostname: "app.example.com", Backends: []sidecar.Backend{{Service: "http://backend:8080", Weight: 1}}},
+	p := &proxy.Proxy{}
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
+			{Hostname: "app.example.com", Backends: []proxy.Backend{{Service: "http://backend:8080", Weight: 1}}},
 		},
 	})
 
@@ -76,11 +76,11 @@ func TestProxy_LongestPathPrefixMatch(t *testing.T) {
 	}))
 	defer rootBackend.Close()
 
-	p := &sidecar.Proxy{}
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
-			{Hostname: "app.example.com", PathPrefix: "/", Backends: []sidecar.Backend{{Service: rootBackend.URL, Weight: 1}}},
-			{Hostname: "app.example.com", PathPrefix: "/api", Backends: []sidecar.Backend{{Service: apiBackend.URL, Weight: 1}}},
+	p := &proxy.Proxy{}
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
+			{Hostname: "app.example.com", PathPrefix: "/", Backends: []proxy.Backend{{Service: rootBackend.URL, Weight: 1}}},
+			{Hostname: "app.example.com", PathPrefix: "/api", Backends: []proxy.Backend{{Service: apiBackend.URL, Weight: 1}}},
 		},
 	})
 
@@ -102,13 +102,13 @@ func TestProxy_LongestPathPrefixMatch(t *testing.T) {
 func TestProxy_NoConfig503(t *testing.T) {
 	g := NewWithT(t)
 
-	p := &sidecar.Proxy{}
+	p := &proxy.Proxy{}
 
 	req := httptest.NewRequest("GET", "http://app.example.com/", nil)
 	rec := httptest.NewRecorder()
 	p.ServeHTTP(rec, req)
 	g.Expect(rec.Code).To(Equal(http.StatusServiceUnavailable))
-	g.Expect(rec.Header().Get(sidecar.HeaderConfigNotLoaded)).To(Equal("true"))
+	g.Expect(rec.Header().Get(proxy.HeaderConfigNotLoaded)).To(Equal("true"))
 }
 
 func TestProxy_HostHeaderForwarded(t *testing.T) {
@@ -121,10 +121,10 @@ func TestProxy_HostHeaderForwarded(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := &sidecar.Proxy{}
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
-			{Hostname: "app.example.com", Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}}},
+	p := &proxy.Proxy{}
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
+			{Hostname: "app.example.com", Backends: []proxy.Backend{{Service: backend.URL, Weight: 1}}},
 		},
 	})
 
@@ -139,10 +139,10 @@ func TestProxy_HostHeaderForwarded(t *testing.T) {
 func TestParse_InvalidURL(t *testing.T) {
 	g := NewWithT(t)
 
-	cfg := &sidecar.Config{
-		Routes: []sidecar.Route{
-			{Hostname: "app.example.com", Backends: []sidecar.Backend{{Service: "http://valid:8080", Weight: 1}}},
-			{Hostname: "bad.example.com", Backends: []sidecar.Backend{{Service: "://invalid", Weight: 1}}},
+	cfg := &proxy.Config{
+		Routes: []proxy.Route{
+			{Hostname: "app.example.com", Backends: []proxy.Backend{{Service: "http://valid:8080", Weight: 1}}},
+			{Hostname: "bad.example.com", Backends: []proxy.Backend{{Service: "://invalid", Weight: 1}}},
 		},
 	}
 	err := cfg.Parse()
@@ -153,12 +153,12 @@ func TestParse_InvalidURL(t *testing.T) {
 func TestParse_InvalidAbsoluteTimeout(t *testing.T) {
 	g := NewWithT(t)
 
-	cfg := &sidecar.Config{
-		Routes: []sidecar.Route{
+	cfg := &proxy.Config{
+		Routes: []proxy.Route{
 			{
 				Hostname: "app.example.com",
-				Backends: []sidecar.Backend{{Service: "http://valid:8080", Weight: 1}},
-				SessionPersistence: &sidecar.SessionPersistence{
+				Backends: []proxy.Backend{{Service: "http://valid:8080", Weight: 1}},
+				SessionPersistence: &proxy.SessionPersistence{
 					Type:            "Cookie",
 					SessionName:     "test",
 					AbsoluteTimeout: "not-a-duration",
@@ -174,12 +174,12 @@ func TestParse_InvalidAbsoluteTimeout(t *testing.T) {
 func TestParse_InvalidIdleTimeout(t *testing.T) {
 	g := NewWithT(t)
 
-	cfg := &sidecar.Config{
-		Routes: []sidecar.Route{
+	cfg := &proxy.Config{
+		Routes: []proxy.Route{
 			{
 				Hostname: "app.example.com",
-				Backends: []sidecar.Backend{{Service: "http://valid:8080", Weight: 1}},
-				SessionPersistence: &sidecar.SessionPersistence{
+				Backends: []proxy.Backend{{Service: "http://valid:8080", Weight: 1}},
+				SessionPersistence: &proxy.SessionPersistence{
 					Type:        "Cookie",
 					SessionName: "test",
 					IdleTimeout: "invalid",
@@ -202,10 +202,10 @@ func TestProxy_DisableKeepAlives(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := &sidecar.Proxy{}
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
-			{Hostname: "app.example.com", Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}}},
+	p := &proxy.Proxy{}
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
+			{Hostname: "app.example.com", Backends: []proxy.Backend{{Service: backend.URL, Weight: 1}}},
 		},
 	})
 
@@ -227,10 +227,10 @@ func TestProxy_PathForwardedAsIs(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := &sidecar.Proxy{}
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
-			{Hostname: "app.example.com", PathPrefix: "/api", Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}}},
+	p := &proxy.Proxy{}
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
+			{Hostname: "app.example.com", PathPrefix: "/api", Backends: []proxy.Backend{{Service: backend.URL, Weight: 1}}},
 		},
 	})
 
@@ -250,10 +250,10 @@ func TestProxy_HostWithPort(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := &sidecar.Proxy{}
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
-			{Hostname: "app.example.com", Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}}},
+	p := &proxy.Proxy{}
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
+			{Hostname: "app.example.com", Backends: []proxy.Backend{{Service: backend.URL, Weight: 1}}},
 		},
 	})
 
@@ -274,10 +274,10 @@ func TestProxy_SingleBackend(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := &sidecar.Proxy{}
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
-			{Hostname: "app.example.com", Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}}},
+	p := &proxy.Proxy{}
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
+			{Hostname: "app.example.com", Backends: []proxy.Backend{{Service: backend.URL, Weight: 1}}},
 		},
 	})
 
@@ -306,10 +306,10 @@ func TestProxy_WeightedBackends(t *testing.T) {
 	}))
 	defer backendB.Close()
 
-	p := &sidecar.Proxy{}
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
-			{Hostname: "app.example.com", Backends: []sidecar.Backend{
+	p := &proxy.Proxy{}
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
+			{Hostname: "app.example.com", Backends: []proxy.Backend{
 				{Service: backendA.URL, Weight: 80},
 				{Service: backendB.URL, Weight: 20},
 			}},
@@ -351,10 +351,10 @@ func TestProxy_ZeroWeightSkipped(t *testing.T) {
 	}))
 	defer backendB.Close()
 
-	p := &sidecar.Proxy{}
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
-			{Hostname: "app.example.com", Backends: []sidecar.Backend{
+	p := &proxy.Proxy{}
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
+			{Hostname: "app.example.com", Backends: []proxy.Backend{
 				{Service: backendA.URL, Weight: 0},
 				{Service: backendB.URL, Weight: 1},
 			}},
@@ -376,10 +376,10 @@ func TestProxy_ZeroWeightSkipped(t *testing.T) {
 func TestProxy_AllZeroWeights502(t *testing.T) {
 	g := NewWithT(t)
 
-	p := &sidecar.Proxy{}
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
-			{Hostname: "app.example.com", Backends: []sidecar.Backend{
+	p := &proxy.Proxy{}
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
+			{Hostname: "app.example.com", Backends: []proxy.Backend{
 				{Service: "http://backend:8080", Weight: 0},
 			}},
 		},
@@ -407,16 +407,16 @@ func TestProxy_CookieSessionPersistence(t *testing.T) {
 	}))
 	defer backendB.Close()
 
-	p := &sidecar.Proxy{}
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
+	p := &proxy.Proxy{}
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
 			{
 				Hostname: "app.example.com",
-				Backends: []sidecar.Backend{
+				Backends: []proxy.Backend{
 					{Service: backendA.URL, Weight: 50},
 					{Service: backendB.URL, Weight: 50},
 				},
-				SessionPersistence: &sidecar.SessionPersistence{
+				SessionPersistence: &proxy.SessionPersistence{
 					Type:               "Cookie",
 					SessionName:        "cgw-session",
 					CookieLifetimeType: "Session",
@@ -464,17 +464,17 @@ func TestProxy_CookieSessionPersistence_BackendRemoved(t *testing.T) {
 	}))
 	defer backendB.Close()
 
-	p := &sidecar.Proxy{}
-	sp := &sidecar.SessionPersistence{
+	p := &proxy.Proxy{}
+	sp := &proxy.SessionPersistence{
 		Type:               "Cookie",
 		SessionName:        "cgw-session",
 		CookieLifetimeType: "Session",
 	}
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
 			{
 				Hostname:           "app.example.com",
-				Backends:           []sidecar.Backend{{Service: backendA.URL, Weight: 50}, {Service: backendB.URL, Weight: 50}},
+				Backends:           []proxy.Backend{{Service: backendA.URL, Weight: 50}, {Service: backendB.URL, Weight: 50}},
 				SessionPersistence: sp,
 			},
 		},
@@ -496,11 +496,11 @@ func TestProxy_CookieSessionPersistence_BackendRemoved(t *testing.T) {
 	} else {
 		remainingURL = backendA.URL
 	}
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
 			{
 				Hostname:           "app.example.com",
-				Backends:           []sidecar.Backend{{Service: remainingURL, Weight: 1}},
+				Backends:           []proxy.Backend{{Service: remainingURL, Weight: 1}},
 				SessionPersistence: sp,
 			},
 		},
@@ -524,15 +524,15 @@ func TestProxy_CookieSessionPersistence_PermanentCookie(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := &sidecar.Proxy{}
+	p := &proxy.Proxy{}
 
 	// Permanent cookie with AbsoluteTimeout should have Max-Age.
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
 			{
 				Hostname: "app.example.com",
-				Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}},
-				SessionPersistence: &sidecar.SessionPersistence{
+				Backends: []proxy.Backend{{Service: backend.URL, Weight: 1}},
+				SessionPersistence: &proxy.SessionPersistence{
 					Type:               "Cookie",
 					SessionName:        "cgw-session",
 					AbsoluteTimeout:    "1h",
@@ -551,12 +551,12 @@ func TestProxy_CookieSessionPersistence_PermanentCookie(t *testing.T) {
 	g.Expect(cookies[0].MaxAge).To(Equal(3600))
 
 	// Session cookie should NOT have Max-Age.
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
 			{
 				Hostname: "app.example.com",
-				Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}},
-				SessionPersistence: &sidecar.SessionPersistence{
+				Backends: []proxy.Backend{{Service: backend.URL, Weight: 1}},
+				SessionPersistence: &proxy.SessionPersistence{
 					Type:               "Cookie",
 					SessionName:        "cgw-session",
 					CookieLifetimeType: "Session",
@@ -582,13 +582,13 @@ func TestProxy_CookieSessionPersistence_AbsoluteTimeout(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := &sidecar.Proxy{}
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
+	p := &proxy.Proxy{}
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
 			{
 				Hostname: "app.example.com",
-				Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}},
-				SessionPersistence: &sidecar.SessionPersistence{
+				Backends: []proxy.Backend{{Service: backend.URL, Weight: 1}},
+				SessionPersistence: &proxy.SessionPersistence{
 					Type:               "Cookie",
 					SessionName:        "cgw-session",
 					AbsoluteTimeout:    "1s",
@@ -629,13 +629,13 @@ func TestProxy_CookieSessionPersistence_IdleTimeout(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := &sidecar.Proxy{}
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
+	p := &proxy.Proxy{}
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
 			{
 				Hostname: "app.example.com",
-				Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}},
-				SessionPersistence: &sidecar.SessionPersistence{
+				Backends: []proxy.Backend{{Service: backend.URL, Weight: 1}},
+				SessionPersistence: &proxy.SessionPersistence{
 					Type:               "Cookie",
 					SessionName:        "cgw-session",
 					IdleTimeout:        "1s",
@@ -688,13 +688,13 @@ func TestProxy_CookieSessionPersistence_BothTimeouts(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := &sidecar.Proxy{}
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
+	p := &proxy.Proxy{}
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
 			{
 				Hostname: "app.example.com",
-				Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}},
-				SessionPersistence: &sidecar.SessionPersistence{
+				Backends: []proxy.Backend{{Service: backend.URL, Weight: 1}},
+				SessionPersistence: &proxy.SessionPersistence{
 					Type:               "Cookie",
 					SessionName:        "cgw-session",
 					AbsoluteTimeout:    "1h",
@@ -768,13 +768,13 @@ func TestProxy_CookieSessionPersistence_IdleTimeoutReissue(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := &sidecar.Proxy{}
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
+	p := &proxy.Proxy{}
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
 			{
 				Hostname: "app.example.com",
-				Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}},
-				SessionPersistence: &sidecar.SessionPersistence{
+				Backends: []proxy.Backend{{Service: backend.URL, Weight: 1}},
+				SessionPersistence: &proxy.SessionPersistence{
 					Type:               "Cookie",
 					SessionName:        "cgw-session",
 					IdleTimeout:        "10m",
@@ -828,13 +828,13 @@ func TestProxy_SessionPersistence_MalformedCookieValues(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := &sidecar.Proxy{}
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
+	p := &proxy.Proxy{}
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
 			{
 				Hostname: "app.example.com",
-				Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}},
-				SessionPersistence: &sidecar.SessionPersistence{
+				Backends: []proxy.Backend{{Service: backend.URL, Weight: 1}},
+				SessionPersistence: &proxy.SessionPersistence{
 					Type:               "Cookie",
 					SessionName:        "cgw-session",
 					CookieLifetimeType: "Session",
@@ -892,13 +892,13 @@ func TestProxy_CookieSessionPersistence_PermanentIdleTimeoutOnly(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := &sidecar.Proxy{}
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
+	p := &proxy.Proxy{}
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
 			{
 				Hostname: "app.example.com",
-				Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}},
-				SessionPersistence: &sidecar.SessionPersistence{
+				Backends: []proxy.Backend{{Service: backend.URL, Weight: 1}},
+				SessionPersistence: &proxy.SessionPersistence{
 					Type:               "Cookie",
 					SessionName:        "cgw-session",
 					IdleTimeout:        "5m",
@@ -925,13 +925,13 @@ func TestProxy_CookieSessionPersistence_PermanentNoTimeouts(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := &sidecar.Proxy{}
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
+	p := &proxy.Proxy{}
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
 			{
 				Hostname: "app.example.com",
-				Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}},
-				SessionPersistence: &sidecar.SessionPersistence{
+				Backends: []proxy.Backend{{Service: backend.URL, Weight: 1}},
+				SessionPersistence: &proxy.SessionPersistence{
 					Type:               "Cookie",
 					SessionName:        "cgw-session",
 					CookieLifetimeType: "Permanent",
@@ -957,13 +957,13 @@ func TestProxy_CookieSessionPersistence_BothTimeoutsRemainingSmaller(t *testing.
 	}))
 	defer backend.Close()
 
-	p := &sidecar.Proxy{}
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
+	p := &proxy.Proxy{}
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
 			{
 				Hostname: "app.example.com",
-				Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}},
-				SessionPersistence: &sidecar.SessionPersistence{
+				Backends: []proxy.Backend{{Service: backend.URL, Weight: 1}},
+				SessionPersistence: &proxy.SessionPersistence{
 					Type:               "Cookie",
 					SessionName:        "cgw-session",
 					AbsoluteTimeout:    "1h",
@@ -1012,13 +1012,13 @@ func TestProxy_HeaderSessionPersistence_UnknownBackend(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := &sidecar.Proxy{}
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
+	p := &proxy.Proxy{}
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
 			{
 				Hostname: "app.example.com",
-				Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}},
-				SessionPersistence: &sidecar.SessionPersistence{
+				Backends: []proxy.Backend{{Service: backend.URL, Weight: 1}},
+				SessionPersistence: &proxy.SessionPersistence{
 					Type:        "Header",
 					SessionName: "X-Session",
 				},
@@ -1053,16 +1053,16 @@ func TestProxy_HeaderSessionPersistence(t *testing.T) {
 	}))
 	defer backendB.Close()
 
-	p := &sidecar.Proxy{}
-	cfg := &sidecar.Config{
-		Routes: []sidecar.Route{
+	p := &proxy.Proxy{}
+	cfg := &proxy.Config{
+		Routes: []proxy.Route{
 			{
 				Hostname: "app.example.com",
-				Backends: []sidecar.Backend{
+				Backends: []proxy.Backend{
 					{Service: backendA.URL, Weight: 50},
 					{Service: backendB.URL, Weight: 50},
 				},
-				SessionPersistence: &sidecar.SessionPersistence{
+				SessionPersistence: &proxy.SessionPersistence{
 					Type:        "Header",
 					SessionName: "X-Session",
 				},
@@ -1091,15 +1091,15 @@ func TestProxy_HeaderSessionPersistence(t *testing.T) {
 
 	// We'll do it the simple way: send requests with each backend's known ID.
 	// Parse config to compute IDs.
-	parsedCfg := &sidecar.Config{
-		Routes: []sidecar.Route{
+	parsedCfg := &proxy.Config{
+		Routes: []proxy.Route{
 			{
 				Hostname: "app.example.com",
-				Backends: []sidecar.Backend{
+				Backends: []proxy.Backend{
 					{Service: backendA.URL, Weight: 50},
 					{Service: backendB.URL, Weight: 50},
 				},
-				SessionPersistence: &sidecar.SessionPersistence{
+				SessionPersistence: &proxy.SessionPersistence{
 					Type:        "Header",
 					SessionName: "X-Session",
 				},
@@ -1144,15 +1144,15 @@ func TestProxy_HeaderSessionPersistence(t *testing.T) {
 	// We'll use the cookie response from a temporary cookie config to get the ID.
 
 	// Set cookie config temporarily.
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
 			{
 				Hostname: "app.example.com",
-				Backends: []sidecar.Backend{
+				Backends: []proxy.Backend{
 					{Service: backendA.URL, Weight: 50},
 					{Service: backendB.URL, Weight: 50},
 				},
-				SessionPersistence: &sidecar.SessionPersistence{
+				SessionPersistence: &proxy.SessionPersistence{
 					Type:               "Cookie",
 					SessionName:        "discover",
 					CookieLifetimeType: "Session",
@@ -1181,15 +1181,15 @@ func TestProxy_HeaderSessionPersistence(t *testing.T) {
 	g.Expect(backendAID).NotTo(BeEmpty())
 
 	// Switch back to header-based config.
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
 			{
 				Hostname: "app.example.com",
-				Backends: []sidecar.Backend{
+				Backends: []proxy.Backend{
 					{Service: backendA.URL, Weight: 50},
 					{Service: backendB.URL, Weight: 50},
 				},
-				SessionPersistence: &sidecar.SessionPersistence{
+				SessionPersistence: &proxy.SessionPersistence{
 					Type:        "Header",
 					SessionName: "X-Session",
 				},
@@ -1224,13 +1224,13 @@ func TestProxy_SessionPersistence_InvalidToken(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := &sidecar.Proxy{}
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
+	p := &proxy.Proxy{}
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
 			{
 				Hostname: "app.example.com",
-				Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}},
-				SessionPersistence: &sidecar.SessionPersistence{
+				Backends: []proxy.Backend{{Service: backend.URL, Weight: 1}},
+				SessionPersistence: &proxy.SessionPersistence{
 					Type:               "Cookie",
 					SessionName:        "cgw-session",
 					CookieLifetimeType: "Session",
@@ -1269,18 +1269,18 @@ func TestProxy_SessionPersistence_ZeroWeightBackend(t *testing.T) {
 	}))
 	defer backendB.Close()
 
-	sp := &sidecar.SessionPersistence{
+	sp := &proxy.SessionPersistence{
 		Type:               "Cookie",
 		SessionName:        "cgw-session",
 		CookieLifetimeType: "Session",
 	}
 
-	p := &sidecar.Proxy{}
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
+	p := &proxy.Proxy{}
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
 			{
 				Hostname:           "app.example.com",
-				Backends:           []sidecar.Backend{{Service: backendA.URL, Weight: 50}, {Service: backendB.URL, Weight: 50}},
+				Backends:           []proxy.Backend{{Service: backendA.URL, Weight: 50}, {Service: backendB.URL, Weight: 50}},
 				SessionPersistence: sp,
 			},
 		},
@@ -1296,14 +1296,14 @@ func TestProxy_SessionPersistence_ZeroWeightBackend(t *testing.T) {
 	pinnedBody := rec.Body.String()
 
 	// Set pinned backend to weight 0 in config reload.
-	var backends []sidecar.Backend
+	var backends []proxy.Backend
 	if pinnedBody == "a" {
-		backends = []sidecar.Backend{{Service: backendA.URL, Weight: 0}, {Service: backendB.URL, Weight: 50}}
+		backends = []proxy.Backend{{Service: backendA.URL, Weight: 0}, {Service: backendB.URL, Weight: 50}}
 	} else {
-		backends = []sidecar.Backend{{Service: backendA.URL, Weight: 50}, {Service: backendB.URL, Weight: 0}}
+		backends = []proxy.Backend{{Service: backendA.URL, Weight: 50}, {Service: backendB.URL, Weight: 0}}
 	}
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
 			{
 				Hostname:           "app.example.com",
 				Backends:           backends,
@@ -1330,12 +1330,12 @@ func TestProxy_SessionPersistence_NoPersistenceField(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := &sidecar.Proxy{}
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
+	p := &proxy.Proxy{}
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
 			{
 				Hostname: "app.example.com",
-				Backends: []sidecar.Backend{{Service: backend.URL, Weight: 1}},
+				Backends: []proxy.Backend{{Service: backend.URL, Weight: 1}},
 				// No SessionPersistence
 			},
 		},
@@ -1360,14 +1360,14 @@ func TestProxy_CookieSessionPersistence_PathScope(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := &sidecar.Proxy{}
-	setConfig(t, p, &sidecar.Config{
-		Routes: []sidecar.Route{
+	p := &proxy.Proxy{}
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
 			{
 				Hostname:   "app.example.com",
 				PathPrefix: "/api",
-				Backends:   []sidecar.Backend{{Service: backend.URL, Weight: 1}},
-				SessionPersistence: &sidecar.SessionPersistence{
+				Backends:   []proxy.Backend{{Service: backend.URL, Weight: 1}},
+				SessionPersistence: &proxy.SessionPersistence{
 					Type:               "Cookie",
 					SessionName:        "cgw-session",
 					CookieLifetimeType: "Session",

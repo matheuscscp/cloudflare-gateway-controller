@@ -3,103 +3,122 @@
 
 package main
 
-import "github.com/spf13/cobra"
+import (
+	"fmt"
+	"net/http"
+	"os"
 
-func newTunnelCmd(credentialsFile *string) *cobra.Command {
+	"github.com/spf13/cobra"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+
+	cfclient "github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
+	"github.com/matheuscscp/cloudflare-gateway-controller/internal/proxy"
+)
+
+type tunnelOptions struct {
+	namespace     string
+	configMapName string
+	configMapKey  string
+	addr          string
+	healthAddr    string
+	metricsAddr   string
+}
+
+func newTunnelCmd() *cobra.Command {
+	opts := &tunnelOptions{}
+
 	cmd := &cobra.Command{
 		Use:   "tunnel",
-		Short: "Manage Cloudflare tunnels",
+		Short: "Run the tunnel proxy",
+		RunE:  opts.run,
 	}
-	cmd.AddCommand(
-		newTunnelListCmd(credentialsFile),
-		newTunnelGetIDCmd(credentialsFile),
-		newTunnelDeleteCmd(credentialsFile),
-		newTunnelCleanupConnectionsCmd(credentialsFile),
-	)
+
+	cmd.Flags().StringVar(&opts.namespace, "namespace", "", "namespace of the ConfigMap (required)")
+	cmd.Flags().StringVar(&opts.configMapName, "configmap-name", "", "name of the ConfigMap (required)")
+	cmd.Flags().StringVar(&opts.configMapKey, "configmap-key", "config.yaml", "key in the ConfigMap")
+	cmd.Flags().StringVar(&opts.addr, "addr", "127.0.0.1:8080", "listen address")
+	cmd.Flags().StringVar(&opts.healthAddr, "health-addr", ":8081", "health check listen address")
+	cmd.Flags().StringVar(&opts.metricsAddr, "metrics-addr", "0.0.0.0:2000", "cloudflared metrics listen address")
+	cobra.CheckErr(cmd.MarkFlagRequired("namespace"))
+	cobra.CheckErr(cmd.MarkFlagRequired("configmap-name"))
+
 	return cmd
 }
 
-func newTunnelListCmd(credentialsFile *string) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "list",
-		Short: "List all active Cloudflare tunnels",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := newClient(*credentialsFile)
-			if err != nil {
-				return err
-			}
-			tunnels, err := c.ListTunnels(cmd.Context())
-			if err != nil {
-				return err
-			}
-			type tunnelOutput struct {
-				ID   string `json:"id"`
-				Name string `json:"name"`
-			}
-			out := make([]tunnelOutput, len(tunnels))
-			for i, t := range tunnels {
-				out[i] = tunnelOutput{ID: t.ID, Name: t.Name}
-			}
-			return printJSON(out)
-		},
-	}
-	return cmd
-}
+func (o *tunnelOptions) run(cmd *cobra.Command, _ []string) error {
+	ctx := cmd.Context()
 
-func newTunnelGetIDCmd(credentialsFile *string) *cobra.Command {
-	var name string
-	cmd := &cobra.Command{
-		Use:   "get-id",
-		Short: "Look up a tunnel ID by name",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := newClient(*credentialsFile)
-			if err != nil {
-				return err
-			}
-			tunnelID, err := c.GetTunnelIDByName(cmd.Context(), name)
-			if err != nil {
-				return err
-			}
-			return printJSON(map[string]string{"tunnelId": tunnelID})
-		},
+	cfg, err := rest.InClusterConfig()
+	if err != nil {
+		return fmt.Errorf("creating in-cluster config: %w", err)
 	}
-	cmd.Flags().StringVar(&name, "name", "", "tunnel name")
-	cobra.CheckErr(cmd.MarkFlagRequired("name"))
-	return cmd
-}
 
-func newTunnelDeleteCmd(credentialsFile *string) *cobra.Command {
-	var tunnelID string
-	cmd := &cobra.Command{
-		Use:   "delete",
-		Short: "Delete a Cloudflare tunnel",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := newClient(*credentialsFile)
-			if err != nil {
-				return err
-			}
-			return c.DeleteTunnel(cmd.Context(), tunnelID)
-		},
+	clientset, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("creating kubernetes clientset: %w", err)
 	}
-	cmd.Flags().StringVar(&tunnelID, "tunnel-id", "", "tunnel ID")
-	cobra.CheckErr(cmd.MarkFlagRequired("tunnel-id"))
-	return cmd
-}
 
-func newTunnelCleanupConnectionsCmd(credentialsFile *string) *cobra.Command {
-	var tunnelID string
-	cmd := &cobra.Command{
-		Use:   "cleanup-connections",
-		Short: "Clean up stale connections for a tunnel",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := newClient(*credentialsFile)
-			if err != nil {
-				return err
-			}
-			return c.CleanupTunnelConnections(cmd.Context(), tunnelID)
-		},
+	p := &proxy.Proxy{}
+	watcher := proxy.NewWatcher(clientset, o.namespace, o.configMapName, o.configMapKey, p)
+
+	graceShutdownC := make(chan struct{})
+	go func() {
+		<-ctx.Done()
+		close(graceShutdownC)
+	}()
+
+	go func() {
+		if err := cfclient.RunTunnel(ctx, p, p, o.metricsAddr, graceShutdownC); err != nil {
+			fmt.Printf("tunnel error: %v\n", err)
+			os.Exit(1)
+		}
+	}()
+
+	stopCh := ctx.Done()
+	watcher.Start(stopCh)
+
+	server := &http.Server{
+		Addr:    o.addr,
+		Handler: p,
 	}
-	cmd.Flags().StringVar(&tunnelID, "tunnel-id", "", "tunnel ID")
-	cobra.CheckErr(cmd.MarkFlagRequired("tunnel-id"))
-	return cmd
+
+	proxyURL := fmt.Sprintf("http://%s/", o.addr)
+	healthMux := http.NewServeMux()
+	healthMux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		resp, err := http.Get(proxyURL)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("proxy unreachable: %v", err), http.StatusServiceUnavailable)
+			return
+		}
+		_ = resp.Body.Close()
+		if resp.Header.Get(proxy.HeaderConfigNotLoaded) != "" {
+			http.Error(w, "proxy config not loaded yet", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	healthServer := &http.Server{
+		Addr:    o.healthAddr,
+		Handler: healthMux,
+	}
+
+	go func() {
+		<-stopCh
+		_ = server.Close()
+		_ = healthServer.Close()
+	}()
+
+	go func() {
+		fmt.Printf("tunnel health check listening on %s\n", o.healthAddr)
+		if err := healthServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			fmt.Printf("health server error: %v\n", err)
+		}
+	}()
+
+	fmt.Printf("tunnel proxy listening on %s\n", o.addr)
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		return fmt.Errorf("HTTP server error: %w", err)
+	}
+	return nil
 }

@@ -24,13 +24,6 @@ type ClientConfig struct {
 	BaseURL   string // optional override for testing
 }
 
-// IngressRule represents a Cloudflare tunnel ingress rule mapping a hostname to a service.
-type IngressRule struct {
-	Hostname string
-	Service  string
-	Path     string
-}
-
 // Tunnel represents a Cloudflare tunnel with its ID and name.
 type Tunnel struct {
 	ID   string
@@ -46,8 +39,6 @@ type Client interface {
 	CleanupTunnelConnections(ctx context.Context, tunnelID string) error
 	DeleteTunnel(ctx context.Context, tunnelID string) error
 	GetTunnelToken(ctx context.Context, tunnelID string) (token string, err error)
-	GetTunnelConfiguration(ctx context.Context, tunnelID string) ([]IngressRule, error)
-	UpdateTunnelConfiguration(ctx context.Context, tunnelID string, ingress []IngressRule) error
 
 	// Zone/DNS operations.
 	ListZoneIDs(ctx context.Context) ([]string, error)
@@ -100,7 +91,7 @@ func (c *client) CreateTunnel(ctx context.Context, name string) (string, error) 
 	tunnel, err := c.client.ZeroTrust.Tunnels.Cloudflared.New(ctx, zero_trust.TunnelCloudflaredNewParams{
 		AccountID: cloudflare.String(c.accountID),
 		Name:      cloudflare.String(name),
-		ConfigSrc: cloudflare.F(zero_trust.TunnelCloudflaredNewParamsConfigSrcCloudflare),
+		ConfigSrc: cloudflare.F(zero_trust.TunnelCloudflaredNewParamsConfigSrcLocal),
 	})
 	if err != nil {
 		return "", err
@@ -167,45 +158,6 @@ func (c *client) GetTunnelToken(ctx context.Context, tunnelID string) (string, e
 		return "", err
 	}
 	return *token, nil
-}
-
-func (c *client) GetTunnelConfiguration(ctx context.Context, tunnelID string) ([]IngressRule, error) {
-	resp, err := c.client.ZeroTrust.Tunnels.Cloudflared.Configurations.Get(ctx, tunnelID, zero_trust.TunnelCloudflaredConfigurationGetParams{
-		AccountID: cloudflare.String(c.accountID),
-	})
-	if err != nil {
-		return nil, err
-	}
-	rules := make([]IngressRule, 0, len(resp.Config.Ingress))
-	for _, r := range resp.Config.Ingress {
-		rules = append(rules, IngressRule{
-			Hostname: r.Hostname,
-			Service:  r.Service,
-			Path:     r.Path,
-		})
-	}
-	return rules, nil
-}
-
-func (c *client) UpdateTunnelConfiguration(ctx context.Context, tunnelID string, ingress []IngressRule) error {
-	sdkIngress := make([]zero_trust.TunnelCloudflaredConfigurationUpdateParamsConfigIngress, 0, len(ingress))
-	for _, r := range ingress {
-		entry := zero_trust.TunnelCloudflaredConfigurationUpdateParamsConfigIngress{
-			Hostname: cloudflare.F(r.Hostname),
-			Service:  cloudflare.F(r.Service),
-		}
-		if r.Path != "" {
-			entry.Path = cloudflare.F(r.Path)
-		}
-		sdkIngress = append(sdkIngress, entry)
-	}
-	_, err := c.client.ZeroTrust.Tunnels.Cloudflared.Configurations.Update(ctx, tunnelID, zero_trust.TunnelCloudflaredConfigurationUpdateParams{
-		AccountID: cloudflare.String(c.accountID),
-		Config: cloudflare.F(zero_trust.TunnelCloudflaredConfigurationUpdateParamsConfig{
-			Ingress: cloudflare.F(sdkIngress),
-		}),
-	})
-	return err
 }
 
 // --- Zone/DNS operations ---

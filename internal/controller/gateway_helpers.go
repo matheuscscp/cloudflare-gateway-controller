@@ -251,13 +251,11 @@ func (r *GatewayReconciler) reconcileCGS(
 		apiv1.ResourceRef{APIVersion: apiv1.APIVersionCore, Kind: apiv1.KindSecret, Name: resourceName},
 		apiv1.ResourceRef{APIVersion: apiv1.APIVersionCore, Kind: apiv1.KindConfigMap, Name: resourceName},
 	)
-	if r.sidecarEnabled(params) {
-		desired.Inventory = append(desired.Inventory,
-			apiv1.ResourceRef{APIVersion: apiv1.APIVersionCore, Kind: apiv1.KindServiceAccount, Name: resourceName},
-			apiv1.ResourceRef{APIVersion: apiv1.APIVersionRBAC, Kind: apiv1.KindRole, Name: resourceName},
-			apiv1.ResourceRef{APIVersion: apiv1.APIVersionRBAC, Kind: apiv1.KindRoleBinding, Name: resourceName},
-		)
-	}
+	desired.Inventory = append(desired.Inventory,
+		apiv1.ResourceRef{APIVersion: apiv1.APIVersionCore, Kind: apiv1.KindServiceAccount, Name: resourceName},
+		apiv1.ResourceRef{APIVersion: apiv1.APIVersionRBAC, Kind: apiv1.KindRole, Name: resourceName},
+		apiv1.ResourceRef{APIVersion: apiv1.APIVersionRBAC, Kind: apiv1.KindRoleBinding, Name: resourceName},
+	)
 	if autoscalingEnabled(params) {
 		for _, r := range replicas {
 			desired.Inventory = append(desired.Inventory, apiv1.ResourceRef{
