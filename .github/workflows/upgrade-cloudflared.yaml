@@ -14,8 +14,6 @@ permissions:
 jobs:
   upgrade:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -46,36 +44,75 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "pseudo=$pseudo" >> "$GITHUB_OUTPUT"
 
-      - name: Check if update needed
-        id: check
-        env:
-          PSEUDO: ${{ steps.commit.outputs.pseudo }}
-        run: |
-          current=$(grep 'matheuscscp/cloudflared' go.mod | grep -oP 'v0\.0\.0-\S+' || echo "")
-          if [ "$current" = "$PSEUDO" ]; then
-            echo "Already up to date"
-            echo "needed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "Update needed: $current -> $PSEUDO"
-            echo "needed=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Setup Go
-        if: steps.check.outputs.needed == 'true'
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
           go-version-file: go.mod
 
       - name: Update go.mod
-        if: steps.check.outputs.needed == 'true'
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           PSEUDO: ${{ steps.commit.outputs.pseudo }}
-        run: |
-          sed -i "s|github.com/matheuscscp/cloudflared v[^ ]*|github.com/matheuscscp/cloudflared $PSEUDO|" go.mod
-          GONOSUMCHECK=github.com/matheuscscp/cloudflared go mod tidy
+          TAG: ${{ steps.release.outputs.tag }}
+        with:
+          script: |
+            const fs = require('fs');
+            const { PSEUDO, TAG } = process.env;
+            let gomod = fs.readFileSync('go.mod', 'utf8');
+
+            // Update cloudflared fork pin.
+            gomod = gomod.replace(
+              /github\.com\/matheuscscp\/cloudflared v\S+/,
+              `github.com/matheuscscp/cloudflared ${PSEUDO}`
+            );
+
+            // Update urfave/cli fork pin to match upstream cloudflared,
+            // unless we pinned a newer version for a CVE fix.
+            const resp = await fetch(
+              `https://raw.githubusercontent.com/cloudflare/cloudflared/${TAG}/go.mod`
+            );
+            const upstreamMod = await resp.text();
+            const upstreamCli = upstreamMod.match(/github\.com\/ipostelnik\/cli\/v2 (\S+)/)[1];
+            const ourCli = gomod.match(/github\.com\/ipostelnik\/cli\/v2 (\S+)/)[1];
+            const cveFix = /\/\/ CVE fix: true/.test(gomod);
+
+            // Compare Go module versions. Handles both semver (v2.4.0) and
+            // pseudo-versions (v2.3.1-0.20210324024421-b6ea8234fe3d).
+            function compareBase(a, b) {
+              const pa = a.replace(/^v/, '').split('.').map(Number);
+              const pb = b.replace(/^v/, '').split('.').map(Number);
+              for (let i = 0; i < 3; i++) {
+                if (pa[i] !== pb[i]) return pa[i] - pb[i];
+              }
+              return 0;
+            }
+            function isAhead(a, b) {
+              const ma = a.match(/^(v\d+\.\d+\.\d+)(?:-(.+))?$/);
+              const mb = b.match(/^(v\d+\.\d+\.\d+)(?:-(.+))?$/);
+              const cmp = compareBase(ma[1], mb[1]);
+              if (cmp !== 0) return cmp > 0;
+              const pa = ma[2] || '', pb = mb[2] || '';
+              if (!pa && pb) return true;   // release > pre-release
+              if (pa && !pb) return false;
+              return pa > pb;               // lexicographic works for fixed-width timestamps
+            }
+
+            if (!cveFix || isAhead(upstreamCli, ourCli)) {
+              gomod = gomod.replace(
+                `github.com/ipostelnik/cli/v2 ${ourCli}`,
+                `github.com/ipostelnik/cli/v2 ${upstreamCli}`
+              );
+              if (cveFix) {
+                gomod = gomod.replace('// CVE fix: true', '// CVE fix: false');
+              }
+            }
+
+            fs.writeFileSync('go.mod', gomod);
+
+      - name: Run go mod tidy
+        run: go mod tidy
 
       - name: Create Pull Request
-        if: steps.check.outputs.needed == 'true'
         uses: peter-evans/create-pull-request@c0f553fe549906ede9cf27b5156039d195d2ece0 # v8.1.0
         with:
           token: ${{ secrets.BOT_GITHUB_TOKEN }}
