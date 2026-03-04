@@ -1,7 +1,7 @@
-{{- if .Values.api.enabled }}
 # Copyright 2026 Matheus Pimenta.
 # SPDX-License-Identifier: AGPL-3.0
 
+{{- if .Values.api.enabled }}
 #
 # config/crd/experimental/gateway.networking.k8s.io_vap_safeupgrades.yaml
 #
