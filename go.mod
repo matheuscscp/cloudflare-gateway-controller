@@ -5,12 +5,20 @@ go 1.26.0
 // Fork exposes internal packages needed to embed cloudflared in-process.
 // The upgrade-cloudflared workflow keeps this pin in sync with the fork's
 // latest release.
-replace github.com/cloudflare/cloudflared => github.com/matheuscscp/cloudflared v0.0.0
+replace github.com/cloudflare/cloudflared => github.com/matheuscscp/cloudflared v0.0.0-20260304003948-79c3d05dd772
 
 // Go only honours replace directives in the top-level module, so we must
 // repeat cloudflared's here. The upgrade-cloudflared workflow keeps this
 // block in sync with the fork's go.mod.
 // cloudflared:replace:begin
+
+replace github.com/urfave/cli/v2 => github.com/ipostelnik/cli/v2 v2.3.1-0.20210324024421-b6ea8234fe3d
+
+replace github.com/prometheus/golang_client => github.com/prometheus/golang_client v1.12.1
+
+replace gopkg.in/yaml.v3 => gopkg.in/yaml.v3 v3.0.1
+
+replace github.com/quic-go/quic-go => github.com/chungthuang/quic-go v0.45.1-0.20250428085412-43229ad201fd
 
 // cloudflared:replace:end
 
