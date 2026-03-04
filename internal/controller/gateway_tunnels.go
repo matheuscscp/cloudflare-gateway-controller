@@ -30,6 +30,8 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
 )
 
@@ -93,30 +95,30 @@ func (r *GatewayReconciler) reconcileTunnelTokenSecret(ctx context.Context, gw *
 	return changes, nil
 }
 
-// applyCloudflaredDeployments builds and applies a cloudflared Deployment for
-// each replica via Server-Side Apply. Returns change messages.
-func (r *GatewayReconciler) applyCloudflaredDeployments(ctx context.Context, gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters, resourceName string, replicas []apiv1.ReplicaConfig) ([]string, error) {
+// applyTunnelDeployments builds and applies a tunnel Deployment for each
+// replica via Server-Side Apply. Returns change messages.
+func (r *GatewayReconciler) applyTunnelDeployments(ctx context.Context, gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters, resourceName string, replicas []apiv1.ReplicaConfig) ([]string, error) {
 	l := log.FromContext(ctx)
 	var changes []string
 	for i := range replicas {
 		deploymentName := apiv1.GatewayReplicaName(gw, replicas[i].Name)
-		deployObj, err := r.buildCloudflaredDeployment(gw, params, resourceName, &replicas[i])
+		deployObj, err := r.buildTunnelDeployment(gw, params, resourceName, &replicas[i])
 		if err != nil {
-			return nil, fmt.Errorf("building cloudflared deployment %q: %w", deploymentName, err)
+			return nil, fmt.Errorf("building tunnel deployment %q: %w", deploymentName, err)
 		}
 		ssaEntry, err := r.ResourceManager.Apply(ctx, deployObj, ssaApplyOptions)
 		if err != nil {
-			return nil, fmt.Errorf("applying cloudflared deployment %q: %w", deploymentName, err)
+			return nil, fmt.Errorf("applying tunnel deployment %q: %w", deploymentName, err)
 		}
 		if string(ssaEntry.Action) != string(ssa.UnchangedAction) {
-			changes = append(changes, fmt.Sprintf("cloudflared Deployment %s %s", deploymentName, ssaEntry.Action))
+			changes = append(changes, fmt.Sprintf("tunnel Deployment %s %s", deploymentName, ssaEntry.Action))
 		}
-		l.V(1).Info("Reconciled cloudflared Deployment", "deployment", deploymentName, "action", ssaEntry.Action)
+		l.V(1).Info("Reconciled tunnel Deployment", "deployment", deploymentName, "action", ssaEntry.Action)
 	}
 	return changes, nil
 }
 
-// checkAllDeploymentsReadiness fetches all cloudflared Deployments for the
+// checkAllDeploymentsReadiness fetches all tunnel Deployments for the
 // replicas and inspects their status to determine the Gateway's
 // Programmed and Ready state. All Deployments must be available for the
 // Gateway to be considered Programmed.
@@ -160,12 +162,12 @@ func (r *GatewayReconciler) checkAllDeploymentsReadiness(ctx context.Context, gw
 		readyReason:      apiv1.ReasonProgressingWithRetry,
 		programmedStatus: metav1.ConditionFalse,
 		programmedReason: string(gatewayv1.GatewayReasonPending),
-		programmedMsg:    "Waiting for cloudflared deployment to become ready",
+		programmedMsg:    "Waiting for tunnel deployment to become ready",
 	}
 	if anyDeadlineExceeded {
 		readiness.readyStatus = metav1.ConditionFalse
 		readiness.readyReason = apiv1.ReasonReconciliationFailed
-		readiness.readyMsg = fmt.Sprintf("cloudflared deployment(s) exceeded progress deadline: %s", strings.Join(notReadyNames, ", "))
+		readiness.readyMsg = fmt.Sprintf("tunnel deployment(s) exceeded progress deadline: %s", strings.Join(notReadyNames, ", "))
 	} else if allAvailable {
 		readiness.programmedStatus = metav1.ConditionTrue
 		readiness.programmedReason = string(gatewayv1.GatewayReasonProgrammed)
@@ -175,13 +177,13 @@ func (r *GatewayReconciler) checkAllDeploymentsReadiness(ctx context.Context, gw
 		readiness.readyMsg = "Gateway is ready"
 	} else {
 		readiness.readyReason = apiv1.ReasonProgressing
-		readiness.readyMsg = fmt.Sprintf("Waiting for cloudflared deployment(s) to become ready: %s", strings.Join(notReadyNames, ", "))
+		readiness.readyMsg = fmt.Sprintf("Waiting for tunnel deployment(s) to become ready: %s", strings.Join(notReadyNames, ", "))
 	}
 	return readiness
 }
 
 // removeOwnerReferences removes the Gateway's owner references from all
-// managed cloudflared Deployments and tunnel token Secrets so they survive
+// managed tunnel Deployments and tunnel token Secrets so they survive
 // garbage collection when the Gateway is deleted with reconciliation disabled.
 // Returns the list of resources that were modified.
 func (r *GatewayReconciler) removeOwnerReferences(ctx context.Context, gw *gatewayv1.Gateway) ([]client.Object, error) {
@@ -189,7 +191,7 @@ func (r *GatewayReconciler) removeOwnerReferences(ctx context.Context, gw *gatew
 	var removed []client.Object
 	matchLabels := client.MatchingLabels(apiv1.GatewayResourceLabels(gw.Name))
 
-	// Remove owner references from all cloudflared Deployments.
+	// Remove owner references from all tunnel Deployments.
 	var deployList appsv1.DeploymentList
 	if err := r.List(ctx, &deployList, client.InNamespace(gw.Namespace), matchLabels); err != nil {
 		return removed, fmt.Errorf("listing Deployments: %w", err)
@@ -252,9 +254,9 @@ func (r *GatewayReconciler) removeOwnerReferences(ctx context.Context, gw *gatew
 		return removed, err
 	}
 
-	// Remove owner references from sidecar RBAC resources.
-	sidecarRemoved, err := r.removeOwnerReferencesFromSidecarRBACResources(ctx, gw)
-	removed = append(removed, sidecarRemoved...)
+	// Remove owner references from tunnel RBAC resources.
+	tunnelRBACRemoved, err := r.removeOwnerReferencesFromTunnelRBACResources(ctx, gw)
+	removed = append(removed, tunnelRBACRemoved...)
 	if err != nil {
 		return removed, err
 	}
@@ -294,13 +296,13 @@ func (r *GatewayReconciler) cleanupStaleTunnelResources(ctx context.Context, gw 
 		desired[apiv1.GatewayReplicaName(gw, r.Name)] = struct{}{}
 	}
 
-	// List all cloudflared Deployments owned by this Gateway.
+	// List all tunnel Deployments owned by this Gateway.
 	var deployList appsv1.DeploymentList
 	if err := r.List(ctx, &deployList,
 		client.InNamespace(gw.Namespace),
 		client.MatchingLabels(apiv1.GatewayResourceLabels(gw.Name)),
 	); err != nil {
-		return nil, []string{fmt.Sprintf("failed to list cloudflared Deployments for cleanup: %v", err)}
+		return nil, []string{fmt.Sprintf("failed to list tunnel Deployments for cleanup: %v", err)}
 	}
 
 	var changes []string
@@ -317,11 +319,11 @@ func (r *GatewayReconciler) cleanupStaleTunnelResources(ctx context.Context, gw 
 			continue
 		}
 		changes = append(changes, fmt.Sprintf("deleted stale Deployment %s", deploy.Name))
-		l.V(1).Info("Deleted stale cloudflared Deployment", "deployment", deploy.Name)
+		l.V(1).Info("Deleted stale tunnel Deployment", "deployment", deploy.Name)
 	}
 
 	// Delete corresponding stale Secrets (by convention, Secrets owned by the
-	// Gateway with the cloudflared label pattern). We use owner references
+	// Gateway with the tunnel label pattern). We use owner references
 	// to find them via GC, but also clean up explicitly.
 	var secretList corev1.SecretList
 	if err := r.List(ctx, &secretList,
@@ -365,18 +367,17 @@ func buildTunnelTokenSecret(gw *gatewayv1.Gateway, resourceName string, tunnelTo
 	}
 }
 
-// buildCloudflaredDeployment builds the desired cloudflared Deployment as an
+// buildTunnelDeployment builds the desired tunnel Deployment as an
 // unstructured object suitable for server-side apply via the SSA manager.
 //
 // The build order is:
-//  1. Base deployment (cloudflared container + sidecar if enabled, no placement)
+//  1. Base deployment (tunnel container, no placement)
 //  2. User-defined RFC 6902 patches (terminal errors)
-//  3. Sidecar validation — if sidecar is enabled, verify it survived patches (terminal)
-//  4. Placement overrides from replica config (affinity, zone, nodeSelector)
-//  5. Convert to unstructured
-func (r *GatewayReconciler) buildCloudflaredDeployment(gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters, resourceName string, replica *apiv1.ReplicaConfig) (*unstructured.Unstructured, error) {
+//  3. Placement overrides from replica config (affinity, zone, nodeSelector)
+//  4. Convert to unstructured
+func (r *GatewayReconciler) buildTunnelDeployment(gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters, resourceName string, replica *apiv1.ReplicaConfig) (*unstructured.Unstructured, error) {
 	// Step 1: Build the base deployment (no placement).
-	apply := r.buildCloudflaredDeploymentApply(gw, params, resourceName, replica)
+	apply := r.buildTunnelDeploymentApply(gw, params, resourceName, replica)
 	data, err := json.Marshal(apply)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling deployment: %w", err)
@@ -400,55 +401,19 @@ func (r *GatewayReconciler) buildCloudflaredDeployment(gw *gatewayv1.Gateway, pa
 		}
 	}
 
-	// Step 3: If sidecar is enabled, verify the sidecar container survived patches.
-	if r.sidecarEnabled(params) {
-		if err := validateSidecarPresent(data); err != nil {
-			return nil, err
-		}
-	}
-
-	// Step 4: Apply placement overrides from the replica config.
+	// Step 3: Apply placement overrides from the replica config.
 	data, err = applyPlacementOverrides(data, replica)
 	if err != nil {
 		return nil, err
 	}
 
-	// Step 5: Convert to unstructured.
+	// Step 4: Convert to unstructured.
 	obj := &unstructured.Unstructured{}
 	if err := obj.UnmarshalJSON(data); err != nil {
 		return nil, fmt.Errorf("unmarshaling deployment: %w", err)
 	}
 	obj.SetGroupVersionKind(appsv1.SchemeGroupVersion.WithKind(apiv1.KindDeployment))
 	return obj, nil
-}
-
-// validateSidecarPresent checks that the sidecar container is still present
-// in the deployment JSON after user patches have been applied.
-func validateSidecarPresent(data []byte) error {
-	podSpec, err := navigateToPodSpec(data)
-	if err != nil {
-		return err
-	}
-	containers, ok := podSpec["containers"].([]any)
-	if !ok {
-		return reconcile.TerminalError(fmt.Errorf(
-			"deployment patches removed all containers; the sidecar container " +
-				"must be present when sidecar is enabled — use " +
-				".spec.tunnel.sidecar.enabled=false to disable it instead"))
-	}
-	for _, c := range containers {
-		cMap, ok := c.(map[string]any)
-		if !ok {
-			continue
-		}
-		if cMap["name"] == "sidecar" {
-			return nil
-		}
-	}
-	return reconcile.TerminalError(fmt.Errorf(
-		"deployment patches removed the sidecar container; the sidecar container " +
-			"must be present when sidecar is enabled — use " +
-			".spec.tunnel.sidecar.enabled=false to disable it instead"))
 }
 
 // applyPlacementOverrides applies placement fields (affinity, zone,
@@ -543,10 +508,10 @@ func navigateToPodSpec(data []byte) (map[string]any, error) {
 	return podSpec, nil
 }
 
-// buildCloudflaredDeploymentApply builds the apply configuration for the
-// cloudflared Deployment, including selector labels, infrastructure
-// labels/annotations, owner reference, and the cloudflared container spec.
-func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters, resourceName string, replica *apiv1.ReplicaConfig) *acappsv1.DeploymentApplyConfiguration {
+// buildTunnelDeploymentApply builds the apply configuration for the
+// tunnel Deployment, including selector labels, infrastructure
+// labels/annotations, owner reference, and the tunnel container spec.
+func (r *GatewayReconciler) buildTunnelDeploymentApply(gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters, resourceName string, replica *apiv1.ReplicaConfig) *acappsv1.DeploymentApplyConfiguration {
 	deploymentName := apiv1.GatewayReplicaName(gw, replica.Name)
 	selectorLabels := apiv1.GatewayResourceLabels(gw.Name, replica.Name)
 	templateLabels := maps.Clone(selectorLabels)
@@ -561,15 +526,20 @@ func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gatewa
 	deployLabels := maps.Clone(selectorLabels)
 	maps.Copy(deployLabels, infraLabels)
 
-	var cloudflaredCC *apiv1.ContainerConfig
-	if params != nil && params.Spec.Tunnel != nil && params.Spec.Tunnel.Cloudflared != nil {
-		cloudflaredCC = &params.Spec.Tunnel.Cloudflared.ContainerConfig
+	var tunnelResources *corev1.ResourceRequirements
+	if params != nil && params.Spec.Tunnel != nil {
+		tunnelResources = params.Spec.Tunnel.Resources
 	}
 
-	cloudflaredContainer := accorev1.Container().
-		WithName("cloudflared").
-		WithImage(r.CloudflaredImage).
-		WithArgs("tunnel", "--no-autoupdate", "--metrics", "0.0.0.0:2000", "run").
+	tunnelContainer := accorev1.Container().
+		WithName("tunnel").
+		WithImage(r.TunnelImage).
+		WithArgs(
+			"tunnel",
+			"--namespace", gw.Namespace,
+			"--configmap-name", apiv1.GatewayResourceName(gw),
+			"--configmap-key", routeConfigMapKey,
+		).
 		WithEnv(accorev1.EnvVar().
 			WithName("TUNNEL_TOKEN").
 			WithValueFrom(accorev1.EnvVarSource().
@@ -579,50 +549,24 @@ func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gatewa
 				),
 			),
 		).
-		WithResources(resolveResources(cloudflaredCC)).
+		WithPorts(accorev1.ContainerPort().
+			WithName("metrics").
+			WithContainerPort(2000).
+			WithProtocol(corev1.ProtocolTCP),
+		).
+		WithResources(resolveResources(tunnelResources)).
 		WithLivenessProbe(accorev1.Probe().
+			WithHTTPGet(accorev1.HTTPGetAction().
+				WithPath("/healthz").
+				WithPort(intstr.FromInt32(8081)),
+			),
+		).
+		WithReadinessProbe(accorev1.Probe().
 			WithHTTPGet(accorev1.HTTPGetAction().
 				WithPath("/ready").
 				WithPort(intstr.FromInt32(2000)),
 			),
 		)
-
-	containers := []*accorev1.ContainerApplyConfiguration{cloudflaredContainer}
-
-	podSpec := accorev1.PodSpec()
-
-	if r.sidecarEnabled(params) {
-		podSpec = podSpec.WithServiceAccountName(apiv1.GatewayResourceName(gw))
-
-		var sidecarCC *apiv1.ContainerConfig
-		if params != nil && params.Spec.Tunnel != nil && params.Spec.Tunnel.Sidecar != nil {
-			sidecarCC = &params.Spec.Tunnel.Sidecar.ContainerConfig
-		}
-
-		sidecarContainer := accorev1.Container().
-			WithName("sidecar").
-			WithImage(r.SidecarImage).
-			WithArgs(
-				"sidecar",
-				"--namespace", gw.Namespace,
-				"--configmap-name", apiv1.GatewayResourceName(gw),
-				"--configmap-key", routeConfigMapKey,
-			).
-			WithResources(resolveResources(sidecarCC)).
-			WithLivenessProbe(accorev1.Probe().
-				WithHTTPGet(accorev1.HTTPGetAction().
-					WithPath("/healthz").
-					WithPort(intstr.FromInt32(8081)),
-				),
-			).
-			WithReadinessProbe(accorev1.Probe().
-				WithHTTPGet(accorev1.HTTPGetAction().
-					WithPath("/healthz").
-					WithPort(intstr.FromInt32(8081)),
-				),
-			)
-		containers = append(containers, sidecarContainer)
-	}
 
 	deploy := acappsv1.Deployment(deploymentName, gw.Namespace).
 		WithLabels(deployLabels).
@@ -650,8 +594,9 @@ func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gatewa
 			WithTemplate(accorev1.PodTemplateSpec().
 				WithLabels(templateLabels).
 				WithAnnotations(templateAnnotations).
-				WithSpec(podSpec.
-					WithContainers(containers...),
+				WithSpec(accorev1.PodSpec().
+					WithServiceAccountName(apiv1.GatewayResourceName(gw)).
+					WithContainers(tunnelContainer),
 				),
 			),
 		)
@@ -659,12 +604,233 @@ func (r *GatewayReconciler) buildCloudflaredDeploymentApply(gw *gatewayv1.Gatewa
 	return deploy
 }
 
+// reconcileTunnelRBAC creates/updates the ServiceAccount, Role, and RoleBinding
+// granting the tunnel read access to the route ConfigMap. Returns change messages.
+func (r *GatewayReconciler) reconcileTunnelRBAC(ctx context.Context, gw *gatewayv1.Gateway) ([]string, error) {
+	l := log.FromContext(ctx)
+	var changes []string
+
+	saName := apiv1.GatewayResourceName(gw)
+	cmName := apiv1.GatewayResourceName(gw)
+	labels := tunnelRBACLabels(gw)
+
+	ownerRef := metav1.OwnerReference{
+		APIVersion:         gatewayv1.GroupVersion.String(),
+		Kind:               apiv1.KindGateway,
+		Name:               gw.Name,
+		UID:                gw.UID,
+		BlockOwnerDeletion: new(true),
+		Controller:         new(true),
+	}
+
+	// ServiceAccount
+	saTyped := &corev1.ServiceAccount{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: corev1.SchemeGroupVersion.String(),
+			Kind:       apiv1.KindServiceAccount,
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            saName,
+			Namespace:       gw.Namespace,
+			Labels:          labels,
+			OwnerReferences: []metav1.OwnerReference{ownerRef},
+		},
+	}
+	sa, err := toUnstructured(saTyped)
+	if err != nil {
+		return nil, fmt.Errorf("converting tunnel ServiceAccount to unstructured: %w", err)
+	}
+
+	ssaEntry, err := r.ResourceManager.Apply(ctx, sa, ssaApplyOptions)
+	if err != nil {
+		return nil, fmt.Errorf("applying tunnel ServiceAccount %s: %w", saName, err)
+	}
+	if ssaEntry.Action != ssa.UnchangedAction {
+		changes = append(changes, fmt.Sprintf("tunnel ServiceAccount %s %s", saName, ssaEntry.Action))
+	}
+	l.V(1).Info("Reconciled tunnel ServiceAccount", "serviceaccount", saName, "action", ssaEntry.Action)
+
+	// Role
+	roleTyped := &rbacv1.Role{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: rbacv1.SchemeGroupVersion.String(),
+			Kind:       apiv1.KindRole,
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            saName,
+			Namespace:       gw.Namespace,
+			Labels:          labels,
+			OwnerReferences: []metav1.OwnerReference{ownerRef},
+		},
+		Rules: []rbacv1.PolicyRule{{
+			APIGroups:     []string{""},
+			Resources:     []string{"configmaps"},
+			ResourceNames: []string{cmName},
+			Verbs:         []string{"get", "list", "watch"},
+		}},
+	}
+	role, err := toUnstructured(roleTyped)
+	if err != nil {
+		return nil, fmt.Errorf("converting tunnel Role to unstructured: %w", err)
+	}
+
+	ssaEntry, err = r.ResourceManager.Apply(ctx, role, ssaApplyOptions)
+	if err != nil {
+		return nil, fmt.Errorf("applying tunnel Role %s: %w", saName, err)
+	}
+	if ssaEntry.Action != ssa.UnchangedAction {
+		changes = append(changes, fmt.Sprintf("tunnel Role %s %s", saName, ssaEntry.Action))
+	}
+	l.V(1).Info("Reconciled tunnel Role", "role", saName, "action", ssaEntry.Action)
+
+	// RoleBinding
+	rbTyped := &rbacv1.RoleBinding{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: rbacv1.SchemeGroupVersion.String(),
+			Kind:       apiv1.KindRoleBinding,
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            saName,
+			Namespace:       gw.Namespace,
+			Labels:          labels,
+			OwnerReferences: []metav1.OwnerReference{ownerRef},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.SchemeGroupVersion.Group,
+			Kind:     apiv1.KindRole,
+			Name:     saName,
+		},
+		Subjects: []rbacv1.Subject{{
+			Kind:      apiv1.KindServiceAccount,
+			Name:      saName,
+			Namespace: gw.Namespace,
+		}},
+	}
+	rb, err := toUnstructured(rbTyped)
+	if err != nil {
+		return nil, fmt.Errorf("converting tunnel RoleBinding to unstructured: %w", err)
+	}
+
+	ssaEntry, err = r.ResourceManager.Apply(ctx, rb, ssaApplyOptions)
+	if err != nil {
+		return nil, fmt.Errorf("applying tunnel RoleBinding %s: %w", saName, err)
+	}
+	if ssaEntry.Action != ssa.UnchangedAction {
+		changes = append(changes, fmt.Sprintf("tunnel RoleBinding %s %s", saName, ssaEntry.Action))
+	}
+	l.V(1).Info("Reconciled tunnel RoleBinding", "rolebinding", saName, "action", ssaEntry.Action)
+
+	return changes, nil
+}
+
+// tunnelRBACLabels returns the standard labels for tunnel RBAC resources.
+func tunnelRBACLabels(gw *gatewayv1.Gateway) map[string]string {
+	lbls := apiv1.GatewayResourceLabels(gw.Name, apiv1.LabelAppComponentTunnel)
+	maps.Copy(lbls, infrastructureLabels(gw.Spec.Infrastructure))
+	return lbls
+}
+
+// removeOwnerReferencesFromTunnelRBACResources removes the Gateway's owner references
+// from tunnel ServiceAccounts, Roles, and RoleBindings so they survive garbage
+// collection when the Gateway is deleted with reconciliation disabled.
+func (r *GatewayReconciler) removeOwnerReferencesFromTunnelRBACResources(ctx context.Context, gw *gatewayv1.Gateway) ([]client.Object, error) {
+	l := log.FromContext(ctx)
+	var removed []client.Object
+	matchLabels := client.MatchingLabels(apiv1.GatewayResourceLabels(gw.Name, apiv1.LabelAppComponentTunnel))
+
+	// ServiceAccounts
+	var saList corev1.ServiceAccountList
+	if err := r.List(ctx, &saList, client.InNamespace(gw.Namespace), matchLabels); err != nil {
+		return removed, fmt.Errorf("listing tunnel ServiceAccounts: %w", err)
+	}
+	for i := range saList.Items {
+		sa := &saList.Items[i]
+		saKey := client.ObjectKeyFromObject(sa)
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			if err := r.Get(ctx, saKey, sa); err != nil {
+				return client.IgnoreNotFound(err)
+			}
+			saPatch := client.MergeFromWithOptions(sa.DeepCopy(), client.MergeFromWithOptimisticLock{})
+			if !removeOwnerRef(sa, gw.UID) {
+				return nil
+			}
+			if err := r.Patch(ctx, sa, saPatch); err != nil {
+				return fmt.Errorf("patching ServiceAccount %s: %w", sa.Name, err)
+			}
+			sa.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind(apiv1.KindServiceAccount))
+			removed = append(removed, sa)
+			return nil
+		}); err != nil {
+			return removed, err
+		}
+		l.V(1).Info("Removed owner reference from tunnel ServiceAccount", "serviceaccount", saKey)
+	}
+
+	// Roles
+	var roleList rbacv1.RoleList
+	if err := r.List(ctx, &roleList, client.InNamespace(gw.Namespace), matchLabels); err != nil {
+		return removed, fmt.Errorf("listing tunnel Roles: %w", err)
+	}
+	for i := range roleList.Items {
+		role := &roleList.Items[i]
+		roleKey := client.ObjectKeyFromObject(role)
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			if err := r.Get(ctx, roleKey, role); err != nil {
+				return client.IgnoreNotFound(err)
+			}
+			rolePatch := client.MergeFromWithOptions(role.DeepCopy(), client.MergeFromWithOptimisticLock{})
+			if !removeOwnerRef(role, gw.UID) {
+				return nil
+			}
+			if err := r.Patch(ctx, role, rolePatch); err != nil {
+				return fmt.Errorf("patching Role %s: %w", role.Name, err)
+			}
+			role.SetGroupVersionKind(rbacv1.SchemeGroupVersion.WithKind(apiv1.KindRole))
+			removed = append(removed, role)
+			return nil
+		}); err != nil {
+			return removed, err
+		}
+		l.V(1).Info("Removed owner reference from tunnel Role", "role", roleKey)
+	}
+
+	// RoleBindings
+	var rbList rbacv1.RoleBindingList
+	if err := r.List(ctx, &rbList, client.InNamespace(gw.Namespace), matchLabels); err != nil {
+		return removed, fmt.Errorf("listing tunnel RoleBindings: %w", err)
+	}
+	for i := range rbList.Items {
+		rb := &rbList.Items[i]
+		rbKey := client.ObjectKeyFromObject(rb)
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			if err := r.Get(ctx, rbKey, rb); err != nil {
+				return client.IgnoreNotFound(err)
+			}
+			rbPatch := client.MergeFromWithOptions(rb.DeepCopy(), client.MergeFromWithOptimisticLock{})
+			if !removeOwnerRef(rb, gw.UID) {
+				return nil
+			}
+			if err := r.Patch(ctx, rb, rbPatch); err != nil {
+				return fmt.Errorf("patching RoleBinding %s: %w", rb.Name, err)
+			}
+			rb.SetGroupVersionKind(rbacv1.SchemeGroupVersion.WithKind(apiv1.KindRoleBinding))
+			removed = append(removed, rb)
+			return nil
+		}); err != nil {
+			return removed, err
+		}
+		l.V(1).Info("Removed owner reference from tunnel RoleBinding", "rolebinding", rbKey)
+	}
+
+	return removed, nil
+}
+
 // resolveResources returns the resource requirements apply configuration
-// for a container. When the ContainerConfig provides explicit resources,
-// those are used (via JSON round-trip). Otherwise hardcoded defaults are returned.
-func resolveResources(cc *apiv1.ContainerConfig) *accorev1.ResourceRequirementsApplyConfiguration {
-	if cc != nil && cc.Resources != nil {
-		data, err := json.Marshal(cc.Resources)
+// for a container. When explicit resources are provided, those are used
+// (via JSON round-trip). Otherwise hardcoded defaults are returned.
+func resolveResources(resources *corev1.ResourceRequirements) *accorev1.ResourceRequirementsApplyConfiguration {
+	if resources != nil {
+		data, err := json.Marshal(resources)
 		if err == nil {
 			var ac accorev1.ResourceRequirementsApplyConfiguration
 			if err := json.Unmarshal(data, &ac); err == nil {

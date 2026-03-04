@@ -1,7 +1,7 @@
 // Copyright 2026 Matheus Pimenta.
 // SPDX-License-Identifier: AGPL-3.0
 
-package sidecar
+package proxy
 
 import (
 	"crypto/sha256"
@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// Config is the top-level sidecar proxy configuration, serialized as YAML
+// Config is the top-level proxy configuration, serialized as YAML
 // in the per-Gateway ConfigMap.
 type Config struct {
 	Routes []Route `json:"routes"`
@@ -94,6 +94,7 @@ type Backend struct {
 type Route struct {
 	Hostname           string              `json:"hostname"`             // e.g. "app.example.com"
 	PathPrefix         string              `json:"pathPrefix,omitempty"` // e.g. "/api" (match only, forwarded as-is)
+	Protocol           string              `json:"protocol,omitempty"`   // "" for HTTP/1.1, "h2c" for HTTP/2 cleartext (gRPC)
 	Owner              string              `json:"owner,omitempty"`      // "namespace/name" of the owning HTTPRoute
 	Backends           []Backend           `json:"backends"`
 	SessionPersistence *SessionPersistence `json:"sessionPersistence,omitempty"`

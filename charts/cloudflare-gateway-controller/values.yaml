@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0
 
 rbac:
-  serviceAccountName: "" # When set, skip creating ServiceAccount, ClusterRole and ClusterRoleBinding.
+  serviceAccountName: "" # When set, skip creating RBAC resources and use the provided service account name.
 
 image:
   repository: ghcr.io/matheuscscp/cloudflare-gateway-controller
@@ -13,15 +13,6 @@ replicas: 1
 
 config:
   clusterName: "" # Required. Unique cluster identifier for deterministic Cloudflare resource naming.
-  cloudflared:
-    image:
-      repository: "" # Defaults to the built-in DefaultCloudflaredImage repository.
-      tag: "" # Defaults to the built-in DefaultCloudflaredImage tag.
-  sidecar:
-    enabled: true
-    image:
-      repository: "" # Defaults to .Values.image.repository.
-      tag: "" # Defaults to .Values.image.tag.
 
 resources:
   limits:

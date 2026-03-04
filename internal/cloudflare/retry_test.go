@@ -186,15 +186,6 @@ func TestWithRetry_DelegatesAllMethods(t *testing.T) {
 	g.Expect(token).To(Equal("token-value"))
 	g.Expect(inner.calls["GetTunnelToken"]).To(Equal(1))
 
-	ingress, err := c.GetTunnelConfiguration(ctx, "tunnel-id")
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(ingress).To(Equal([]cloudflare.IngressRule{{Hostname: "app.example.com", Service: "http://localhost:8080"}}))
-	g.Expect(inner.calls["GetTunnelConfiguration"]).To(Equal(1))
-
-	err = c.UpdateTunnelConfiguration(ctx, "tunnel-id", []cloudflare.IngressRule{{Hostname: "app.example.com", Service: "http://localhost:8080"}})
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(inner.calls["UpdateTunnelConfiguration"]).To(Equal(1))
-
 	// Zone/DNS operations.
 	zoneIDs, err := c.ListZoneIDs(ctx)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -265,16 +256,6 @@ func (m *mockRetryClient) DeleteTunnel(_ context.Context, _ string) error {
 func (m *mockRetryClient) GetTunnelToken(_ context.Context, _ string) (string, error) {
 	m.calls["GetTunnelToken"]++
 	return "token-value", nil
-}
-
-func (m *mockRetryClient) GetTunnelConfiguration(_ context.Context, _ string) ([]cloudflare.IngressRule, error) {
-	m.calls["GetTunnelConfiguration"]++
-	return []cloudflare.IngressRule{{Hostname: "app.example.com", Service: "http://localhost:8080"}}, nil
-}
-
-func (m *mockRetryClient) UpdateTunnelConfiguration(_ context.Context, _ string, _ []cloudflare.IngressRule) error {
-	m.calls["UpdateTunnelConfiguration"]++
-	return nil
 }
 
 func (m *mockRetryClient) ListZoneIDs(_ context.Context) ([]string, error) {

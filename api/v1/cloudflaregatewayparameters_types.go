@@ -76,17 +76,21 @@ type DNSZoneConfig struct {
 //
 // +kubebuilder:validation:XValidation:rule="!has(self.replicas) || self.replicas.all(r, self.replicas.exists_one(s, s.name == r.name))",message="replica names must be unique"
 type TunnelConfig struct {
+	// Resources configures compute resource requirements for the tunnel container.
+	// When absent, the controller uses defaults (requests: 50m CPU, 64Mi
+	// memory; limits: 500m CPU, 256Mi memory). When set, replaces defaults.
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// Autoscaling configures vertical autoscaling for the tunnel container.
+	// +optional
+	Autoscaling *AutoscalingConfig `json:"autoscaling,omitempty"`
+
 	// Patches are RFC 6902 JSON Patch operations applied to the
-	// cloudflared Deployment. Patches run after the controller builds the
-	// base Deployment (which includes the sidecar container when enabled)
-	// but before replica placement fields (affinity, zone, nodeSelector)
-	// are applied on top. Replica placement always takes priority over
-	// user patches.
-	//
-	// Patches may target any field of the base Deployment, including
-	// sidecar container fields. However, removing the sidecar container
-	// via patches when the sidecar is enabled is a terminal error — use
-	// .spec.tunnel.sidecar.enabled=false to disable it instead.
+	// tunnel Deployment. Patches run after the controller builds the
+	// base Deployment but before replica placement fields (affinity,
+	// zone, nodeSelector) are applied on top. Replica placement always
+	// takes priority over user patches.
 	//
 	// Patch errors are terminal — the controller stops retrying until the
 	// CloudflareGatewayParameters resource is updated.
@@ -95,9 +99,9 @@ type TunnelConfig struct {
 
 	// Replicas configures multiple replicas of the tunnel pods for high
 	// availability. There are no guarantees about how requests coming
-	// from Cloudflare will be distributed among replicas, but the sidecar
-	// reverse proxy, if enabled, can improve load balancing when proxying
-	// to backend Services by leveraging either kube-proxy or a service mesh.
+	// from Cloudflare will be distributed among replicas, but the
+	// reverse proxy can improve load balancing when proxying to backend
+	// Services by leveraging either kube-proxy or a service mesh.
 	//
 	// When absent (nil), the controller creates a single replica named "primary".
 	// When explicitly empty ([]), no Deployments are created (scale to zero).
@@ -105,15 +109,6 @@ type TunnelConfig struct {
 	// +optional
 	// +kubebuilder:validation:MaxItems=128
 	Replicas []ReplicaConfig `json:"replicas"`
-
-	// Cloudflared configures the cloudflared container.
-	// +optional
-	Cloudflared *CloudflaredConfig `json:"cloudflared,omitempty"`
-
-	// Sidecar configures the sidecar reverse proxy that runs alongside
-	// cloudflared for per-request load balancing through kube-proxy.
-	// +optional
-	Sidecar *SidecarConfig `json:"sidecar,omitempty"`
 }
 
 // JSONPatchOperation represents a single RFC 6902 JSON Patch operation.
@@ -132,20 +127,6 @@ type JSONPatchOperation struct {
 	// Value is the value to use for add, replace, and test operations.
 	// +optional
 	Value *apiextensionsv1.JSON `json:"value,omitempty"`
-}
-
-// ContainerConfig configures container-level settings shared by the
-// cloudflared and sidecar containers.
-type ContainerConfig struct {
-	// Resources configures compute resource requirements for the container.
-	// When absent, the controller uses defaults (requests: 50m CPU, 64Mi
-	// memory; limits: 500m CPU, 256Mi memory). When set, replaces defaults.
-	// +optional
-	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
-
-	// Autoscaling configures vertical autoscaling for the container.
-	// +optional
-	Autoscaling *AutoscalingConfig `json:"autoscaling,omitempty"`
 }
 
 // AutoscalingConfig configures vertical autoscaling for a container.
@@ -176,24 +157,6 @@ type AutoscalingConfig struct {
 	// +optional
 	// +kubebuilder:validation:Enum=RequestsAndLimits;RequestsOnly
 	ControlledValues *string `json:"controlledValues,omitempty"`
-}
-
-// CloudflaredConfig configures the cloudflared container.
-type CloudflaredConfig struct {
-	ContainerConfig `json:",inline"`
-}
-
-// SidecarConfig configures the sidecar reverse proxy.
-type SidecarConfig struct {
-	ContainerConfig `json:",inline"`
-
-	// Enabled controls whether the sidecar reverse proxy runs alongside
-	// cloudflared. When absent, the default depends on whether the controller
-	// has a sidecar image configured: enabled when set, disabled when empty.
-	// Setting this to true when no sidecar image is configured is a terminal
-	// error.
-	// +optional
-	Enabled *bool `json:"enabled,omitempty"`
 }
 
 // ReplicaConfig configures a single replica of the tunnel pods.

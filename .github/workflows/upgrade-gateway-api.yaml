@@ -49,14 +49,34 @@ jobs:
           sed -i "s/semver.MustParse(\"[^\"]*\")/semver.MustParse(\"${version}\")/" \
             internal/controller/suite_test.go
 
-      - name: Download YAMLs
-        env:
-          TAG: ${{ steps.release.outputs.tag }}
-        run: |
-          dest=charts/cloudflare-gateway-controller/crds/gateway-api.yaml
-          curl -fsSL -o "$dest" \
-            "https://github.com/kubernetes-sigs/gateway-api/releases/download/$TAG/experimental-install.yaml"
-          printf '%s\n%s\n%s\n%s\n' '# Copyright 2026 Matheus Pimenta.' '# SPDX-License-Identifier: AGPL-3.0' '' "$(cat "$dest")" > "$dest"
+      - name: Download and split Gateway API YAMLs
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const fs = require('fs');
+            const tag = '${{ steps.release.outputs.tag }}';
+            const url = `https://github.com/kubernetes-sigs/gateway-api/releases/download/${tag}/experimental-install.yaml`;
+            const resp = await fetch(url);
+            const text = await resp.text();
+
+            const copyright = '# Copyright 2026 Matheus Pimenta.\n# SPDX-License-Identifier: AGPL-3.0\n\n';
+            const chart = 'charts/cloudflare-gateway-controller';
+
+            // Split on "---" boundaries into individual YAML documents.
+            const docs = text.split(/^---$/m).filter(d => d.trim());
+
+            const crds = [];
+            const other = [];
+            for (const doc of docs) {
+              if (/^kind:\s*CustomResourceDefinition$/m.test(doc)) {
+                crds.push(doc.trim());
+              } else if (/^kind:/m.test(doc)) {
+                other.push(doc.trim());
+              }
+            }
+
+            fs.writeFileSync(`${chart}/crds/gateway-api.yaml`, copyright + crds.join('\n---\n') + '\n');
+            fs.writeFileSync(`${chart}/templates/gateway-api.yaml`, copyright + other.join('\n---\n') + '\n');
 
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@c0f553fe549906ede9cf27b5156039d195d2ece0 # v8.1.0

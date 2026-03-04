@@ -41,9 +41,18 @@ func (r *GatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				predicate.GenerationChangedPredicate{},
 				predicate.AnnotationChangedPredicate{})))).
 
-		// Owned resources: cloudflared Deployment, tunnel token Secret, route ConfigMap.
+		// Owned resources.
 		Owns(&appsv1.Deployment{},
 			builder.WithPredicates(predicates.Debug(apiv1.KindDeployment,
+				predicate.ResourceVersionChangedPredicate{}))).
+		Owns(&corev1.ServiceAccount{},
+			builder.WithPredicates(predicates.Debug(apiv1.KindServiceAccount,
+				predicate.ResourceVersionChangedPredicate{}))).
+		Owns(&rbacv1.Role{},
+			builder.WithPredicates(predicates.Debug(apiv1.KindRole,
+				predicate.ResourceVersionChangedPredicate{}))).
+		Owns(&rbacv1.RoleBinding{},
+			builder.WithPredicates(predicates.Debug(apiv1.KindRoleBinding,
 				predicate.ResourceVersionChangedPredicate{}))).
 		WatchesMetadata(&corev1.Secret{},
 			handler.EnqueueRequestForOwner(mgr.GetScheme(), mgr.GetRESTMapper(), &gatewayv1.Gateway{}, handler.OnlyControllerOwner()),
@@ -54,18 +63,7 @@ func (r *GatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			builder.WithPredicates(predicates.Debug(apiv1.KindConfigMap,
 				predicate.ResourceVersionChangedPredicate{}))).
 
-		// Owned sidecar RBAC resources: ServiceAccount, Role, RoleBinding.
-		Owns(&corev1.ServiceAccount{},
-			builder.WithPredicates(predicates.Debug(apiv1.KindServiceAccount,
-				predicate.ResourceVersionChangedPredicate{}))).
-		Owns(&rbacv1.Role{},
-			builder.WithPredicates(predicates.Debug(apiv1.KindRole,
-				predicate.ResourceVersionChangedPredicate{}))).
-		Owns(&rbacv1.RoleBinding{},
-			builder.WithPredicates(predicates.Debug(apiv1.KindRoleBinding,
-				predicate.ResourceVersionChangedPredicate{}))).
-
-		// Other relationships.
+		// Related resources.
 		Watches(&gatewayv1.GatewayClass{},
 			handler.EnqueueRequestsFromMapFunc(r.mapGatewayClassToGateway),
 			builder.WithPredicates(predicates.Debug(apiv1.KindGatewayClass,

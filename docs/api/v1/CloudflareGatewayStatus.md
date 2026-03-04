@@ -41,11 +41,6 @@ status:
         Allowed zones:
         - example.com
       lastTransitionTime: "2026-01-15T10:01:00Z"
-    - type: Sidecar
-      status: "True"
-      reason: Enabled
-      message: Sidecar reverse proxy is enabled
-      lastTransitionTime: "2026-01-15T10:01:00Z"
     - type: Ready
       status: "True"
       reason: ReconciliationSucceeded
@@ -99,9 +94,8 @@ The CGS mirrors the same conditions as the parent
 [Gateway](Gateway.md#conditions):
 
 - `Accepted`: Whether the Gateway passed validation.
-- `Programmed`: Whether the cloudflared Deployment is available.
+- `Programmed`: Whether the tunnel Deployment is available.
 - `DNSManagement`: Whether DNS CNAME record management is enabled.
-- `Sidecar`: Whether the sidecar reverse proxy is enabled.
 - `Ready`: Overall reconciliation state (custom kstatus condition).
 
 See [Gateway conditions](Gateway.md#conditions) for the full status/reason
@@ -126,8 +120,7 @@ Gateway. Each entry has the following fields:
 - `kind`: Resource kind (e.g. `Deployment`, `Secret`).
 - `name`: Resource name (same namespace as the Gateway).
 
-The inventory always includes the cloudflared Deployment(s) and tunnel token
-Secret. When the sidecar is enabled (default), it also includes the sidecar
-ConfigMap, ServiceAccount, Role, and RoleBinding. When autoscaling is enabled
-(via [CloudflareGatewayParameters](CloudflareGatewayParameters.md#cloudflared-container-configuration)),
+The inventory always includes the tunnel Deployment(s), tunnel token Secret,
+routes ConfigMap, ServiceAccount, Role, and RoleBinding. When autoscaling is
+enabled (via [CloudflareGatewayParameters](CloudflareGatewayParameters.md#tunnel-container-configuration)),
 it also includes VerticalPodAutoscaler resources for each replica Deployment.

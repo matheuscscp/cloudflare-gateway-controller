@@ -1,7 +1,7 @@
 // Copyright 2026 Matheus Pimenta.
 // SPDX-License-Identifier: AGPL-3.0
 
-package sidecar
+package proxy
 
 import (
 	"fmt"
@@ -41,11 +41,11 @@ func NewWatcher(clientset kubernetes.Interface, namespace, configMapName, config
 		}
 		var cfg Config
 		if err := yaml.Unmarshal([]byte(data), &cfg); err != nil {
-			fmt.Printf("sidecar watcher: failed to parse config: %v\n", err)
+			fmt.Printf("proxy watcher: failed to parse config: %v\n", err)
 			return
 		}
 		if err := cfg.Parse(); err != nil {
-			fmt.Printf("sidecar watcher: invalid config: %v\n", err)
+			fmt.Printf("proxy watcher: invalid config: %v\n", err)
 			return
 		}
 		proxy.SetConfig(&cfg)

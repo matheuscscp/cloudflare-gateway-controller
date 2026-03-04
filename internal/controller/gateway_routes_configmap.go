@@ -19,7 +19,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
-	"github.com/matheuscscp/cloudflare-gateway-controller/internal/sidecar"
+	"github.com/matheuscscp/cloudflare-gateway-controller/internal/proxy"
 )
 
 // routeConfigMapKey is the key used to store the route config in the ConfigMap.
@@ -81,8 +81,8 @@ func (r *GatewayReconciler) reconcileRouteConfigMap(ctx context.Context, gw *gat
 // Each rule's backendRefs are emitted as weighted backends on the route.
 // Returns the route config, a map of routes with denied backend refs, and
 // any transient error from ReferenceGrant checks.
-func buildRouteConfig(ctx context.Context, r client.Reader, routes []*gatewayv1.HTTPRoute) (sidecar.Config, map[types.NamespacedName][]string, error) {
-	var cfgRoutes []sidecar.Route
+func buildRouteConfig(ctx context.Context, r client.Reader, routes []*gatewayv1.HTTPRoute) (proxy.Config, map[types.NamespacedName][]string, error) {
+	var cfgRoutes []proxy.Route
 	routesWithDeniedRefs := make(map[types.NamespacedName][]string)
 	for _, route := range routes {
 		owner := route.Namespace + "/" + route.Name
@@ -90,7 +90,7 @@ func buildRouteConfig(ctx context.Context, r client.Reader, routes []*gatewayv1.
 			if len(rule.BackendRefs) == 0 {
 				continue
 			}
-			var backends []sidecar.Backend
+			var backends []proxy.Backend
 			denied := false
 			for _, ref := range rule.BackendRefs {
 				ns := route.Namespace
@@ -99,7 +99,7 @@ func buildRouteConfig(ctx context.Context, r client.Reader, routes []*gatewayv1.
 				}
 				granted, err := backendReferenceGranted(ctx, r, route.Namespace, ns, string(ref.Name))
 				if err != nil {
-					return sidecar.Config{}, nil, fmt.Errorf("checking ReferenceGrant for backendRef %s/%s in HTTPRoute %s/%s: %w", ns, ref.Name, route.Namespace, route.Name, err)
+					return proxy.Config{}, nil, fmt.Errorf("checking ReferenceGrant for backendRef %s/%s in HTTPRoute %s/%s: %w", ns, ref.Name, route.Namespace, route.Name, err)
 				}
 				if !granted {
 					key := types.NamespacedName{Namespace: route.Namespace, Name: route.Name}
@@ -116,12 +116,12 @@ func buildRouteConfig(ctx context.Context, r client.Reader, routes []*gatewayv1.
 					weight = *ref.Weight
 				}
 				service := fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", string(ref.Name), ns, port)
-				backends = append(backends, sidecar.Backend{Service: service, Weight: weight})
+				backends = append(backends, proxy.Backend{Service: service, Weight: weight})
 			}
 			if denied || len(backends) == 0 {
 				continue
 			}
-			var sp *sidecar.SessionPersistence
+			var sp *proxy.SessionPersistence
 			if rule.SessionPersistence != nil {
 				spType := "Cookie"
 				if rule.SessionPersistence.Type != nil {
@@ -134,7 +134,7 @@ func buildRouteConfig(ctx context.Context, r client.Reader, routes []*gatewayv1.
 				if rule.SessionPersistence.SessionName != nil {
 					sessionName = *rule.SessionPersistence.SessionName
 				}
-				sp = &sidecar.SessionPersistence{
+				sp = &proxy.SessionPersistence{
 					Type:        spType,
 					SessionName: sessionName,
 				}
@@ -152,7 +152,7 @@ func buildRouteConfig(ctx context.Context, r client.Reader, routes []*gatewayv1.
 			}
 			pathPrefix := pathFromMatches(rule.Matches)
 			for _, hostname := range route.Spec.Hostnames {
-				cfgRoutes = append(cfgRoutes, sidecar.Route{
+				cfgRoutes = append(cfgRoutes, proxy.Route{
 					Hostname:           string(hostname),
 					PathPrefix:         pathPrefix,
 					Owner:              owner,
@@ -162,12 +162,12 @@ func buildRouteConfig(ctx context.Context, r client.Reader, routes []*gatewayv1.
 			}
 		}
 	}
-	return sidecar.Config{Routes: cfgRoutes}, routesWithDeniedRefs, nil
+	return proxy.Config{Routes: cfgRoutes}, routesWithDeniedRefs, nil
 }
 
 // getExistingRouteConfig reads the current route ConfigMap for a Gateway and
 // returns the parsed config. Returns nil if the ConfigMap does not exist.
-func (r *GatewayReconciler) getExistingRouteConfig(ctx context.Context, gw *gatewayv1.Gateway) (*sidecar.Config, error) {
+func (r *GatewayReconciler) getExistingRouteConfig(ctx context.Context, gw *gatewayv1.Gateway) (*proxy.Config, error) {
 	cmName := apiv1.GatewayResourceName(gw)
 	var cm corev1.ConfigMap
 	if err := r.Get(ctx, types.NamespacedName{Name: cmName, Namespace: gw.Namespace}, &cm); err != nil {
@@ -180,7 +180,7 @@ func (r *GatewayReconciler) getExistingRouteConfig(ctx context.Context, gw *gate
 	if !ok {
 		return nil, nil
 	}
-	var cfg sidecar.Config
+	var cfg proxy.Config
 	if err := yaml.Unmarshal([]byte(data), &cfg); err != nil {
 		return nil, fmt.Errorf("unmarshaling route config from ConfigMap %s: %w", cmName, err)
 	}

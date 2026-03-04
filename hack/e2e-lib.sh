@@ -98,9 +98,9 @@ cf_resource_name() {
 }
 export -f cf_resource_name
 
-# sidecar_config_has_hostname checks whether the sidecar ConfigMap for a given
+# route_config_has_hostname checks whether the route ConfigMap for a given
 # gateway contains a route entry for the specified hostname (and optional pathPrefix).
-sidecar_config_has_hostname() {
+route_config_has_hostname() {
     local gw_name="$1" hostname="$2" path_prefix="${3:-}"
     local filter=".routes[] | select(.hostname == \"$hostname\")"
     if [ -n "$path_prefix" ]; then
@@ -109,7 +109,7 @@ sidecar_config_has_hostname() {
     kubectl get configmap "gateway-${gw_name}" -n "$TEST_NS" \
         -o jsonpath='{.data.config\.yaml}' | yq -e "$filter" >/dev/null
 }
-export -f sidecar_config_has_hostname
+export -f route_config_has_hostname
 export TEST_NS
 
 # wait_for_https polls an HTTPS URL until it returns 2xx, printing the full

@@ -1,7 +1,7 @@
 // Copyright 2026 Matheus Pimenta.
 // SPDX-License-Identifier: AGPL-3.0
 
-package sidecar_test
+package proxy_test
 
 import (
 	"net/http"
@@ -14,7 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
-	"github.com/matheuscscp/cloudflare-gateway-controller/internal/sidecar"
+	"github.com/matheuscscp/cloudflare-gateway-controller/internal/proxy"
 )
 
 func TestWatcher_LoadsConfigFromConfigMap(t *testing.T) {
@@ -33,7 +33,7 @@ func TestWatcher_LoadsConfigFromConfigMap(t *testing.T) {
 `
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-sidecar-config",
+			Name:      "test-proxy-config",
 			Namespace: "default",
 		},
 		Data: map[string]string{
@@ -42,8 +42,8 @@ func TestWatcher_LoadsConfigFromConfigMap(t *testing.T) {
 	}
 
 	clientset := fake.NewClientset(cm)
-	proxy := &sidecar.Proxy{}
-	watcher := sidecar.NewWatcher(clientset, "default", "test-sidecar-config", "config.yaml", proxy)
+	p := &proxy.Proxy{}
+	watcher := proxy.NewWatcher(clientset, "default", "test-proxy-config", "config.yaml", p)
 
 	stopCh := make(chan struct{})
 	defer close(stopCh)
@@ -53,7 +53,7 @@ func TestWatcher_LoadsConfigFromConfigMap(t *testing.T) {
 	g.Eventually(func(g Gomega) {
 		req := httptest.NewRequest("GET", "http://app.example.com/", nil)
 		rec := httptest.NewRecorder()
-		proxy.ServeHTTP(rec, req)
+		p.ServeHTTP(rec, req)
 		g.Expect(rec.Code).To(Equal(http.StatusOK))
 		g.Expect(rec.Body.String()).To(Equal("watcher-ok"))
 	}).WithTimeout(5 * time.Second).WithPolling(50 * time.Millisecond).Should(Succeed())
@@ -64,7 +64,7 @@ func TestWatcher_IgnoresMissingKey(t *testing.T) {
 
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-sidecar-config",
+			Name:      "test-proxy-config",
 			Namespace: "default",
 		},
 		Data: map[string]string{
@@ -73,8 +73,8 @@ func TestWatcher_IgnoresMissingKey(t *testing.T) {
 	}
 
 	clientset := fake.NewClientset(cm)
-	proxy := &sidecar.Proxy{}
-	watcher := sidecar.NewWatcher(clientset, "default", "test-sidecar-config", "config.yaml", proxy)
+	p := &proxy.Proxy{}
+	watcher := proxy.NewWatcher(clientset, "default", "test-proxy-config", "config.yaml", p)
 
 	stopCh := make(chan struct{})
 	defer close(stopCh)
@@ -86,7 +86,7 @@ func TestWatcher_IgnoresMissingKey(t *testing.T) {
 	// Config should not be loaded (missing key), so proxy returns 503.
 	req := httptest.NewRequest("GET", "http://app.example.com/", nil)
 	rec := httptest.NewRecorder()
-	proxy.ServeHTTP(rec, req)
+	p.ServeHTTP(rec, req)
 	g.Expect(rec.Code).To(Equal(http.StatusServiceUnavailable))
 }
 
@@ -95,7 +95,7 @@ func TestWatcher_IgnoresInvalidYAML(t *testing.T) {
 
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-sidecar-config",
+			Name:      "test-proxy-config",
 			Namespace: "default",
 		},
 		Data: map[string]string{
@@ -104,8 +104,8 @@ func TestWatcher_IgnoresInvalidYAML(t *testing.T) {
 	}
 
 	clientset := fake.NewClientset(cm)
-	proxy := &sidecar.Proxy{}
-	watcher := sidecar.NewWatcher(clientset, "default", "test-sidecar-config", "config.yaml", proxy)
+	p := &proxy.Proxy{}
+	watcher := proxy.NewWatcher(clientset, "default", "test-proxy-config", "config.yaml", p)
 
 	stopCh := make(chan struct{})
 	defer close(stopCh)
@@ -117,7 +117,7 @@ func TestWatcher_IgnoresInvalidYAML(t *testing.T) {
 	// Config should not be loaded (invalid YAML), so proxy returns 503.
 	req := httptest.NewRequest("GET", "http://app.example.com/", nil)
 	rec := httptest.NewRecorder()
-	proxy.ServeHTTP(rec, req)
+	p.ServeHTTP(rec, req)
 	g.Expect(rec.Code).To(Equal(http.StatusServiceUnavailable))
 }
 
@@ -126,7 +126,7 @@ func TestWatcher_IgnoresInvalidServiceURL(t *testing.T) {
 
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-sidecar-config",
+			Name:      "test-proxy-config",
 			Namespace: "default",
 		},
 		Data: map[string]string{
@@ -140,8 +140,8 @@ func TestWatcher_IgnoresInvalidServiceURL(t *testing.T) {
 	}
 
 	clientset := fake.NewClientset(cm)
-	proxy := &sidecar.Proxy{}
-	watcher := sidecar.NewWatcher(clientset, "default", "test-sidecar-config", "config.yaml", proxy)
+	p := &proxy.Proxy{}
+	watcher := proxy.NewWatcher(clientset, "default", "test-proxy-config", "config.yaml", p)
 
 	stopCh := make(chan struct{})
 	defer close(stopCh)
@@ -153,6 +153,6 @@ func TestWatcher_IgnoresInvalidServiceURL(t *testing.T) {
 	// Config should not be loaded (invalid service URL), so proxy returns 503.
 	req := httptest.NewRequest("GET", "http://app.example.com/", nil)
 	rec := httptest.NewRecorder()
-	proxy.ServeHTTP(rec, req)
+	p.ServeHTTP(rec, req)
 	g.Expect(rec.Code).To(Equal(http.StatusServiceUnavailable))
 }

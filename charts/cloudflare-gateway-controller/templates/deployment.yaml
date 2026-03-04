@@ -38,12 +38,7 @@ spec:
         args:
         - controller
         - --cluster-name={{ required "config.clusterName is required" .Values.config.clusterName }}
-        {{- if or .Values.config.cloudflared.image.repository .Values.config.cloudflared.image.tag }}
-        - --cloudflared-image={{ .Values.config.cloudflared.image.repository }}:{{ .Values.config.cloudflared.image.tag }}
-        {{- end }}
-        {{- if .Values.config.sidecar.enabled }}
-        - --sidecar-image={{ .Values.config.sidecar.image.repository | default .Values.image.repository }}:{{ .Values.config.sidecar.image.tag | default .Values.image.tag | default .Chart.AppVersion }}
-        {{- end }}
+        - --tunnel-image={{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}
         {{- range .Values.podArgs }}
         - {{ . }}
         {{- end }}

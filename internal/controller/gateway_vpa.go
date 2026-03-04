@@ -23,26 +23,11 @@ import (
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 )
 
-// autoscalingEnabled returns true when at least one container has
+// autoscalingEnabled returns true when the tunnel container has
 // autoscaling.enabled set to true. Nil-safe walk through the params.
 func autoscalingEnabled(params *apiv1.CloudflareGatewayParameters) bool {
-	if params == nil || params.Spec.Tunnel == nil {
-		return false
-	}
-	t := params.Spec.Tunnel
-	if t.Cloudflared != nil && t.Cloudflared.Autoscaling != nil && t.Cloudflared.Autoscaling.Enabled {
-		return true
-	}
-	if t.Sidecar != nil && t.Sidecar.Autoscaling != nil && t.Sidecar.Autoscaling.Enabled {
-		return true
-	}
-	return false
-}
-
-// containerAutoscalingEnabled returns true when a specific container's
-// autoscaling is enabled. Nil-safe.
-func containerAutoscalingEnabled(cc *apiv1.ContainerConfig) bool {
-	return cc != nil && cc.Autoscaling != nil && cc.Autoscaling.Enabled
+	return params != nil && params.Spec.Tunnel != nil &&
+		params.Spec.Tunnel.Autoscaling != nil && params.Spec.Tunnel.Autoscaling.Enabled
 }
 
 // reconcileVPAs creates or updates a VerticalPodAutoscaler for each replica
@@ -51,23 +36,16 @@ func (r *GatewayReconciler) reconcileVPAs(ctx context.Context, gw *gatewayv1.Gat
 	l := log.FromContext(ctx)
 	var changes []string
 
-	// Build container policies. Containers with autoscaling enabled get
-	// mode Auto; all others are opted out via the "*" wildcard set to Off
-	// (unlisted containers default to Auto in the VPA API).
+	// Build container policies. The tunnel container gets mode Auto; all
+	// others are opted out via the "*" wildcard set to Off (unlisted
+	// containers default to Auto in the VPA API).
 	containerPolicies := []vpav1.ContainerResourcePolicy{{
 		ContainerName: vpav1.DefaultContainerResourcePolicy,
 		Mode:          new(vpav1.ContainerScalingModeOff),
 	}}
-	if params != nil && params.Spec.Tunnel != nil {
-		t := params.Spec.Tunnel
-		if t.Cloudflared != nil && containerAutoscalingEnabled(&t.Cloudflared.ContainerConfig) {
-			containerPolicies = append(containerPolicies,
-				buildContainerPolicy("cloudflared", t.Cloudflared.Autoscaling))
-		}
-		if t.Sidecar != nil && containerAutoscalingEnabled(&t.Sidecar.ContainerConfig) {
-			containerPolicies = append(containerPolicies,
-				buildContainerPolicy("sidecar", t.Sidecar.Autoscaling))
-		}
+	if params != nil && params.Spec.Tunnel != nil && params.Spec.Tunnel.Autoscaling != nil {
+		containerPolicies = append(containerPolicies,
+			buildContainerPolicy("tunnel", params.Spec.Tunnel.Autoscaling))
 	}
 
 	updateMode := vpav1.UpdateModeInPlaceOrRecreate

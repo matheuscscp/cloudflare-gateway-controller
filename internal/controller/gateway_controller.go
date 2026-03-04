@@ -29,10 +29,6 @@ import (
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/conditions"
 )
 
-// DefaultCloudflaredImage is the default cloudflared container image.
-// This value is updated automatically by the upgrade-cloudflared workflow.
-const DefaultCloudflaredImage = "ghcr.io/matheuscscp/cloudflare-gateway-controller/cloudflared:2026.2.0@sha256:404528c1cd63c3eb882c257ae524919e4376115e6fe57befca8d603656a91a4c"
-
 // ssaApplyOptions configures Server-Side Apply to recreate objects with
 // immutable field changes and to clean up field managers used by kubectl
 // to force use of GitOps. The controller is the sole owner of objects it
@@ -80,13 +76,12 @@ type GatewayReconciler struct {
 	client.Client
 	events.EventRecorder
 	ResourceManager     *ssa.ResourceManager
+	TunnelImage         string
 	NewCloudflareClient cloudflare.ClientFactory
-	CloudflaredImage    string
-	SidecarImage        string
 }
 
 // gatewayReadiness holds the computed Programmed and Ready condition values
-// derived from the cloudflared Deployment status.
+// derived from the tunnel Deployment status.
 type gatewayReadiness struct {
 	readyStatus, programmedStatus   metav1.ConditionStatus
 	readyReason, readyMsg           string
@@ -225,7 +220,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	}
 
 	// Validate parameters (defense-in-depth, mirrors CEL XValidation rules).
-	if err := validateParameters(params, r.SidecarImage); err != nil {
+	if err := validateParameters(params); err != nil {
 		return r.reconcileError(ctx, gw, err.err, err.cond)
 	}
 
@@ -275,10 +270,9 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	matchedRoutes, noMatchErrs := r.filterNoMatchingParentRoutes(ctx, gw, gatewayRoutes)
 	errs = append(errs, noMatchErrs...)
 	// Set Accepted=False/UnsupportedValue on routes that use unsupported features.
-	sidecar := r.sidecarEnabled(params)
 	var validRoutes []*gatewayv1.HTTPRoute
 	for _, route := range matchedRoutes {
-		if issues := validateHTTPRoute(route, sidecar); len(issues) > 0 {
+		if issues := validateHTTPRoute(route); len(issues) > 0 {
 			msg := "Unsupported features:\n- " + strings.Join(issues, "\n- ")
 			if err := r.rejectRouteStatus(ctx, gw, route,
 				string(gatewayv1.RouteReasonUnsupportedValue), msg); err != nil {
@@ -315,7 +309,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	}
 	changes = append(changes, secretChanges...)
 
-	// Reconcile route ConfigMap (always, regardless of sidecar state).
+	// Reconcile route ConfigMap.
 	var routeDeniedRefs map[types.NamespacedName][]string
 	routeDeniedRefs, routeCMChanges, err := r.reconcileRouteConfigMap(ctx, gw, validRoutes)
 	if err != nil {
@@ -323,17 +317,15 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	}
 	changes = append(changes, routeCMChanges...)
 
-	// Reconcile sidecar RBAC when sidecar is enabled.
-	if sidecar {
-		sidecarRBACChanges, err := r.reconcileSidecarRBAC(ctx, gw)
-		if err != nil {
-			return r.reconcileError(ctx, gw, err)
-		}
-		changes = append(changes, sidecarRBACChanges...)
+	// Reconcile tunnel RBAC (ServiceAccount, Role, RoleBinding for ConfigMap access).
+	tunnelRBACChanges, err := r.reconcileTunnelRBAC(ctx, gw)
+	if err != nil {
+		return r.reconcileError(ctx, gw, err)
 	}
+	changes = append(changes, tunnelRBACChanges...)
 
-	// Apply cloudflared Deployments for all replicas.
-	deployChanges, err := r.applyCloudflaredDeployments(ctx, gw, params, resourceName, replicas)
+	// Apply tunnel Deployments for all replicas.
+	deployChanges, err := r.applyTunnelDeployments(ctx, gw, params, resourceName, replicas)
 	if err != nil {
 		return r.reconcileError(ctx, gw, err)
 	}
@@ -366,23 +358,8 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	changes = append(changes, vpaCleanupChanges...)
 	errs = append(errs, vpaCleanupErrs...)
 
-	// Clean up sidecar RBAC resources when sidecar is disabled (handles the case
-	// where sidecar was previously enabled and is now turned off).
-	if !sidecar {
-		sidecarCleanupChanges, sidecarCleanupErrs := r.cleanupStaleSidecarRBACResources(ctx, gw)
-		changes = append(changes, sidecarCleanupChanges...)
-		errs = append(errs, sidecarCleanupErrs...)
-	}
-
 	// Build listener statuses using only valid routes.
 	desiredListeners := buildListenerStatuses(gw, countAttachedRoutes(validRoutes, gw))
-
-	// Reconcile tunnel ingress configuration.
-	routesWithDeniedRefs, configChanges, err := r.reconcileTunnelIngress(ctx, tc, params, tunnel, validRoutes, routeDeniedRefs)
-	if err != nil {
-		return r.reconcileError(ctx, gw, err)
-	}
-	changes = append(changes, configChanges...)
 
 	// Build DNS policy from parameters.
 	var dns dnsPolicy
@@ -401,12 +378,12 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	changes = append(changes, dnsResult.changes...)
 	errs = append(errs, dnsResult.errs...)
 
-	// Check readiness of all cloudflared Deployments.
+	// Check readiness of all tunnel Deployments.
 	readiness := r.checkAllDeploymentsReadiness(ctx, gw, replicas)
 
 	// Update HTTPRoute status.parents for allowed routes (after DNS and
 	// Deployment checks so we can report DNS status and Gateway readiness).
-	errs = append(errs, r.updateRouteStatuses(ctx, gw, validRoutes, routesWithDeniedRefs, dns, dnsResult.dnsErr,
+	errs = append(errs, r.updateRouteStatuses(ctx, gw, validRoutes, routeDeniedRefs, dns, dnsResult.dnsErr,
 		readiness.readyStatus, readiness.readyReason, readiness.readyMsg)...)
 
 	// Reconcile the CloudflareGatewayStatus (observability only — tunnel info
@@ -427,7 +404,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	}
 
 	// Patch Gateway status and emit events
-	return r.patchGatewayStatus(ctx, gw, cgs, tunnel, desiredListeners, changes, errs, readiness, dns, sidecar, requeueAfter)
+	return r.patchGatewayStatus(ctx, gw, cgs, tunnel, desiredListeners, changes, errs, readiness, dns, requeueAfter)
 }
 
 // dnsResult holds the results of DNS reconciliation.
@@ -484,33 +461,11 @@ func buildDNSManagementCondition(generation int64, now metav1.Time, dns dnsPolic
 	return cond
 }
 
-// buildSidecarCondition builds the Sidecar condition for the Gateway status
-// based on whether the sidecar reverse proxy is enabled.
-func buildSidecarCondition(generation int64, now metav1.Time, sidecarEnabled bool) metav1.Condition {
-	cond := metav1.Condition{
-		Type:               apiv1.ConditionSidecar,
-		ObservedGeneration: generation,
-		LastTransitionTime: now,
-	}
-	if sidecarEnabled {
-		cond.Status = metav1.ConditionTrue
-		cond.Reason = apiv1.ReasonEnabled
-		cond.Message = "Sidecar reverse proxy is enabled"
-	} else {
-		cond.Status = metav1.ConditionFalse
-		cond.Reason = apiv1.ReasonDisabled
-		cond.Message = "Sidecar reverse proxy is disabled; " +
-			"traffic splitting (weighted backendRefs) and session persistence are not available, " +
-			"and cloudflared's persistent connections prevent effective kube-proxy load balancing across pods"
-	}
-	return cond
-}
-
 // patchGatewayStatus builds the desired Gateway conditions from the readiness
 // state, checks whether a status patch is needed (conditions, listeners, or
 // resource changes), patches the status, and emits summary events/logs.
 // It also patches the CGS conditions to mirror the Gateway conditions.
-func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv1.Gateway, cgs *apiv1.CloudflareGatewayStatus, tunnel tunnelState, desiredListeners []gatewayv1.ListenerStatus, changes, errs []string, readiness gatewayReadiness, dns dnsPolicy, sidecar bool, requeueAfter time.Duration) (ctrl.Result, error) {
+func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv1.Gateway, cgs *apiv1.CloudflareGatewayStatus, tunnel tunnelState, desiredListeners []gatewayv1.ListenerStatus, changes, errs []string, readiness gatewayReadiness, dns dnsPolicy, requeueAfter time.Duration) (ctrl.Result, error) {
 	l := log.FromContext(ctx)
 	now := metav1.Now()
 
@@ -523,9 +478,8 @@ func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv
 		readiness.readyMsg = strings.Join(errs, "; ")
 	}
 
-	// Build DNSManagement and Sidecar conditions.
+	// Build DNSManagement condition.
 	dnsCond := buildDNSManagementCondition(gw.Generation, now, dns)
-	sidecarCond := buildSidecarCondition(gw.Generation, now, sidecar)
 
 	desiredConds := []metav1.Condition{
 		{
@@ -553,7 +507,6 @@ func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv
 			Message:            readiness.readyMsg,
 		},
 		dnsCond,
-		sidecarCond,
 	}
 
 	desiredAddresses := []gatewayv1.GatewayStatusAddress{{
@@ -843,27 +796,27 @@ func (r *GatewayReconciler) finalizeDisabled(ctx context.Context, gw *gatewayv1.
 	return nil
 }
 
-// finalizeEnabled deletes all cloudflared Deployments (waiting for them to be
+// finalizeEnabled deletes all tunnel Deployments (waiting for them to be
 // fully removed), then reads credentials, cleans up DNS CNAME records across
 // all zones, and deletes all Cloudflare tunnels owned by this Gateway.
 func (r *GatewayReconciler) finalizeEnabled(ctx context.Context, gw *gatewayv1.Gateway, gc *gatewayv1.GatewayClass) ([]string, error) {
 	l := log.FromContext(ctx)
 
-	// Delete all cloudflared Deployments owned by this Gateway and wait for
+	// Delete all tunnel Deployments owned by this Gateway and wait for
 	// them to be gone before deleting tunnels, so there are no active connections.
 	var deployList appsv1.DeploymentList
 	if err := r.List(ctx, &deployList,
 		client.InNamespace(gw.Namespace),
 		client.MatchingLabels(apiv1.GatewayResourceLabels(gw.Name)),
 	); err != nil {
-		return nil, fmt.Errorf("listing cloudflared deployments for deletion: %w", err)
+		return nil, fmt.Errorf("listing tunnel deployments for deletion: %w", err)
 	}
 	for i := range deployList.Items {
 		deploy := &deployList.Items[i]
 		if err := r.Delete(ctx, deploy); client.IgnoreNotFound(err) != nil {
-			return nil, fmt.Errorf("deleting cloudflared deployment %s: %w", deploy.Name, err)
+			return nil, fmt.Errorf("deleting tunnel deployment %s: %w", deploy.Name, err)
 		}
-		l.V(1).Info("Deleted cloudflared Deployment", "deployment", deploy.Name)
+		l.V(1).Info("Deleted tunnel Deployment", "deployment", deploy.Name)
 	}
 
 	// Wait for all Deployments to be gone.
@@ -874,16 +827,16 @@ func (r *GatewayReconciler) finalizeEnabled(ctx context.Context, gw *gatewayv1.G
 			if err := r.Get(ctx, deployKey, deploy); apierrors.IsNotFound(err) {
 				break
 			} else if err != nil {
-				return nil, fmt.Errorf("waiting for cloudflared deployment %s deletion: %w", deploy.Name, err)
+				return nil, fmt.Errorf("waiting for tunnel deployment %s deletion: %w", deploy.Name, err)
 			}
 			select {
 			case <-ctx.Done():
-				return nil, fmt.Errorf("waiting for cloudflared deployment %s deletion: %w", deploy.Name, ctx.Err())
+				return nil, fmt.Errorf("waiting for tunnel deployment %s deletion: %w", deploy.Name, ctx.Err())
 			case <-time.After(time.Second):
 			}
 		}
 	}
-	l.V(1).Info("All cloudflared Deployments are gone")
+	l.V(1).Info("All tunnel Deployments are gone")
 
 	// Try reading params; if CGP was deleted, params will be nil.
 	params, err := readParameters(ctx, r.Client, gw)
@@ -904,7 +857,7 @@ func (r *GatewayReconciler) finalizeEnabled(ctx context.Context, gw *gatewayv1.G
 
 	var changes []string
 	for i := range deployList.Items {
-		changes = append(changes, fmt.Sprintf("deleted cloudflared Deployment %s", deployList.Items[i].Name))
+		changes = append(changes, fmt.Sprintf("deleted tunnel Deployment %s", deployList.Items[i].Name))
 	}
 
 	// Look up the tunnel by its deterministic name.

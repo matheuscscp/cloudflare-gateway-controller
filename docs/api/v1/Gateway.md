@@ -119,14 +119,11 @@ without leaking Cloudflare resources — a reborn cluster with the same
 | VPA (when autoscaling)  | `gateway-<gatewayName>-<replicaName>` (default: `primary`)  |
 | Tunnel token Secret     | `gateway-<gatewayName>`                                     |
 | Routes ConfigMap        | `gateway-<gatewayName>`                                     |
-| Sidecar ServiceAccount  | `gateway-<gatewayName>`                                     |
-| Sidecar Role            | `gateway-<gatewayName>`                                     |
-| Sidecar RoleBinding     | `gateway-<gatewayName>`                                     |
+| Tunnel ServiceAccount   | `gateway-<gatewayName>`                                     |
+| Tunnel Role             | `gateway-<gatewayName>`                                     |
+| Tunnel RoleBinding      | `gateway-<gatewayName>`                                     |
 
 `clusterName` comes from the Helm value `config.clusterName` (required).
-Sidecar resources are only created when the sidecar is enabled per-Gateway
-(via [CloudflareGatewayParameters](CloudflareGatewayParameters.md#sidecar-configuration);
-the default depends on whether a sidecar image is configured).
 
 Source: `TunnelName()`, `GatewayResourceName()`, `GatewayReplicaName()` in `api/v1/meta_types.go`.
 
@@ -197,7 +194,7 @@ tunnel, using `type: Hostname` and the tunnel's CNAME target
 A Gateway enters various states during its lifecycle, reflected as Kubernetes
 Conditions. It can be [accepted](#accepted-gateway),
 [programmed](#programmed-gateway),
-[DNS-managed](#dns-management), [sidecar-enabled](#sidecar),
+[DNS-managed](#dns-management),
 or [ready](#ready-gateway).
 
 #### Accepted Gateway
@@ -228,7 +225,7 @@ Reasons for rejection:
 
 #### Programmed Gateway
 
-Standard Gateway API condition. The controller reports whether the cloudflared
+Standard Gateway API condition. The controller reports whether the tunnel
 Deployment is available.
 
 When the Deployment is ready:
@@ -272,30 +269,6 @@ When DNS management is disabled:
 - `type: DNSManagement`
 - `status: "False"`
 - `reason: Disabled`
-
-#### Sidecar
-
-Custom condition, not part of the Gateway API spec. Reports whether the sidecar
-reverse proxy is enabled for this Gateway.
-
-The default depends on whether the controller has a sidecar image configured.
-It can be overridden per-Gateway via `.spec.tunnel.sidecar.enabled` in the
-[CloudflareGatewayParameters](CloudflareGatewayParameters.md#sidecar-configuration).
-
-When the sidecar is enabled:
-
-- `type: Sidecar`
-- `status: "True"`
-- `reason: Enabled`
-
-When the sidecar is disabled:
-
-- `type: Sidecar`
-- `status: "False"`
-- `reason: Disabled`
-- `message`: includes limitations — traffic splitting (weighted `backendRefs`)
-  and session persistence are not available, and cloudflared's persistent
-  connections prevent effective kube-proxy load balancing across pods.
 
 #### Ready Gateway
 

@@ -39,7 +39,7 @@ import (
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/conditions"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/controller"
-	"github.com/matheuscscp/cloudflare-gateway-controller/internal/sidecar"
+	"github.com/matheuscscp/cloudflare-gateway-controller/internal/proxy"
 )
 
 // testGatewayAPIVersion must match the major.minor version of the
@@ -210,8 +210,7 @@ func TestMain(m *testing.M) {
 			}
 			return testMock, nil
 		},
-		CloudflaredImage: controller.DefaultCloudflaredImage,
-		SidecarImage:     "test-sidecar-image:latest",
+		TunnelImage: "test-tunnel-image:latest",
 	}).SetupWithManager(mgr); err != nil {
 		panic(fmt.Sprintf("failed to setup Gateway controller: %v", err))
 	}
@@ -304,13 +303,11 @@ type mockCloudflareClient struct {
 	tunnelIDFunc func(name string) string
 
 	// HTTPRoute-related tracking
-	lastTunnelConfigID      string
-	lastTunnelConfigIngress []cloudflare.IngressRule
-	ensureDNSCalls          []mockDNSCall
-	deleteDNSCalls          []mockDNSCall
-	zones                   map[string]string // hostname -> zoneID
-	zoneIDs                 []string          // zone IDs returned by ListZoneIDs
-	listDNSCNAMEsByTarget   []string          // hostnames returned by ListDNSCNAMEsByTarget
+	ensureDNSCalls        []mockDNSCall
+	deleteDNSCalls        []mockDNSCall
+	zones                 map[string]string // hostname -> zoneID
+	zoneIDs               []string          // zone IDs returned by ListZoneIDs
+	listDNSCNAMEsByTarget []string          // hostnames returned by ListDNSCNAMEsByTarget
 
 	// Error injection fields — set these to make mock methods return errors.
 	newClientErr                error
@@ -318,8 +315,6 @@ type mockCloudflareClient struct {
 	createTunnelErr             error
 	deleteTunnelErr             error
 	getTunnelTokenErr           error
-	getTunnelConfigurationErr   error
-	updateTunnelConfigErr       error
 	cleanupTunnelConnectionsErr error
 	listTunnelsErr              error
 	listZoneIDsErr              error
@@ -431,22 +426,6 @@ func (m *mockCloudflareClient) GetTunnelToken(_ context.Context, _ string) (stri
 		return "", m.getTunnelTokenErr
 	}
 	return m.tunnelToken, nil
-}
-
-func (m *mockCloudflareClient) GetTunnelConfiguration(_ context.Context, _ string) ([]cloudflare.IngressRule, error) {
-	if m.getTunnelConfigurationErr != nil {
-		return nil, m.getTunnelConfigurationErr
-	}
-	return m.lastTunnelConfigIngress, nil
-}
-
-func (m *mockCloudflareClient) UpdateTunnelConfiguration(_ context.Context, tunnelID string, ingress []cloudflare.IngressRule) error {
-	if m.updateTunnelConfigErr != nil {
-		return m.updateTunnelConfigErr
-	}
-	m.lastTunnelConfigID = tunnelID
-	m.lastTunnelConfigIngress = ingress
-	return nil
 }
 
 func (m *mockCloudflareClient) ListZoneIDs(_ context.Context) ([]string, error) {
@@ -696,8 +675,6 @@ func resetMockErrors(t *testing.T) {
 		testMock.createTunnelErr = nil
 		testMock.deleteTunnelErr = nil
 		testMock.getTunnelTokenErr = nil
-		testMock.getTunnelConfigurationErr = nil
-		testMock.updateTunnelConfigErr = nil
 		testMock.cleanupTunnelConnectionsErr = nil
 		testMock.listTunnelsErr = nil
 		testMock.listZoneIDsErr = nil
@@ -710,8 +687,6 @@ func resetMockErrors(t *testing.T) {
 		testMock.tunnels = nil
 		testMock.trackedTunnels = nil
 		testMock.tunnelIDFunc = nil
-		testMock.lastTunnelConfigID = ""
-		testMock.lastTunnelConfigIngress = nil
 	}
 	doReset()
 	t.Cleanup(doReset)
@@ -719,21 +694,13 @@ func resetMockErrors(t *testing.T) {
 
 // getRouteConfig reads the route ConfigMap for a Gateway and returns
 // the parsed route config.
-func getRouteConfig(g Gomega, gw *gatewayv1.Gateway) sidecar.Config {
+func getRouteConfig(g Gomega, gw *gatewayv1.Gateway) proxy.Config {
 	var cm corev1.ConfigMap
 	cmKey := ctrlclient.ObjectKey{Name: apiv1.GatewayResourceName(gw), Namespace: gw.Namespace}
 	g.Expect(testClient.Get(testCtx, cmKey, &cm)).To(Succeed())
 	data, ok := cm.Data["config.yaml"]
 	g.Expect(ok).To(BeTrue(), "config.yaml key not found in route ConfigMap")
-	var cfg sidecar.Config
+	var cfg proxy.Config
 	g.Expect(yaml.Unmarshal([]byte(data), &cfg)).To(Succeed())
 	return cfg
-}
-
-// expectCatchAllIngress asserts that the mock's lastTunnelConfigIngress is
-// the sidecar catch-all rule.
-func expectCatchAllIngress(g Gomega) {
-	g.Expect(testMock.lastTunnelConfigIngress).To(HaveLen(1))
-	g.Expect(testMock.lastTunnelConfigIngress[0].Service).To(Equal("http://localhost:8080"))
-	g.Expect(testMock.lastTunnelConfigIngress[0].Hostname).To(BeEmpty())
 }

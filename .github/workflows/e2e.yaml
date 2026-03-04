@@ -99,7 +99,6 @@ jobs:
           - test_multi_gateway_overlapping_zones
           - test_cluster_recreation
           - test_load_balancing
-          - test_sidecar_disabled
           - test_traffic_splitting
           - test_session_persistence
           - test_vpa_autoscaling

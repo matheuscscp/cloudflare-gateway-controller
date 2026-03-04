@@ -17,9 +17,9 @@ public IPs or `LoadBalancer`-type Services required.
 
 A single Cloudflare tunnel handles all traffic, and DNS CNAME records point each hostname
 directly to the tunnel. Multiple HTTPRoutes can attach to the same Gateway — each hostname
-gets its own CNAME. A sidecar reverse proxy runs alongside cloudflared to route requests
-to the correct backend Service by hostname and path, with per-request load balancing
-through kube-proxy.
+gets its own CNAME. The tunnel container embeds both cloudflared and a reverse proxy to
+route requests to the correct backend Service by hostname and path, with per-request load
+balancing through kube-proxy.
 
 ```mermaid
 flowchart LR
@@ -28,9 +28,9 @@ flowchart LR
     C -->|api.example.com| CNB[CNAME api]
     CNA --> T[Tunnel]
     CNB --> T
-    T --> CD[cloudflared +<br/>sidecar proxy]
-    CD --> SA[Service A]
-    CD --> SB[Service B]
+    T --> TC[tunnel container]
+    TC --> SA[Service A]
+    TC --> SB[Service B]
 ```
 
 A minimal setup needs a credentials Secret, a GatewayClass, a Gateway, and an HTTPRoute —
@@ -116,26 +116,15 @@ spec:
         zone: us-east-1a
       - name: us-east-1b
         zone: us-east-1b
-    cloudflared:
-      autoscaling:
-        enabled: true
-      resources:
-        requests:
-          cpu: 100m
-          memory: 128Mi
-        limits:
-          cpu: "1"
-          memory: 512Mi
-    sidecar:
-      autoscaling:
-        enabled: true
-      resources:
-        requests:
-          cpu: 100m
-          memory: 128Mi
-        limits:
-          cpu: "1"
-          memory: 512Mi
+    autoscaling:
+      enabled: true
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: "1"
+        memory: 512Mi
   dns:
     zones:
       - name: example.com
@@ -151,10 +140,8 @@ When an HTTPRoute hostname is removed, its CNAME is deleted.
 
 **Cloudflare resources:** 1 tunnel, 1 CNAME record per HTTPRoute hostname.
 
-**Kubernetes resources:** Per Gateway, the controller creates a cloudflared Deployment,
-a tunnel token Secret, and (when the sidecar is enabled) a sidecar ConfigMap, a
-ServiceAccount, a Role, and a RoleBinding. The sidecar is enabled by default and can be
-disabled per-Gateway via [CloudflareGatewayParameters](docs/api/v1/CloudflareGatewayParameters.md#sidecar-configuration).
+**Kubernetes resources:** Per Gateway, the controller creates a tunnel Deployment,
+a tunnel token Secret, a routes ConfigMap, a ServiceAccount, a Role, and a RoleBinding.
 
 **Replicas:** Multiple named replicas can be configured per tunnel for high availability.
 Each replica creates a separate Deployment with optional placement controls (zone,
@@ -168,9 +155,9 @@ Deployment for advanced customization (e.g. tolerations, node selectors). See
 details.
 
 **Container resources and autoscaling:** CPU and memory requests/limits are configurable
-for both cloudflared and sidecar containers. Vertical Pod Autoscaler (VPA) support is
-available for automatic resource tuning. See
-[CloudflareGatewayParameters](docs/api/v1/CloudflareGatewayParameters.md#cloudflared-container-configuration)
+for the tunnel container. Vertical Pod Autoscaler (VPA) support is available for automatic
+resource tuning. See
+[CloudflareGatewayParameters](docs/api/v1/CloudflareGatewayParameters.md#tunnel-container-configuration)
 for details.
 
 **Observability:** The controller creates a
@@ -179,30 +166,25 @@ Gateway, providing a quick view of tunnel info, conditions, and managed resource
 
 ```
 $ kubectl get cgs
-NAME         TUNNEL ID    DNS       SIDECAR   READY
-my-gateway   abcd-1234…   Enabled   Enabled   True
+NAME         TUNNEL ID    DNS       READY
+my-gateway   abcd-1234…   Enabled   True
 ```
 
-### Sidecar reverse proxy
+### Embedded reverse proxy
 
-The sidecar proxy solves the load-balancing problem with cloudflared's persistent
-connections. Without it, cloudflared opens a single long-lived TCP connection to each
-backend Service, bypassing kube-proxy and pinning all traffic to one pod.
+The tunnel container embeds a reverse proxy that solves the load-balancing problem
+with cloudflared's persistent connections. Without it, cloudflared opens a single
+long-lived TCP connection to each backend Service, bypassing kube-proxy and pinning
+all traffic to one pod.
 
-The sidecar receives all traffic from cloudflared on `localhost:8080`, routes requests
+The embedded reverse proxy receives all traffic from cloudflared, routes requests
 by hostname and path prefix to the correct backend Service, and disables HTTP
 keep-alives on egress so every request opens a fresh connection through kube-proxy
 for proper pod-level load balancing. When an HTTPRoute rule has multiple `backendRefs`
-with `weight` fields, the sidecar distributes requests across backends according to
-their weights (traffic splitting). The sidecar also supports
+with `weight` fields, the proxy distributes requests across backends according to
+their weights (traffic splitting). The proxy also supports
 [session persistence](docs/api/v1/HTTPRoute.md#session-persistence) via cookie-based
 or header-based affinity to pin a client to the same backend across requests.
-
-The sidecar is enabled by default. To disable it for a specific Gateway, set
-`tunnel.sidecar.enabled: false` in your CloudflareGatewayParameters. When disabled,
-cloudflared connects directly to backend Services with persistent connections,
-which means kube-proxy cannot effectively distribute traffic across pods. Traffic
-splitting (weighted `backendRefs`) and session persistence are also not available.
 
 ## API Token Permissions
 
