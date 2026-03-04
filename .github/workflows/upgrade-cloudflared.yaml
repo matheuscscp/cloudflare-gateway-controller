@@ -74,9 +74,10 @@ jobs:
             const replaces = forkMod.match(/^replace .+$/gm) || [];
 
             // Replace the marker block with the fork's replace directives.
+            const body = replaces.length ? `\n\n${replaces.join('\n\n')}\n\n` : '\n';
             gomod = gomod.replace(
               /\/\/ cloudflared:replace:begin\n[\s\S]*?\/\/ cloudflared:replace:end/,
-              `// cloudflared:replace:begin\n${replaces.join('\n')}\n// cloudflared:replace:end`
+              `// cloudflared:replace:begin${body}// cloudflared:replace:end`
             );
 
             fs.writeFileSync('go.mod', gomod);
