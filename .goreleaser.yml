@@ -1,0 +1,26 @@
+project_name: cfgwctl
+builds:
+  - binary: cfgwctl
+    main: ./cmd/cfgwctl
+    ldflags:
+      - -s -w -X main.VERSION={{ .Version }}
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+archives:
+  - name_template: "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - none*
+checksum:
+  name_template: 'checksums.txt'
+changelog:
+  use: github-native

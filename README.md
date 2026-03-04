@@ -160,6 +160,12 @@ resource tuning. See
 [CloudflareGatewayParameters](docs/api/v1/CloudflareGatewayParameters.md#tunnel-container-configuration)
 for details.
 
+**Token rotation:** The controller automatically rotates tunnel tokens every 24 hours by
+default (configurable via
+[CloudflareGatewayParameters](docs/api/v1/CloudflareGatewayParameters.md#token-rotation)).
+On-demand rotation is also available via the CLI. Rotation is seamless — cloudflared picks
+up the new token without pod restarts.
+
 **Observability:** The controller creates a
 [CloudflareGatewayStatus](docs/api/v1/CloudflareGatewayStatus.md) (short name: `cgs`) per
 Gateway, providing a quick view of tunnel info, conditions, and managed resources:
@@ -169,6 +175,25 @@ $ kubectl get cgs
 NAME         TUNNEL ID    DNS       READY
 my-gateway   abcd-1234…   Enabled   True
 ```
+
+### CLI
+
+The `cfgwctl` CLI provides operational commands for managing Gateways. Binaries are
+available from [GitHub releases](https://github.com/matheuscscp/cloudflare-gateway-controller/releases).
+
+```shell
+# Suspend/resume reconciliation
+cfgwctl suspend gateway my-gateway
+cfgwctl resume gateway my-gateway
+
+# Trigger on-demand reconciliation
+cfgwctl reconcile gateway my-gateway
+
+# Rotate the tunnel token on-demand
+cfgwctl rotate gateway token my-gateway
+```
+
+See the [CLI documentation](docs/cli/README.md) for all available commands.
 
 ### Embedded reverse proxy
 

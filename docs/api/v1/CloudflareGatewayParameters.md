@@ -116,6 +116,34 @@ hostnames in the attached [HTTPRoutes](HTTPRoute.md).
 
 The `.spec.tunnel` field is optional and configures Cloudflare tunnel settings.
 
+#### Token rotation
+
+The `.spec.tunnel.token` field configures tunnel token management.
+
+```yaml
+spec:
+  tunnel:
+    token:
+      rotation:
+        enabled: true
+        interval: 24h
+```
+
+When automatic token rotation is enabled, the controller periodically rotates
+the tunnel token via the Cloudflare API and updates the in-cluster Secret. The
+rotation is seamless — cloudflared picks up the new token without pod restarts.
+
+The token rotation fields are:
+
+- `rotation.enabled` (optional): Whether automatic rotation is active.
+  Defaults to `true` when the `rotation` struct is present.
+- `rotation.interval` (optional): Interval between automatic rotations.
+  Defaults to `24h`.
+
+On-demand rotation can also be triggered via `cfgwctl rotate gateway token`,
+regardless of whether automatic rotation is configured. See the
+[Gateway annotation](Gateway.md#on-demand-token-rotation) for details.
+
 #### Patches
 
 The `.spec.tunnel.patches` field is optional and specifies

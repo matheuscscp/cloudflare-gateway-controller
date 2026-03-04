@@ -46,6 +46,9 @@ status:
       reason: ReconciliationSucceeded
       message: Reconciliation succeeded
       lastTransitionTime: "2026-01-15T10:01:00Z"
+  lastHandledReconcileAt: "2026-01-15T10:05:00.000000000Z"
+  lastHandledTokenRotateAt: "2026-01-15T10:10:00.000000000Z"
+  lastTokenRotatedAt: "2026-01-15T10:10:01Z"
   tunnel:
     name: gateway-abc123
     id: "f47ac10b-58cc-4372-a567-0e02b2c3d479"
@@ -124,3 +127,21 @@ The inventory always includes the tunnel Deployment(s), tunnel token Secret,
 routes ConfigMap, ServiceAccount, Role, and RoleBinding. When autoscaling is
 enabled (via [CloudflareGatewayParameters](CloudflareGatewayParameters.md#tunnel-container-configuration)),
 it also includes VerticalPodAutoscaler resources for each replica Deployment.
+
+### Reconciliation tracking
+
+The `.status.lastHandledReconcileAt` field records the value of the
+`reconcileRequestedAt` annotation at the time the last on-demand reconciliation
+was handled. The CLI uses this to detect when a requested reconciliation has
+completed.
+
+### Token rotation tracking
+
+The `.status.lastHandledTokenRotateAt` field records the value of the
+`rotateTokenRequestedAt` annotation at the time the last on-demand token
+rotation request was handled.
+
+The `.status.lastTokenRotatedAt` field records the RFC 3339 timestamp of the
+last successful token rotation (either automatic or on-demand). The controller
+uses this to schedule the next automatic rotation based on the configured
+interval.

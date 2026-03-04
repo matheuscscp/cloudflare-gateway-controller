@@ -2126,6 +2126,427 @@ EOF
     kubectl delete cloudflaregatewayparameters vpa-params -n "$TEST_NS" --ignore-not-found
 }
 
+test_suspend_gateway() {
+    log "Creating CloudflareGatewayParameters 'suspend-params'..."
+    kubectl apply -f - <<EOF
+apiVersion: cloudflare-gateway-controller.io/v1
+kind: CloudflareGatewayParameters
+metadata:
+  name: suspend-params
+  namespace: $TEST_NS
+spec:
+  secretRef:
+    name: cloudflare-creds
+  dns:
+    zones:
+    - name: "$TEST_ZONE_NAME"
+EOF
+
+    log "Creating Gateway 'suspend-gw'..."
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: suspend-gw
+  namespace: $TEST_NS
+spec:
+  gatewayClassName: cloudflare
+  infrastructure:
+    parametersRef:
+      group: cloudflare-gateway-controller.io
+      kind: CloudflareGatewayParameters
+      name: suspend-params
+  listeners:
+  - name: https
+    protocol: HTTPS
+    port: 443
+EOF
+
+    retry 60 2 kubectl wait gateway/suspend-gw -n "$TEST_NS" \
+        --for=condition=Programmed --timeout=5s \
+        || fail "suspend-gw did not become Programmed"
+    pass "suspend-gw is Programmed"
+
+    # Path 1: Happy path — suspend a running Gateway.
+    log "Suspending Gateway 'suspend-gw'..."
+    local output
+    output=$("$CFGWCTL" suspend gateway suspend-gw -n "$TEST_NS" 2>&1)
+    echo "$output"
+    echo "$output" | grep -q "Suspended reconciliation" \
+        || fail "expected 'Suspended reconciliation' in output"
+    pass "suspend: happy path"
+
+    # Verify annotation set.
+    local ann
+    ann=$(kubectl get gateway suspend-gw -n "$TEST_NS" \
+        -o jsonpath='{.metadata.annotations.cloudflare-gateway-controller\.io/reconcile}')
+    [ "$ann" = "disabled" ] || fail "expected annotation 'disabled', got '$ann'"
+    pass "suspend: annotation is disabled"
+
+    # Path 2: Already suspended — run suspend again.
+    log "Suspending Gateway 'suspend-gw' again (already suspended)..."
+    output=$("$CFGWCTL" suspend gateway suspend-gw -n "$TEST_NS" 2>&1)
+    echo "$output"
+    echo "$output" | grep -q "already suspended" \
+        || fail "expected 'already suspended' in output"
+    pass "suspend: already-suspended path"
+
+    # Cleanup: remove annotation, delete resources.
+    kubectl annotate gateway suspend-gw -n "$TEST_NS" \
+        cloudflare-gateway-controller.io/reconcile- --overwrite
+    kubectl delete gateway suspend-gw -n "$TEST_NS"
+    retry 60 3 bash -c "! kubectl get gateway suspend-gw -n '$TEST_NS' 2>/dev/null" \
+        || fail "suspend-gw still exists"
+    kubectl delete cloudflaregatewayparameters suspend-params -n "$TEST_NS" --ignore-not-found
+}
+
+test_resume_gateway() {
+    log "Creating CloudflareGatewayParameters 'resume-params'..."
+    kubectl apply -f - <<EOF
+apiVersion: cloudflare-gateway-controller.io/v1
+kind: CloudflareGatewayParameters
+metadata:
+  name: resume-params
+  namespace: $TEST_NS
+spec:
+  secretRef:
+    name: cloudflare-creds
+  dns:
+    zones:
+    - name: "$TEST_ZONE_NAME"
+EOF
+
+    log "Creating Gateway 'resume-gw'..."
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: resume-gw
+  namespace: $TEST_NS
+spec:
+  gatewayClassName: cloudflare
+  infrastructure:
+    parametersRef:
+      group: cloudflare-gateway-controller.io
+      kind: CloudflareGatewayParameters
+      name: resume-params
+  listeners:
+  - name: https
+    protocol: HTTPS
+    port: 443
+EOF
+
+    retry 60 2 kubectl wait gateway/resume-gw -n "$TEST_NS" \
+        --for=condition=Programmed --timeout=5s \
+        || fail "resume-gw did not become Programmed"
+    pass "resume-gw is Programmed"
+
+    # Path 1: Happy path — suspend first, then resume.
+    log "Suspending Gateway 'resume-gw' first..."
+    "$CFGWCTL" suspend gateway resume-gw -n "$TEST_NS" \
+        || fail "failed to suspend resume-gw"
+
+    log "Resuming Gateway 'resume-gw'..."
+    local output
+    output=$("$CFGWCTL" resume gateway resume-gw -n "$TEST_NS" 2>&1)
+    echo "$output"
+    echo "$output" | grep -q "Resumed reconciliation" \
+        || fail "expected 'Resumed reconciliation' in output"
+    echo "$output" | grep -q "Reconciliation completed" \
+        || fail "expected 'Reconciliation completed' in output"
+    pass "resume: happy path"
+
+    # Verify annotation is enabled.
+    local ann
+    ann=$(kubectl get gateway resume-gw -n "$TEST_NS" \
+        -o jsonpath='{.metadata.annotations.cloudflare-gateway-controller\.io/reconcile}')
+    [ "$ann" = "enabled" ] || fail "expected annotation 'enabled', got '$ann'"
+    pass "resume: annotation is enabled"
+
+    # Path 2: Not suspended — resume a non-suspended Gateway.
+    log "Resuming Gateway 'resume-gw' again (not suspended)..."
+    output=$("$CFGWCTL" resume gateway resume-gw -n "$TEST_NS" 2>&1)
+    echo "$output"
+    echo "$output" | grep -q "not suspended" \
+        || fail "expected 'not suspended' in output"
+    pass "resume: not-suspended path"
+
+    # Cleanup.
+    kubectl delete gateway resume-gw -n "$TEST_NS"
+    retry 60 3 bash -c "! kubectl get gateway resume-gw -n '$TEST_NS' 2>/dev/null" \
+        || fail "resume-gw still exists"
+    kubectl delete cloudflaregatewayparameters resume-params -n "$TEST_NS" --ignore-not-found
+}
+
+test_reconcile_gateway() {
+    log "Creating CloudflareGatewayParameters 'reconcile-params'..."
+    kubectl apply -f - <<EOF
+apiVersion: cloudflare-gateway-controller.io/v1
+kind: CloudflareGatewayParameters
+metadata:
+  name: reconcile-params
+  namespace: $TEST_NS
+spec:
+  secretRef:
+    name: cloudflare-creds
+  dns:
+    zones:
+    - name: "$TEST_ZONE_NAME"
+EOF
+
+    log "Creating Gateway 'reconcile-gw'..."
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: reconcile-gw
+  namespace: $TEST_NS
+spec:
+  gatewayClassName: cloudflare
+  infrastructure:
+    parametersRef:
+      group: cloudflare-gateway-controller.io
+      kind: CloudflareGatewayParameters
+      name: reconcile-params
+  listeners:
+  - name: https
+    protocol: HTTPS
+    port: 443
+EOF
+
+    retry 60 2 kubectl wait gateway/reconcile-gw -n "$TEST_NS" \
+        --for=condition=Programmed --timeout=5s \
+        || fail "reconcile-gw did not become Programmed"
+    pass "reconcile-gw is Programmed"
+
+    # Path 1: Happy path — trigger reconcile.
+    log "Triggering reconcile for Gateway 'reconcile-gw'..."
+    local output
+    output=$("$CFGWCTL" reconcile gateway reconcile-gw -n "$TEST_NS" 2>&1)
+    echo "$output"
+    echo "$output" | grep -q "Requested reconciliation" \
+        || fail "expected 'Requested reconciliation' in output"
+    echo "$output" | grep -q "Reconciliation completed" \
+        || fail "expected 'Reconciliation completed' in output"
+    pass "reconcile: happy path"
+
+    # Path 2: Error when suspended.
+    log "Suspending Gateway 'reconcile-gw'..."
+    "$CFGWCTL" suspend gateway reconcile-gw -n "$TEST_NS" \
+        || fail "failed to suspend reconcile-gw"
+
+    log "Triggering reconcile on suspended Gateway (should fail)..."
+    if output=$("$CFGWCTL" reconcile gateway reconcile-gw -n "$TEST_NS" 2>&1); then
+        fail "expected reconcile to fail on suspended Gateway, but it succeeded"
+    fi
+    echo "$output"
+    echo "$output" | grep -q "suspended" \
+        || fail "expected error mentioning 'suspended' in output"
+    pass "reconcile: suspended error path"
+
+    # Cleanup: un-suspend, delete resources.
+    kubectl annotate gateway reconcile-gw -n "$TEST_NS" \
+        cloudflare-gateway-controller.io/reconcile- --overwrite
+    kubectl delete gateway reconcile-gw -n "$TEST_NS"
+    retry 60 3 bash -c "! kubectl get gateway reconcile-gw -n '$TEST_NS' 2>/dev/null" \
+        || fail "reconcile-gw still exists"
+    kubectl delete cloudflaregatewayparameters reconcile-params -n "$TEST_NS" --ignore-not-found
+}
+
+test_rotate_gateway_token() {
+    local hostname="rot-${TS: -6}.${TEST_TRAFFIC_ZONE_NAME}"
+
+    log "Deploying test server for token rotation..."
+    kubectl apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rot-test
+  namespace: $TEST_NS
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rot-test
+  template:
+    metadata:
+      labels:
+        app: rot-test
+    spec:
+      containers:
+      - name: server
+        image: $IMAGE
+        args: ["test", "serve"]
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /_healthz
+            port: 8080
+          initialDelaySeconds: 1
+          periodSeconds: 2
+EOF
+
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: rot-backend
+  namespace: $TEST_NS
+spec:
+  selector:
+    app: rot-test
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+EOF
+
+    log "Waiting for rot-test rollout..."
+    kubectl rollout status deployment/rot-test -n "$TEST_NS" --timeout=120s \
+        || fail "rot-test deployment did not become ready"
+    pass "rot-test deployment ready"
+
+    log "Creating Gateway 'rot-gw' (bare Secret)..."
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: rot-gw
+  namespace: $TEST_NS
+spec:
+  gatewayClassName: cloudflare
+  listeners:
+  - name: https
+    protocol: HTTPS
+    port: 443
+EOF
+
+    retry 60 5 kubectl wait gateway/rot-gw -n "$TEST_NS" \
+        --for=condition=Programmed --timeout=5s \
+        || fail "rot-gw did not become Programmed"
+    pass "rot-gw is Programmed"
+
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: rot-route
+  namespace: $TEST_NS
+spec:
+  parentRefs:
+  - name: rot-gw
+  hostnames:
+  - "$hostname"
+  rules:
+  - backendRefs:
+    - name: rot-backend
+      port: 80
+EOF
+
+    wait_for_https "https://$hostname/"
+
+    # Record tunnel ID and token before rotation.
+    local rot_tunnel_name rot_tunnel_id token_before
+    rot_tunnel_name=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "rot-gw")
+    rot_tunnel_id=$(cfgwctl tunnel get-id --name "$rot_tunnel_name" | jq -r '.tunnelId')
+    [ -n "$rot_tunnel_id" ] && [ "$rot_tunnel_id" != "null" ] || fail "rot tunnel not found"
+    token_before=$(cfgwctl tunnel get-token --tunnel-id "$rot_tunnel_id" | jq -r '.token')
+    [ -n "$token_before" ] && [ "$token_before" != "null" ] || fail "could not get token before rotation"
+
+    # Record pod name(s) and restart count before rotation.
+    local pod_names_before restarts_before
+    pod_names_before=$(kubectl get pods -n "$TEST_NS" -l app.kubernetes.io/instance=rot-gw \
+        -o jsonpath='{.items[*].metadata.name}')
+    restarts_before=$(kubectl get pods -n "$TEST_NS" -l app.kubernetes.io/instance=rot-gw \
+        -o jsonpath='{.items[0].status.containerStatuses[0].restartCount}')
+
+    # Start background load generator (runs for 1 minute).
+    log "Starting background load generator..."
+    "$CFGWCTL" test load \
+        --url "https://$hostname/" \
+        --duration 1m \
+        --concurrency 5 \
+        --namespace "$TEST_NS" \
+        --label-selector app=rot-test \
+        --max-cv 0.5 \
+        --hostname "$hostname" &
+    local LOAD_PID=$!
+
+    # Let traffic flow for 10 seconds before rotating.
+    log "Waiting 10s for traffic to stabilize..."
+    sleep 10
+
+    # Path 1: Happy path — rotate token.
+    log "Rotating token for Gateway 'rot-gw'..."
+    local output
+    output=$("$CFGWCTL" rotate gateway token rot-gw -n "$TEST_NS" 2>&1)
+    echo "$output"
+    echo "$output" | grep -q "Requested token rotation" \
+        || fail "expected 'Requested token rotation' in output"
+    echo "$output" | grep -q "Token rotation completed" \
+        || fail "expected 'Token rotation completed' in output"
+    pass "rotate: happy path"
+
+    # Wait for load generator to finish.
+    log "Waiting for background load generator to finish..."
+    wait "$LOAD_PID" || fail "load test failed during token rotation"
+    pass "rotate: no traffic disruption during rotation"
+
+    # Verify token changed on Cloudflare API.
+    local token_after
+    token_after=$(cfgwctl tunnel get-token --tunnel-id "$rot_tunnel_id" | jq -r '.token')
+    [ "$token_before" != "$token_after" ] || fail "token did not change after rotation"
+    pass "rotate: token changed on Cloudflare API"
+
+    # Verify in-cluster Secret matches Cloudflare API token.
+    local token_in_cluster
+    token_in_cluster=$(kubectl get secret gateway-rot-gw -n "$TEST_NS" \
+        -o jsonpath='{.data.TUNNEL_TOKEN}' | base64 -d)
+    [ "$token_in_cluster" = "$token_after" ] \
+        || fail "in-cluster token does not match Cloudflare API token"
+    pass "rotate: in-cluster Secret matches Cloudflare API token"
+
+    # Verify tunnel pod was NOT restarted.
+    local pod_names_after restarts_after
+    pod_names_after=$(kubectl get pods -n "$TEST_NS" -l app.kubernetes.io/instance=rot-gw \
+        -o jsonpath='{.items[*].metadata.name}')
+    [ "$pod_names_before" = "$pod_names_after" ] || fail "tunnel pod was replaced (name changed)"
+    restarts_after=$(kubectl get pods -n "$TEST_NS" -l app.kubernetes.io/instance=rot-gw \
+        -o jsonpath='{.items[0].status.containerStatuses[0].restartCount}')
+    [ "$restarts_before" = "$restarts_after" ] || fail "tunnel container was restarted"
+    pass "rotate: tunnel pod not restarted"
+
+    # Path 2: Error when suspended.
+    log "Suspending Gateway 'rot-gw'..."
+    "$CFGWCTL" suspend gateway rot-gw -n "$TEST_NS" \
+        || fail "failed to suspend rot-gw"
+
+    log "Rotating token on suspended Gateway (should fail)..."
+    if output=$("$CFGWCTL" rotate gateway token rot-gw -n "$TEST_NS" 2>&1); then
+        fail "expected rotate to fail on suspended Gateway, but it succeeded"
+    fi
+    echo "$output"
+    echo "$output" | grep -q "suspended" \
+        || fail "expected error mentioning 'suspended' in output"
+    pass "rotate: suspended error path"
+
+    # Cleanup: un-suspend, delete resources.
+    kubectl annotate gateway rot-gw -n "$TEST_NS" \
+        cloudflare-gateway-controller.io/reconcile- --overwrite
+    kubectl delete httproute rot-route -n "$TEST_NS"
+    kubectl delete gateway rot-gw -n "$TEST_NS"
+    retry 60 3 bash -c "! kubectl get gateway rot-gw -n '$TEST_NS' 2>/dev/null" \
+        || fail "rot-gw still exists"
+    kubectl delete deployment rot-test -n "$TEST_NS" --ignore-not-found
+    kubectl delete service rot-backend -n "$TEST_NS" --ignore-not-found
+}
+
 # ─── Run ──────────────────────────────────────────────────────────────────────
 
 run_tests \
@@ -2141,4 +2562,8 @@ run_tests \
     test_load_balancing \
     test_traffic_splitting \
     test_session_persistence \
-    test_vpa_autoscaling
+    test_vpa_autoscaling \
+    test_suspend_gateway \
+    test_resume_gateway \
+    test_reconcile_gateway \
+    test_rotate_gateway_token

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/spf13/cobra"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -24,6 +25,7 @@ func newTestLoadCmd() *cobra.Command {
 	var (
 		url           string
 		requests      int
+		duration      time.Duration
 		concurrency   int
 		namespace     string
 		labelSelector string
@@ -42,55 +44,81 @@ func newTestLoadCmd() *cobra.Command {
 			ctx := cmd.Context()
 
 			// Phase 1: Generate load.
-			fmt.Printf("Sending %d requests to %s with concurrency %d...\n", requests, url, concurrency)
-
 			var (
 				ok2xx    atomic.Int64
 				err5xx   atomic.Int64
 				other    atomic.Int64
 				hostErrs atomic.Int64
+				total    atomic.Int64
 			)
 
-			work := make(chan struct{}, requests)
-			for range requests {
-				work <- struct{}{}
-			}
-			close(work)
-
-			var wg sync.WaitGroup
-			for range concurrency {
-				wg.Go(func() {
-					for range work {
-						resp, err := http.Get(url)
-						if err != nil {
-							other.Add(1)
-							continue
-						}
-						if hostname != "" && resp.StatusCode >= 200 && resp.StatusCode < 300 {
-							var body struct {
-								Host string `json:"host"`
-							}
-							if err := json.NewDecoder(resp.Body).Decode(&body); err == nil {
-								if body.Host != hostname {
-									hostErrs.Add(1)
-								}
-							}
-						}
-						_ = resp.Body.Close()
-						switch {
-						case resp.StatusCode >= 200 && resp.StatusCode < 300:
-							ok2xx.Add(1)
-						case resp.StatusCode >= 500:
-							err5xx.Add(1)
-						default:
-							other.Add(1)
+			sendOne := func() {
+				total.Add(1)
+				resp, err := http.Get(url)
+				if err != nil {
+					other.Add(1)
+					return
+				}
+				if hostname != "" && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+					var body struct {
+						Host string `json:"host"`
+					}
+					if err := json.NewDecoder(resp.Body).Decode(&body); err == nil {
+						if body.Host != hostname {
+							hostErrs.Add(1)
 						}
 					}
-				})
+				}
+				_ = resp.Body.Close()
+				switch {
+				case resp.StatusCode >= 200 && resp.StatusCode < 300:
+					ok2xx.Add(1)
+				case resp.StatusCode >= 500:
+					err5xx.Add(1)
+				default:
+					other.Add(1)
+				}
 			}
-			wg.Wait()
 
+			if duration > 0 {
+				fmt.Printf("Sending requests to %s with concurrency %d for %s...\n", url, concurrency, duration)
+				ctx, cancel := context.WithTimeout(ctx, duration)
+				defer cancel()
+				var wg sync.WaitGroup
+				for range concurrency {
+					wg.Go(func() {
+						for {
+							select {
+							case <-ctx.Done():
+								return
+							default:
+								sendOne()
+							}
+						}
+					})
+				}
+				wg.Wait()
+			} else {
+				fmt.Printf("Sending %d requests to %s with concurrency %d...\n", requests, url, concurrency)
+				work := make(chan struct{}, requests)
+				for range requests {
+					work <- struct{}{}
+				}
+				close(work)
+				var wg sync.WaitGroup
+				for range concurrency {
+					wg.Go(func() {
+						for range work {
+							sendOne()
+						}
+					})
+				}
+				wg.Wait()
+			}
+
+			totalSent := total.Load()
 			fmt.Printf("\nResults:\n")
+			fmt.Printf("  total: %d\n", totalSent)
 			fmt.Printf("  2xx: %d\n", ok2xx.Load())
 			fmt.Printf("  5xx: %d\n", err5xx.Load())
 			fmt.Printf("  other/errors: %d\n", other.Load())
@@ -98,9 +126,9 @@ func newTestLoadCmd() *cobra.Command {
 				fmt.Printf("  host mismatches: %d\n", hostErrs.Load())
 			}
 
-			if got := ok2xx.Load(); got != int64(requests) {
+			if got := ok2xx.Load(); got != totalSent {
 				return fmt.Errorf("expected %d 2xx responses, got %d (5xx: %d, other: %d)",
-					requests, got, err5xx.Load(), other.Load())
+					totalSent, got, err5xx.Load(), other.Load())
 			}
 
 			if hostname != "" && hostErrs.Load() > 0 {
@@ -188,7 +216,8 @@ func newTestLoadCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&url, "url", "", "target URL (required)")
-	cmd.Flags().IntVar(&requests, "requests", 1000, "total requests to send")
+	cmd.Flags().IntVar(&requests, "requests", 1000, "total requests to send (ignored when --duration is set)")
+	cmd.Flags().DurationVar(&duration, "duration", 0, "send requests continuously for this duration (e.g. 1m)")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 10, "concurrent workers")
 	cmd.Flags().StringVar(&namespace, "namespace", "", "pod namespace for distribution check")
 	cmd.Flags().StringVar(&labelSelector, "label-selector", "", "pod label selector for distribution check")

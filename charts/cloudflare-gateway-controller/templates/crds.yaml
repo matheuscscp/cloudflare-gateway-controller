@@ -1207,6 +1207,29 @@ spec:
                           More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                         type: object
                     type: object
+                  token:
+                    description: Token configures tunnel token management.
+                    properties:
+                      rotation:
+                        description: |-
+                          Rotation configures automatic token rotation. When absent, rotation
+                          is enabled with the default interval (24h). Set rotation.enabled to
+                          false to disable automatic rotation.
+                        properties:
+                          enabled:
+                            description: |-
+                              Enabled controls whether automatic token rotation is active.
+                              When absent, defaults to true (rotation is on). Set to false to
+                              disable automatic rotation. Even when disabled, on-demand rotation
+                              via "cfgwctl rotate gateway token" still works.
+                            type: boolean
+                          interval:
+                            description: |-
+                              Interval is the minimum duration between automatic token rotations.
+                              Defaults to 24h when absent or when set to zero or a negative value.
+                            type: string
+                        type: object
+                    type: object
                 type: object
                 x-kubernetes-validations:
                 - message: replica names must be unique
@@ -1364,6 +1387,21 @@ spec:
                   - name
                   type: object
                 type: array
+              lastHandledReconcileAt:
+                description: |-
+                  LastHandledReconcileAt is the value of the reconcileRequestedAt annotation
+                  at the time the last reconciliation was handled.
+                type: string
+              lastHandledTokenRotateAt:
+                description: |-
+                  LastHandledTokenRotateAt is the value of the rotateTokenRequestedAt annotation
+                  at the time the last token rotation request was handled.
+                type: string
+              lastTokenRotatedAt:
+                description: |-
+                  LastTokenRotatedAt is the timestamp of the last successful token rotation
+                  (either scheduled or on-demand).
+                type: string
               tunnel:
                 description: Tunnel holds the Cloudflare tunnel managed for this Gateway.
                 properties:

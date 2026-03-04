@@ -105,6 +105,27 @@ metadata:
 The default interval is `10m`. If the value cannot be parsed, the Gateway is
 rejected with `Accepted=False/InvalidParameters`.
 
+### On-demand reconciliation
+
+The `cloudflare-gateway-controller.io/reconcileRequestedAt` annotation triggers
+an on-demand reconciliation when its value changes. The controller records the
+handled value in the [CloudflareGatewayStatus](CloudflareGatewayStatus.md)
+`.status.lastHandledReconcileAt` field and only acts on new values.
+
+This annotation is managed by `cfgwctl reconcile gateway` — do not set it
+manually.
+
+### On-demand token rotation
+
+The `cloudflare-gateway-controller.io/rotateTokenRequestedAt` annotation
+triggers an on-demand tunnel token rotation when its value changes. The
+controller records the handled value in the
+[CloudflareGatewayStatus](CloudflareGatewayStatus.md)
+`.status.lastHandledTokenRotateAt` field and only acts on new values.
+
+This annotation is managed by `cfgwctl rotate gateway token` — do not set it
+manually.
+
 ### Cloudflare resource naming
 
 The controller generates deterministic names for Cloudflare and Kubernetes

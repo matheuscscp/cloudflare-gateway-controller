@@ -91,7 +91,7 @@ func newControllerCmd() *cobra.Command {
 }
 
 func (o *controllerOptions) run(cmd *cobra.Command, _ []string) error {
-	ctx := cmd.Context()
+	ctx := ctrl.SetupSignalHandler()
 
 	apiv1.SetClusterName(o.clusterName)
 

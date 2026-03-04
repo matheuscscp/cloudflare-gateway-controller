@@ -1384,3 +1384,83 @@ func TestProxy_CookieSessionPersistence_PathScope(t *testing.T) {
 	g.Expect(cookies).To(HaveLen(1))
 	g.Expect(cookies[0].Path).To(Equal("/api"))
 }
+
+func TestProxy_ConfigLoaded(t *testing.T) {
+	g := NewWithT(t)
+
+	p := &proxy.Proxy{}
+	g.Expect(p.ConfigLoaded()).To(BeFalse())
+
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
+			{Hostname: "app.example.com", Backends: []proxy.Backend{{Service: "http://backend:8080", Weight: 1}}},
+		},
+	})
+	g.Expect(p.ConfigLoaded()).To(BeTrue())
+}
+
+func TestProxy_RoundTrip(t *testing.T) {
+	g := NewWithT(t)
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("roundtrip-ok"))
+	}))
+	defer backend.Close()
+
+	p := &proxy.Proxy{}
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
+			{Hostname: "app.example.com", Backends: []proxy.Backend{{Service: backend.URL, Weight: 1}}},
+		},
+	})
+
+	req := httptest.NewRequest("GET", "http://app.example.com/", nil)
+	resp, err := p.RoundTrip(req)
+	g.Expect(err).NotTo(HaveOccurred())
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(string(body)).To(Equal("roundtrip-ok"))
+}
+
+func TestProxy_RoundTrip_NoConfig(t *testing.T) {
+	g := NewWithT(t)
+
+	p := &proxy.Proxy{}
+	req := httptest.NewRequest("GET", "http://app.example.com/", nil)
+	_, err := p.RoundTrip(req)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("no configuration loaded"))
+}
+
+func TestProxy_RoundTrip_NoRoute(t *testing.T) {
+	g := NewWithT(t)
+
+	p := &proxy.Proxy{}
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
+			{Hostname: "app.example.com", Backends: []proxy.Backend{{Service: "http://backend:8080", Weight: 1}}},
+		},
+	})
+
+	req := httptest.NewRequest("GET", "http://unknown.example.com/", nil)
+	_, err := p.RoundTrip(req)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("no matching route"))
+}
+
+func TestProxy_RoundTrip_NoBackend(t *testing.T) {
+	g := NewWithT(t)
+
+	p := &proxy.Proxy{}
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
+			{Hostname: "app.example.com", Backends: []proxy.Backend{{Service: "http://backend:8080", Weight: 0}}},
+		},
+	})
+
+	req := httptest.NewRequest("GET", "http://app.example.com/", nil)
+	_, err := p.RoundTrip(req)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("no available backend"))
+}

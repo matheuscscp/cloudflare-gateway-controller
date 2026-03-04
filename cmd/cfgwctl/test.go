@@ -10,7 +10,7 @@ func newTestCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "test",
-		Short: "Test and inspection commands for Cloudflare resources",
+		Short: "Test and inspection commands for Cloudflare resources (subject to breaking changes, no backwards compatibility guarantees)",
 	}
 
 	cmd.PersistentFlags().StringVar(&credentialsFile, "credentials-file", "",

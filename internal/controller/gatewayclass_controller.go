@@ -124,6 +124,11 @@ func (r *GatewayClassReconciler) reconcile(ctx context.Context, gc *gatewayv1.Ga
 		return ctrl.Result{}, nil
 	}
 
+	// Check if Ready is transitioning to a terminal failure state (must be
+	// computed before conditions.Set mutates gc.Status.Conditions).
+	readyTerminal := readyStatus == metav1.ConditionFalse &&
+		conditions.Changed(gc.Status.Conditions, apiv1.ConditionReady, readyStatus, readyReason, readyMessage, gc.Generation)
+
 	now := metav1.Now()
 	patch := client.MergeFrom(gc.DeepCopy())
 	gc.Status.Conditions = conditions.Set(gc.Status.Conditions, []metav1.Condition{
@@ -157,7 +162,7 @@ func (r *GatewayClassReconciler) reconcile(ctx context.Context, gc *gatewayv1.Ga
 		return ctrl.Result{}, err
 	}
 
-	if readyStatus == metav1.ConditionFalse {
+	if readyTerminal {
 		l.Error(fmt.Errorf("%s", readyMessage), "GatewayClass failed")
 		r.Eventf(gc, nil, corev1.EventTypeWarning, readyReason,
 			apiv1.EventActionReconcile, readyMessage)

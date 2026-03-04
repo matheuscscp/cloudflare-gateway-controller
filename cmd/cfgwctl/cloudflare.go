@@ -11,10 +11,10 @@ import (
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
 )
 
-// loadCredentials reads Cloudflare credentials from a KEY=VALUE file (if
+// loadCloudflareCredentials reads Cloudflare credentials from a KEY=VALUE file (if
 // specified) with fallback to environment variables. Both CLOUDFLARE_ACCOUNT_ID
 // and CLOUDFLARE_API_TOKEN must be present.
-func loadCredentials(credentialsFile string) (cloudflare.ClientConfig, error) {
+func loadCloudflareCredentials(credentialsFile string) (cloudflare.ClientConfig, error) {
 	values := make(map[string]string)
 	if credentialsFile != "" {
 		data, err := os.ReadFile(credentialsFile)
@@ -54,9 +54,9 @@ func loadCredentials(credentialsFile string) (cloudflare.ClientConfig, error) {
 	}, nil
 }
 
-// newClient loads credentials and creates a Cloudflare API client.
-func newClient(credentialsFile string) (cloudflare.Client, error) {
-	cfg, err := loadCredentials(credentialsFile)
+// newCloudflareClient loads credentials and creates a Cloudflare API client.
+func newCloudflareClient(credentialsFile string) (cloudflare.Client, error) {
+	cfg, err := loadCloudflareCredentials(credentialsFile)
 	if err != nil {
 		return nil, err
 	}

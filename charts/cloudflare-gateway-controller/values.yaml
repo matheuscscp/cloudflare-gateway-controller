@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0
 
 api:
-  enabled: true # Install Gateway API CRDs and admission policies.
+  enabled: true # Install Gateway API admission policies.
 
 rbac:
   serviceAccountName: "" # When set, skip creating RBAC resources and use the provided service account name.

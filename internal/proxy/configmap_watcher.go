@@ -14,15 +14,15 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// Watcher watches a single ConfigMap via a Kubernetes informer and atomically
+// ConfigMapWatcher watches a single ConfigMap via a Kubernetes informer and atomically
 // updates the Proxy's routing table on add/update events.
-type Watcher struct {
+type ConfigMapWatcher struct {
 	factory informers.SharedInformerFactory
 }
 
-// NewWatcher creates a Watcher that monitors the named ConfigMap in the given
+// NewConfigMapWatcher creates a ConfigMapWatcher that monitors the named ConfigMap in the given
 // namespace and updates the proxy's config whenever the ConfigMap changes.
-func NewWatcher(clientset kubernetes.Interface, namespace, configMapName, configMapKey string, proxy *Proxy) *Watcher {
+func NewConfigMapWatcher(clientset kubernetes.Interface, namespace, configMapName, configMapKey string, proxy *Proxy) *ConfigMapWatcher {
 	factory := informers.NewSharedInformerFactoryWithOptions(clientset, 0,
 		informers.WithNamespace(namespace),
 		informers.WithTweakListOptions(func(opts *metav1.ListOptions) {
@@ -57,11 +57,13 @@ func NewWatcher(clientset kubernetes.Interface, namespace, configMapName, config
 		UpdateFunc: func(_, newObj any) { handler(newObj) },
 	})
 
-	return &Watcher{factory: factory}
+	return &ConfigMapWatcher{factory: factory}
 }
 
-// Start starts the informer and blocks until stopCh is closed.
-func (w *Watcher) Start(stopCh <-chan struct{}) {
+// Start launches the informer goroutines and waits for the initial cache sync.
+// It returns after the cache is synced; the informer continues running in the
+// background until stopCh is closed.
+func (w *ConfigMapWatcher) Start(stopCh <-chan struct{}) {
 	w.factory.Start(stopCh)
 	w.factory.WaitForCacheSync(stopCh)
 }

@@ -23,7 +23,6 @@ import (
 	cfdclient "github.com/cloudflare/cloudflared/client"
 	"github.com/cloudflare/cloudflared/config"
 	"github.com/cloudflare/cloudflared/connection"
-	"github.com/cloudflare/cloudflared/diagnostic"
 	"github.com/cloudflare/cloudflared/edgediscovery"
 	"github.com/cloudflare/cloudflared/edgediscovery/allregions"
 	"github.com/cloudflare/cloudflared/features"
@@ -39,8 +38,12 @@ import (
 	"github.com/cloudflare/cloudflared/tunnelrpc/pogs"
 	"github.com/cloudflare/cloudflared/tunnelstate"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 )
+
+// TunnelTokenSecretKey is the key used to store the tunnel token in the Secret.
+const TunnelTokenSecretKey = "TUNNEL_TOKEN"
 
 // originProxy implements connection.OriginProxy by dispatching HTTP
 // requests directly to an in-process http.Handler. WebSocket upgrades
@@ -188,19 +191,30 @@ func cloudflaredVersion() string {
 }
 
 // RunTunnel starts a cloudflared tunnel that dispatches HTTP requests to
-// the given handler in-process (no localhost TCP). It also starts a
-// Prometheus metrics server on metricsAddr with /metrics, /ready, and
-// /healthcheck endpoints.
-func RunTunnel(ctx context.Context, handler http.Handler, rt http.RoundTripper, metricsAddr string, graceShutdownC <-chan struct{}) error {
+// the given handler in-process (no localhost TCP). It starts an HTTP server
+// on serverAddr serving /healthz (liveness), /ready (tunnel readiness), and
+// /metrics (Prometheus). It blocks until the context is cancelled.
+func RunTunnel(ctx context.Context, handler http.Handler, rt http.RoundTripper, serverAddr string, configLoaded func() bool, token string, graceShutdownC <-chan struct{}) error {
 	_ = os.Setenv("QUIC_GO_DISABLE_ECN", "1")
 
-	log := zerolog.New(os.Stdout).With().Timestamp().Logger()
+	// zerolog is required by the cloudflared framework.
+	zlog := zerolog.New(os.Stdout).With().Timestamp().Logger()
 
+	listener, err := net.Listen("tcp", serverAddr)
+	if err != nil {
+		return fmt.Errorf("listening on server address %s: %w", serverAddr, err)
+	}
+
+	return runTunnelOnce(ctx, handler, rt, listener, graceShutdownC, configLoaded, token, &zlog)
+}
+
+// runTunnelOnce starts a single instance of the cloudflared tunnel daemon.
+func runTunnelOnce(ctx context.Context, handler http.Handler, rt http.RoundTripper, listener net.Listener, graceShutdownC <-chan struct{}, configLoaded func() bool, tokenStr string, zlog *zerolog.Logger) error {
 	version := cloudflaredVersion()
 	platform := runtime.GOOS + "/" + runtime.GOARCH
 
 	// Parse tunnel token.
-	token, err := parseTunnelToken(os.Getenv("TUNNEL_TOKEN"))
+	token, err := parseTunnelToken(tokenStr)
 	if err != nil {
 		return fmt.Errorf("parsing tunnel token: %w", err)
 	}
@@ -208,7 +222,7 @@ func RunTunnel(ctx context.Context, handler http.Handler, rt http.RoundTripper, 
 	namedTunnel := &connection.TunnelProperties{Credentials: creds}
 
 	// Feature selector + client config.
-	featureSelector, err := features.NewFeatureSelector(ctx, creds.AccountTag, nil, false, &log)
+	featureSelector, err := features.NewFeatureSelector(ctx, creds.AccountTag, nil, false, zlog)
 	if err != nil {
 		return fmt.Errorf("creating feature selector: %w", err)
 	}
@@ -226,7 +240,7 @@ func RunTunnel(ctx context.Context, handler http.Handler, rt http.RoundTripper, 
 		false, // needPQ
 		edgediscovery.ProtocolPercentage,
 		connection.ResolveTTL,
-		&log,
+		zlog,
 	)
 	if err != nil {
 		return fmt.Errorf("creating protocol selector: %w", err)
@@ -250,35 +264,38 @@ func RunTunnel(ctx context.Context, handler http.Handler, rt http.RoundTripper, 
 	warpRouting := ingress.NewWarpRoutingConfig(&config.WarpRoutingConfig{})
 	originDialerService := ingress.NewOriginDialer(ingress.OriginConfig{
 		DefaultDialer: ingress.NewDialer(warpRouting),
-	}, &log)
+	}, zlog)
 
 	// DNS resolver service (supervisor calls StartRefreshLoop on it).
 	originMetrics := origins.NewMetrics(prometheus.DefaultRegisterer)
-	dnsService := origins.NewDNSResolverService(origins.NewDNSDialer(), &log, originMetrics)
+	dnsService := origins.NewDNSResolverService(origins.NewDNSDialer(), zlog, originMetrics)
 	originDialerService.AddReservedService(dnsService, []netip.AddrPort{origins.VirtualDNSServiceAddr})
 
 	// Observer.
-	observer := connection.NewObserver(&log, &log)
+	observer := connection.NewObserver(zlog, zlog)
 
-	// Metrics server.
-	tracker := tunnelstate.NewConnTracker(&log)
+	// Combined health/readiness/metrics server.
+	tracker := tunnelstate.NewConnTracker(zlog)
 	observer.RegisterSink(tracker)
 
-	metricsListener, err := net.Listen("tcp", metricsAddr)
-	if err != nil {
-		return fmt.Errorf("listening on metrics address %s: %w", metricsAddr, err)
-	}
-	go func() {
-		readyServer := cfdmetrics.NewReadyServer(connectorID, tracker)
-		diagHandler := diagnostic.NewDiagnosticHandler(
-			&log, 0, nil, creds.TunnelID, connectorID, tracker, map[string]string{}, nil,
-		)
-		metricsCfg := cfdmetrics.Config{
-			ReadyServer:       readyServer,
-			DiagnosticHandler: diagHandler,
+	mux := http.NewServeMux()
+	mux.Handle("/healthz", cfdmetrics.NewReadyServer(connectorID, tracker))
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		if !configLoaded() {
+			http.Error(w, "not ready", http.StatusServiceUnavailable)
+			return
 		}
-		if err := cfdmetrics.ServeMetrics(metricsListener, ctx, metricsCfg, &log); err != nil {
-			log.Err(err).Msg("Metrics server error")
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.Handle("/metrics", promhttp.Handler())
+	server := &http.Server{Handler: mux}
+	go func() {
+		<-ctx.Done()
+		_ = server.Close()
+	}()
+	go func() {
+		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
+			zlog.Err(err).Msg("Server error")
 		}
 	}()
 
@@ -290,8 +307,8 @@ func RunTunnel(ctx context.Context, handler http.Handler, rt http.RoundTripper, 
 		EdgeIPVersion:                       allregions.Auto,
 		HAConnections:                       4,
 		Tags:                                []pogs.Tag{{Name: "ID", Value: connectorID.String()}},
-		Log:                                 &log,
-		LogTransport:                        &log,
+		Log:                                 zlog,
+		LogTransport:                        zlog,
 		Observer:                            observer,
 		ReportedVersion:                     version,
 		Retries:                             5,
@@ -313,7 +330,7 @@ func RunTunnel(ctx context.Context, handler http.Handler, rt http.RoundTripper, 
 		WarpRouting:         warpRouting,
 		OriginDialerService: originDialerService,
 	}
-	orch, err := orchestration.NewOrchestrator(ctx, orchestratorConfig, tunnelConfig.Tags, nil, &log)
+	orch, err := orchestration.NewOrchestrator(ctx, orchestratorConfig, tunnelConfig.Tags, nil, zlog)
 	if err != nil {
 		return fmt.Errorf("creating orchestrator: %w", err)
 	}
@@ -321,7 +338,7 @@ func RunTunnel(ctx context.Context, handler http.Handler, rt http.RoundTripper, 
 	// Wrap orchestrator to return our in-process proxy.
 	wrapper := &orchestratorWrapper{
 		Orchestrator: orch,
-		proxy:        &originProxy{handler: handler, rt: rt, log: &log},
+		proxy:        &originProxy{handler: handler, rt: rt, log: zlog},
 	}
 
 	connectedSignal := signal.New(make(chan struct{}))
