@@ -76,7 +76,8 @@ jobs:
             }
 
             fs.writeFileSync(`${chart}/crds/gateway-api.yaml`, copyright + crds.join('\n---\n') + '\n');
-            fs.writeFileSync(`${chart}/templates/gateway-api.yaml`, copyright + other.join('\n---\n') + '\n');
+            fs.writeFileSync(`${chart}/templates/gateway-api.yaml`,
+              '{{- if .Values.api.enabled }}\n' + copyright + other.join('\n---\n') + '\n{{- end }}\n');
 
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@c0f553fe549906ede9cf27b5156039d195d2ece0 # v8.1.0

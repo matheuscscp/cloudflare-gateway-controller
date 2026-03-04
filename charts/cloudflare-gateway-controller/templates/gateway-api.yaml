@@ -1,3 +1,4 @@
+{{- if .Values.api.enabled }}
 # Copyright 2026 Matheus Pimenta.
 # SPDX-License-Identifier: AGPL-3.0
 
@@ -52,3 +53,4 @@ spec:
       apiVersions: ["v1"]
       resources:   ["customresourcedefinitions"]
       operations:  ["CREATE", "UPDATE"]
+{{- end }}
