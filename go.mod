@@ -2,17 +2,17 @@ module github.com/matheuscscp/cloudflare-gateway-controller
 
 go 1.26.0
 
-// cloudflared depends on a fork of urfave/cli with altsrc.ApplyInputSource.
-// The upgrade-cloudflared workflow keeps this pin in sync with upstream.
-// When bumping this manually to fix a CVE, set "CVE fix" to true so the
-// workflow only overwrites it once upstream catches up to a newer version.
-// CVE fix: false
-replace github.com/urfave/cli/v2 => github.com/ipostelnik/cli/v2 v2.3.1-0.20210324024421-b6ea8234fe3d
-
 // Fork exposes internal packages needed to embed cloudflared in-process.
 // The upgrade-cloudflared workflow keeps this pin in sync with the fork's
 // latest release.
-replace github.com/cloudflare/cloudflared => github.com/matheuscscp/cloudflared v0.0.0-20260304003948-79c3d05dd772
+replace github.com/cloudflare/cloudflared => github.com/matheuscscp/cloudflared v0.0.0
+
+// Go only honours replace directives in the top-level module, so we must
+// repeat cloudflared's here. The upgrade-cloudflared workflow keeps this
+// block in sync with the fork's go.mod.
+// cloudflared:replace:begin
+
+// cloudflared:replace:end
 
 require (
 	github.com/Masterminds/semver/v3 v3.4.0
