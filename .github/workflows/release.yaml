@@ -139,6 +139,12 @@ jobs:
             --certificate-identity="https://github.com/${REPOSITORY}/.github/workflows/release.yaml@${GITHUB_REF}" \
             ${{ env.CHART }}@${{ steps.helm-push.outputs.digest }}
 
+      - name: Reset git state for GoReleaser
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          git checkout -- charts/cloudflare-gateway-controller/Chart.yaml
+          rm -f cloudflare-gateway-controller-*.tgz
+
       - name: Set up Go
         if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
