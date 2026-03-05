@@ -58,8 +58,8 @@ fail() {
     echo "FAIL: $*"
     echo "--- Pods ---"
     kubectl get pods -A --no-headers 2>/dev/null || true
-    echo "--- Controller logs (last 100 lines) ---"
-    kubectl logs -n "$CONTROLLER_NS" -l app.kubernetes.io/name="$RELEASE_NAME" --tail=100 2>/dev/null || true
+    echo "--- Tunnel pod logs (last 100 lines per pod) ---"
+    kubectl logs -n "$TEST_NS" -l app.kubernetes.io/name=cloudflared --tail=100 --all-containers --prefix 2>/dev/null || true
     echo "--- Events (last 50) ---"
     kubectl get events -A --sort-by='.lastTimestamp' 2>/dev/null | tail -50 || true
     echo "--- GatewayClass status ---"
@@ -68,6 +68,10 @@ fail() {
     kubectl get gateway -A -o yaml 2>/dev/null || true
     echo "--- HTTPRoute status ---"
     kubectl get httproute -A -o yaml 2>/dev/null || true
+    echo "--- CloudflareGatewayParameters ---"
+    kubectl get cloudflaregatewayparameters -A -o yaml 2>/dev/null || true
+    echo "--- CloudflareGatewayStatus ---"
+    kubectl get cloudflaregatewaystatuses -A -o yaml 2>/dev/null || true
     exit 1
 }
 

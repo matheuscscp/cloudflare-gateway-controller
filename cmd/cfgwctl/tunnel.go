@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -21,27 +22,32 @@ const serverAddr = ":8080"
 func newTunnelCmd() *cobra.Command {
 	var namespace string
 	var configMapName string
+	var healthURL string
 
 	cmd := &cobra.Command{
 		Use:   "tunnel",
 		Short: "Run the tunnel proxy",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runTunnel(namespace, configMapName)
+			return runTunnel(namespace, configMapName, healthURL)
 		},
 	}
 
 	cmd.Flags().StringVar(&namespace, proxy.FlagNamespace, "", "namespace of the Gateway resources (required)")
 	cmd.Flags().StringVar(&configMapName, proxy.FlagConfigMapName, "", "name of the route ConfigMap for this Gateway (required)")
+	cmd.Flags().StringVar(&healthURL, proxy.FlagHealthURL, "", "HTTPS URL to probe for additional health checking on /healthz and /readyz")
 	cobra.CheckErr(cmd.MarkFlagRequired(proxy.FlagNamespace))
 	cobra.CheckErr(cmd.MarkFlagRequired(proxy.FlagConfigMapName))
 
 	return cmd
 }
 
-func runTunnel(namespace, configMapName string) error {
+func runTunnel(namespace, configMapName, healthURL string) error {
 	ctx := ctrl.SetupSignalHandler()
 
-	p := &proxy.Proxy{}
+	// Single JSON logger for the entire tunnel process.
+	zlog := zerolog.New(os.Stdout).With().Timestamp().Logger()
+
+	p := proxy.NewProxy(&zlog, healthURL)
 
 	// Initialize Kubernetes client.
 	cfg, err := rest.InClusterConfig()
@@ -54,7 +60,7 @@ func runTunnel(namespace, configMapName string) error {
 	}
 
 	// Start ConfigMap informer and wait for initial cache sync.
-	configMapWatcher := proxy.NewConfigMapWatcher(clientset, namespace, configMapName, proxy.RouteConfigMapKey, p)
+	configMapWatcher := proxy.NewConfigMapWatcher(clientset, namespace, configMapName, proxy.RouteConfigMapKey, p, &zlog)
 	configMapWatcher.Start(ctx.Done())
 
 	graceShutdownC := make(chan struct{})
@@ -68,7 +74,7 @@ func runTunnel(namespace, configMapName string) error {
 	if token == "" {
 		return fmt.Errorf("environment variable %s is required", cfclient.TunnelTokenSecretKey)
 	}
-	if err := cfclient.RunTunnel(ctx, p, p, serverAddr, p.ConfigLoaded, token, graceShutdownC); err != nil {
+	if err := cfclient.RunTunnel(ctx, p, p, serverAddr, p.ConfigLoaded, token, healthURL, &zlog, graceShutdownC); err != nil {
 		return fmt.Errorf("tunnel error: %w", err)
 	}
 	return nil

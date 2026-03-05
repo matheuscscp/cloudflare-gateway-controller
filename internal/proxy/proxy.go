@@ -7,15 +7,18 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log"
 	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/rs/zerolog"
 	"golang.org/x/net/http2"
 )
 
@@ -33,6 +36,9 @@ const (
 
 	// FlagConfigMapName is the tunnel command flag for the ConfigMap name.
 	FlagConfigMapName = "configmap-name"
+
+	// FlagHealthURL is the tunnel command flag for the health check URL.
+	FlagHealthURL = "health-url"
 )
 
 // noKeepAliveTransport is a shared http.Transport with keep-alives disabled.
@@ -52,6 +58,30 @@ var h2cTransport http.RoundTripper = &http2.Transport{
 // watcher detects a change.
 type Proxy struct {
 	config atomic.Pointer[Config]
+
+	// healthHostname is extracted from the health URL. When set, the proxy
+	// serves a 200 OK directly for requests matching this hostname at the
+	// root path, without forwarding to any backend.
+	healthHostname string
+
+	// errorLog is used by httputil.ReverseProxy for proxy error messages.
+	// When nil, the default log package logger is used.
+	errorLog *log.Logger
+}
+
+// NewProxy creates a Proxy with the given logger and optional health URL.
+// The health URL hostname (if valid) is served with 200 OK at the root path.
+func NewProxy(zlog *zerolog.Logger, healthURL string) *Proxy {
+	p := &Proxy{}
+	if zlog != nil {
+		p.errorLog = log.New(zlog, "", 0)
+	}
+	if healthURL != "" {
+		if u, err := url.Parse(healthURL); err == nil {
+			p.healthHostname = u.Hostname()
+		}
+	}
+	return p
 }
 
 // SetConfig atomically replaces the routing table.
@@ -62,6 +92,19 @@ func (p *Proxy) SetConfig(cfg *Config) {
 // ConfigLoaded returns true if the proxy has a routing configuration loaded.
 func (p *Proxy) ConfigLoaded() bool {
 	return p.config.Load() != nil
+}
+
+// isHealthRequest returns true if the request matches the configured health
+// URL hostname at the root path.
+func (p *Proxy) isHealthRequest(r *http.Request) bool {
+	if p.healthHostname == "" {
+		return false
+	}
+	host := r.Host
+	if i := strings.LastIndex(host, ":"); i != -1 {
+		host = host[:i]
+	}
+	return host == p.healthHostname && r.URL.Path == "/"
 }
 
 // resolveBackend matches a request to a route and picks a backend.
@@ -108,6 +151,11 @@ var (
 // with DisableKeepAlives so each request opens a fresh TCP connection through
 // kube-proxy.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if p.isHealthRequest(r) {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	route, backend, sessionHit, sessionCreatedAt, err := p.resolveBackend(r)
 	if err != nil {
 		switch err {
@@ -128,6 +176,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			req.URL.Host = backend.serviceURL.Host
 		},
 		Transport: transportForRoute(route),
+		ErrorLog:  p.errorLog,
 	}
 
 	// Set or re-issue cookie (cookie-based persistence only).
@@ -169,6 +218,14 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // proxy for WebSocket upgrades, where httputil.ReverseProxy's Hijack-based
 // handling doesn't work with QUIC streams.
 func (p *Proxy) RoundTrip(r *http.Request) (*http.Response, error) {
+	if p.isHealthRequest(r) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       http.NoBody,
+			Header:     make(http.Header),
+		}, nil
+	}
+
 	route, backend, _, _, err := p.resolveBackend(r)
 	if err != nil {
 		return nil, err

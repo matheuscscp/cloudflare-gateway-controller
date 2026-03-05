@@ -4,8 +4,7 @@
 package proxy
 
 import (
-	"fmt"
-
+	"github.com/rs/zerolog"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
@@ -22,7 +21,7 @@ type ConfigMapWatcher struct {
 
 // NewConfigMapWatcher creates a ConfigMapWatcher that monitors the named ConfigMap in the given
 // namespace and updates the proxy's config whenever the ConfigMap changes.
-func NewConfigMapWatcher(clientset kubernetes.Interface, namespace, configMapName, configMapKey string, proxy *Proxy) *ConfigMapWatcher {
+func NewConfigMapWatcher(clientset kubernetes.Interface, namespace, configMapName, configMapKey string, proxy *Proxy, zlog *zerolog.Logger) *ConfigMapWatcher {
 	factory := informers.NewSharedInformerFactoryWithOptions(clientset, 0,
 		informers.WithNamespace(namespace),
 		informers.WithTweakListOptions(func(opts *metav1.ListOptions) {
@@ -41,11 +40,11 @@ func NewConfigMapWatcher(clientset kubernetes.Interface, namespace, configMapNam
 		}
 		var cfg Config
 		if err := yaml.Unmarshal([]byte(data), &cfg); err != nil {
-			fmt.Printf("proxy watcher: failed to parse config: %v\n", err)
+			zlog.Error().Err(err).Msg("Failed to parse route config")
 			return
 		}
 		if err := cfg.Parse(); err != nil {
-			fmt.Printf("proxy watcher: invalid config: %v\n", err)
+			zlog.Error().Err(err).Msg("Invalid route config")
 			return
 		}
 		proxy.SetConfig(&cfg)

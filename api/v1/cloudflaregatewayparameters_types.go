@@ -22,6 +22,8 @@ type CloudflareGatewayParameters struct {
 }
 
 // CloudflareGatewayParametersSpec defines the desired configuration.
+//
+// +kubebuilder:validation:XValidation:rule="!has(self.tunnel) || !has(self.tunnel.health) || !has(self.dns) || self.dns.zones.exists(z, self.tunnel.health.url.split('://')[1].split('/')[0].split(':')[0].endsWith('.' + z.name) && !self.tunnel.health.url.split('://')[1].split('/')[0].split(':')[0].substring(0, self.tunnel.health.url.split('://')[1].split('/')[0].split(':')[0].size() - z.name.size() - 1).contains('.'))",message="tunnel.health.url hostname must be a single-level subdomain of a dns.zones entry when dns.zones is set"
 type CloudflareGatewayParametersSpec struct {
 	// SecretRef references a Secret in the same namespace containing
 	// CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID.
@@ -63,12 +65,14 @@ type DNSConfig struct {
 	// zones. When empty, DNS management is disabled. When this field is
 	// absent (i.e. the entire dns object is omitted), DNS management is
 	// enabled for all hostnames.
+	// +kubebuilder:validation:MaxItems=128
 	Zones []DNSZoneConfig `json:"zones"`
 }
 
 // DNSZoneConfig identifies a Cloudflare DNS zone.
 type DNSZoneConfig struct {
 	// Name is the DNS zone name (e.g. "example.com").
+	// +kubebuilder:validation:MaxLength=253
 	Name string `json:"name"`
 }
 
@@ -106,6 +110,21 @@ type TokenRotationConfig struct {
 	Interval metav1.Duration `json:"interval,omitempty"`
 }
 
+// HealthConfig configures health checking for the tunnel.
+type HealthConfig struct {
+	// URL is an HTTPS origin (e.g. "https://health.example.com") that
+	// the tunnel's /healthz endpoint will probe via HTTP GET on every
+	// liveness check. The value must be "https://" followed by a hostname
+	// only — no path, query, or fragment. When set, the hostname is
+	// automatically included in the set of desired DNS CNAME records
+	// pointing to the tunnel. The hostname must be a single-level
+	// subdomain of a dns.zones entry when dns.zones is set.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=2048
+	// +kubebuilder:validation:Pattern=`^https://[^/?#]+$`
+	URL string `json:"url"`
+}
+
 // TunnelConfig configures Cloudflare tunnel settings.
 //
 // +kubebuilder:validation:XValidation:rule="!has(self.replicas) || self.replicas.all(r, self.replicas.exists_one(s, s.name == r.name))",message="replica names must be unique"
@@ -113,6 +132,10 @@ type TunnelConfig struct {
 	// Token configures tunnel token management.
 	// +optional
 	Token *TokenConfig `json:"token,omitempty"`
+
+	// Health configures tunnel health checking.
+	// +optional
+	Health *HealthConfig `json:"health,omitempty"`
 
 	// Resources configures compute resource requirements for the tunnel container.
 	// When absent, the controller uses defaults (requests: 50m CPU, 64Mi

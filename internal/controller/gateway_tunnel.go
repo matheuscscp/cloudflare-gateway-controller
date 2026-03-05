@@ -630,14 +630,19 @@ func (r *GatewayReconciler) buildTunnelDeploymentApply(gw *gatewayv1.Gateway, pa
 	}
 
 	const portName = "http"
+	tunnelArgs := []string{
+		"tunnel",
+		"--" + proxy.FlagNamespace, gw.Namespace,
+		"--" + proxy.FlagConfigMapName, apiv1.GatewayResourceName(gw),
+	}
+	if params != nil && params.Spec.Tunnel != nil && params.Spec.Tunnel.Health != nil && params.Spec.Tunnel.Health.URL != "" {
+		tunnelArgs = append(tunnelArgs, "--"+proxy.FlagHealthURL, params.Spec.Tunnel.Health.URL)
+	}
+	hasHealthURL := params != nil && params.Spec.Tunnel != nil && params.Spec.Tunnel.Health != nil && params.Spec.Tunnel.Health.URL != ""
 	tunnelContainer := accorev1.Container().
 		WithName("tunnel").
 		WithImage(r.TunnelImage).
-		WithArgs(
-			"tunnel",
-			"--"+proxy.FlagNamespace, gw.Namespace,
-			"--"+proxy.FlagConfigMapName, apiv1.GatewayResourceName(gw),
-		).
+		WithArgs(tunnelArgs...).
 		WithEnv(accorev1.EnvVar().
 			WithName(cloudflare.TunnelTokenSecretKey).
 			WithValueFrom(accorev1.EnvVarSource().
@@ -665,6 +670,20 @@ func (r *GatewayReconciler) buildTunnelDeploymentApply(gw *gatewayv1.Gateway, pa
 				WithPort(intstr.FromString(portName)),
 			),
 		)
+	if hasHealthURL {
+		// When a health URL is configured, the /healthz liveness probe
+		// goes through Cloudflare (tunnel + DNS), which takes time to
+		// become reachable during startup. A startup probe gives the pod
+		// time to initialize before the liveness probe starts.
+		tunnelContainer = tunnelContainer.WithStartupProbe(accorev1.Probe().
+			WithHTTPGet(accorev1.HTTPGetAction().
+				WithPath("/healthz").
+				WithPort(intstr.FromString(portName)),
+			).
+			WithPeriodSeconds(2).
+			WithFailureThreshold(60),
+		)
+	}
 
 	deploy := acappsv1.Deployment(deploymentName, gw.Namespace).
 		WithLabels(deployLabels).

@@ -166,6 +166,12 @@ default (configurable via
 On-demand rotation is also available via the CLI. Rotation is seamless — cloudflared picks
 up the new token without pod restarts.
 
+**Health check URL:** An HTTPS health check URL can be configured so the tunnel's liveness
+and readiness probes verify end-to-end connectivity through Cloudflare. The hostname is
+automatically added to DNS CNAME records and served directly by the embedded reverse proxy.
+See [CloudflareGatewayParameters](docs/api/v1/CloudflareGatewayParameters.md#health-check-url)
+for details.
+
 **Observability:** The controller creates a
 [CloudflareGatewayStatus](docs/api/v1/CloudflareGatewayStatus.md) (short name: `cgs`) per
 Gateway, providing a quick view of tunnel info, conditions, and managed resources:
@@ -191,6 +197,9 @@ cfgwctl reconcile gateway my-gateway
 
 # Rotate the tunnel token on-demand
 cfgwctl rotate gateway token my-gateway
+
+# Run a health check for a Gateway
+cfgwctl check gateway my-gateway
 ```
 
 See the [CLI documentation](docs/cli/README.md) for all available commands.

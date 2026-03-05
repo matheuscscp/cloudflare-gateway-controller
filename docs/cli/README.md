@@ -76,6 +76,21 @@ cfgwctl rotate gateway token <name> [flags]
   namespace).
 - `--timeout` — Timeout waiting for token rotation (default `5m`).
 
+### `check gateway`
+
+Run a health check for a Gateway. Resolves the Gateway's `infrastructure.parametersRef`
+to a `CloudflareGatewayParameters`, extracts the configured `tunnel.health.url`, and
+performs an HTTP GET request. Reports success on HTTP 2xx, failure otherwise.
+
+```shell
+cfgwctl check gateway <name> [flags]
+```
+
+**Flags:**
+
+- `-n, --namespace` — Namespace of the Gateway (defaults to kubeconfig context
+  namespace).
+
 ## Internal commands
 
 ### `controller`

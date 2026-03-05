@@ -2547,6 +2547,172 @@ EOF
     kubectl delete service rot-backend -n "$TEST_NS" --ignore-not-found
 }
 
+test_health_url() {
+    local hostname="hu-${TS: -6}.${TEST_TRAFFIC_ZONE_NAME}"
+    local health_url="https://${hostname}"
+
+    log "Deploying test server for health URL..."
+    kubectl apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hu-test
+  namespace: $TEST_NS
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hu-test
+  template:
+    metadata:
+      labels:
+        app: hu-test
+    spec:
+      containers:
+      - name: server
+        image: $IMAGE
+        args: ["test", "serve"]
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /_healthz
+            port: 8080
+          initialDelaySeconds: 1
+          periodSeconds: 2
+EOF
+
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: hu-backend
+  namespace: $TEST_NS
+spec:
+  selector:
+    app: hu-test
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+EOF
+
+    log "Waiting for hu-test rollout..."
+    kubectl rollout status deployment/hu-test -n "$TEST_NS" --timeout=120s \
+        || fail "hu-test deployment did not become ready"
+    pass "hu-test deployment ready"
+
+    log "Creating CloudflareGatewayParameters 'hu-params' with health URL..."
+    kubectl apply -f - <<EOF
+apiVersion: cloudflare-gateway-controller.io/v1
+kind: CloudflareGatewayParameters
+metadata:
+  name: hu-params
+  namespace: $TEST_NS
+spec:
+  secretRef:
+    name: cloudflare-creds
+  tunnel:
+    health:
+      url: "$health_url"
+EOF
+
+    log "Creating Gateway 'hu-gw'..."
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: hu-gw
+  namespace: $TEST_NS
+spec:
+  gatewayClassName: cloudflare
+  infrastructure:
+    parametersRef:
+      group: cloudflare-gateway-controller.io
+      kind: CloudflareGatewayParameters
+      name: hu-params
+  listeners:
+  - name: https
+    protocol: HTTPS
+    port: 443
+EOF
+
+    retry 60 5 kubectl wait gateway/hu-gw -n "$TEST_NS" \
+        --for=condition=Programmed --timeout=5s \
+        || fail "hu-gw did not become Programmed"
+    pass "hu-gw is Programmed"
+
+    log "Creating HTTPRoute with hostname '$hostname'..."
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: hu-route
+  namespace: $TEST_NS
+spec:
+  parentRefs:
+  - name: hu-gw
+  hostnames:
+  - "$hostname"
+  rules:
+  - backendRefs:
+    - name: hu-backend
+      port: 80
+EOF
+
+    log "Verifying tunnel Deployment has --health-url arg..."
+    retry 60 3 bash -c "kubectl get deployment gateway-hu-gw-primary -n '$TEST_NS' \
+        -o jsonpath='{.spec.template.spec.containers[0].args}' | grep -q 'health-url'" \
+        || fail "tunnel Deployment missing --health-url arg"
+    pass "Tunnel Deployment has --health-url arg"
+
+    # Wait for the health check endpoint to be reachable through the tunnel.
+    wait_for_https "https://$hostname/"
+
+    log "Verifying tunnel pod is healthy (not restarting)..."
+    local restarts
+    restarts=$(kubectl get pods -n "$TEST_NS" -l app.kubernetes.io/instance=hu-gw \
+        -o jsonpath='{.items[0].status.containerStatuses[0].restartCount}' 2>/dev/null || echo "0")
+    [ "$restarts" = "0" ] || fail "tunnel pod has restarts: $restarts (health check may be failing)"
+    pass "Tunnel pod is healthy (0 restarts)"
+
+    # Verify DNS CNAME exists.
+    local tunnel_name tunnel_id zone_id tunnel_target
+    tunnel_name=$(cf_resource_name "$KIND_CLUSTER_NAME" "$TEST_NS" "hu-gw")
+    tunnel_id=$(cfgwctl tunnel get-id --name "$tunnel_name" | jq -r '.tunnelId')
+    [ -n "$tunnel_id" ] && [ "$tunnel_id" != "null" ] || fail "tunnel not found"
+    zone_id=$(cfgwctl dns find-zone --hostname "$hostname" | jq -r '.zoneId')
+    [ -n "$zone_id" ] && [ "$zone_id" != "null" ] || fail "zone ID not found"
+    tunnel_target="${tunnel_id}.cfargotunnel.com"
+
+    log "Verifying DNS CNAME for '$hostname'..."
+    check_dns_cname() {
+        cfgwctl dns list-cnames --zone-id "$zone_id" --target "$tunnel_target" \
+            | jq -e ".hostnames[] | select(. == \"$hostname\")" >/dev/null
+    }
+    retry 60 3 check_dns_cname || fail "DNS CNAME not found"
+    pass "DNS CNAME exists"
+
+    log "Running 'cfgwctl check gateway' health check..."
+    "$CFGWCTL" check gateway hu-gw -n "$TEST_NS" \
+        || fail "cfgwctl check gateway failed"
+    pass "cfgwctl check gateway passed"
+
+    log "Cleaning up health URL test..."
+    kubectl delete httproute hu-route -n "$TEST_NS"
+    kubectl delete gateway hu-gw -n "$TEST_NS"
+    retry 60 3 bash -c "! kubectl get gateway hu-gw -n '$TEST_NS' 2>/dev/null" \
+        || fail "hu-gw still exists"
+    kubectl delete deployment hu-test -n "$TEST_NS" --ignore-not-found
+    kubectl delete service hu-backend -n "$TEST_NS" --ignore-not-found
+    kubectl delete cloudflaregatewayparameters hu-params -n "$TEST_NS" --ignore-not-found
+}
+
 # ─── Run ──────────────────────────────────────────────────────────────────────
 
 run_tests \
@@ -2566,4 +2732,5 @@ run_tests \
     test_suspend_gateway \
     test_resume_gateway \
     test_reconcile_gateway \
-    test_rotate_gateway_token
+    test_rotate_gateway_token \
+    test_health_url
