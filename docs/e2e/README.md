@@ -454,7 +454,7 @@ Gateway is suspended.
 - All requests during the 1-minute load test return 2xx (zero failures).
 - Token changed on Cloudflare API after rotation.
 - In-cluster tunnel token Secret matches the new Cloudflare API token.
-- Tunnel pod was not restarted (same pod name and restart count).
+- Tunnel pod was replaced via rolling restart (new pod name after rotation).
 
 **Steps:**
 
@@ -469,7 +469,7 @@ Gateway is suspended.
 8. Wait for load generator to finish; verify zero failures.
 9. Verify Cloudflare API token changed.
 10. Verify in-cluster tunnel token Secret matches the new Cloudflare API token.
-11. Verify tunnel pod was not restarted (same name and restart count).
+11. Verify tunnel pod was replaced via rolling restart (new pod name).
 12. Suspend the Gateway via `cfgwctl suspend gateway`.
 13. Run `cfgwctl rotate gateway token` on the suspended Gateway; verify it fails
     with an error mentioning "suspended".

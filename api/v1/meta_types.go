@@ -93,6 +93,11 @@ const (
 	// AnnotationRotateTokenRequestedAt is set by the CLI to trigger an
 	// on-demand tunnel token rotation. The value is an RFC3339Nano timestamp.
 	AnnotationRotateTokenRequestedAt = Group + "/rotateTokenRequestedAt"
+
+	// AnnotationTokenHash is set on the tunnel pod template to trigger a
+	// rolling restart when the tunnel token changes. The value is the
+	// SHA-256 hex digest of the token.
+	AnnotationTokenHash = Group + "/tokenHash"
 )
 
 // Labels.

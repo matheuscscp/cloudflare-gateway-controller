@@ -2459,12 +2459,10 @@ EOF
     token_before=$(cfgwctl tunnel get-token --tunnel-id "$rot_tunnel_id" | jq -r '.token')
     [ -n "$token_before" ] && [ "$token_before" != "null" ] || fail "could not get token before rotation"
 
-    # Record pod name(s) and restart count before rotation.
-    local pod_names_before restarts_before
+    # Record pod name(s) before rotation.
+    local pod_names_before
     pod_names_before=$(kubectl get pods -n "$TEST_NS" -l app.kubernetes.io/instance=rot-gw \
         -o jsonpath='{.items[*].metadata.name}')
-    restarts_before=$(kubectl get pods -n "$TEST_NS" -l app.kubernetes.io/instance=rot-gw \
-        -o jsonpath='{.items[0].status.containerStatuses[0].restartCount}')
 
     # Start background load generator (runs for 1 minute).
     log "Starting background load generator..."
@@ -2512,15 +2510,16 @@ EOF
         || fail "in-cluster token does not match Cloudflare API token"
     pass "rotate: in-cluster Secret matches Cloudflare API token"
 
-    # Verify tunnel pod was NOT restarted.
-    local pod_names_after restarts_after
+    # Verify tunnel pod was replaced via rolling restart (zero-downtime
+    # verified by the load generator above).
+    log "Waiting for tunnel Deployment rollout to complete..."
+    kubectl rollout status deployment/gateway-rot-gw-primary -n "$TEST_NS" --timeout=120s \
+        || fail "tunnel Deployment rollout did not complete"
+    local pod_names_after
     pod_names_after=$(kubectl get pods -n "$TEST_NS" -l app.kubernetes.io/instance=rot-gw \
         -o jsonpath='{.items[*].metadata.name}')
-    [ "$pod_names_before" = "$pod_names_after" ] || fail "tunnel pod was replaced (name changed)"
-    restarts_after=$(kubectl get pods -n "$TEST_NS" -l app.kubernetes.io/instance=rot-gw \
-        -o jsonpath='{.items[0].status.containerStatuses[0].restartCount}')
-    [ "$restarts_before" = "$restarts_after" ] || fail "tunnel container was restarted"
-    pass "rotate: tunnel pod not restarted"
+    [ "$pod_names_before" != "$pod_names_after" ] || fail "tunnel pod was not replaced after token rotation"
+    pass "rotate: tunnel pod replaced via rolling restart"
 
     # Path 2: Error when suspended.
     log "Suspending Gateway 'rot-gw'..."
