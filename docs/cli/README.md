@@ -62,9 +62,9 @@ cfgwctl reconcile gateway <name> [flags]
 ### `rotate gateway token`
 
 Rotate the tunnel token for a Gateway on-demand. The controller generates a new
-random secret, rotates it via the Cloudflare API, and updates the in-cluster
-Secret. The rotation is seamless — cloudflared picks up the new token without
-pod restarts. The command waits for the controller to complete the rotation.
+random secret, rotates it via the Cloudflare API, updates the in-cluster
+Secret, and performs a rolling restart of the tunnel pods so they pick up the
+new token. The command waits for the controller to complete the rotation.
 
 ```shell
 cfgwctl rotate gateway token <name> [flags]

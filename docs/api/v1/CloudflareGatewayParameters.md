@@ -130,8 +130,8 @@ spec:
 ```
 
 When automatic token rotation is enabled, the controller periodically rotates
-the tunnel token via the Cloudflare API and updates the in-cluster Secret. The
-rotation is seamless — cloudflared picks up the new token without pod restarts.
+the tunnel token via the Cloudflare API, updates the in-cluster Secret, and
+performs a rolling restart of the tunnel pods so they pick up the new token.
 
 The token rotation fields are:
 

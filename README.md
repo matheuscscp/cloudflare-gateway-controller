@@ -163,8 +163,8 @@ for details.
 **Token rotation:** The controller automatically rotates tunnel tokens every 24 hours by
 default (configurable via
 [CloudflareGatewayParameters](docs/api/v1/CloudflareGatewayParameters.md#token-rotation)).
-On-demand rotation is also available via the CLI. Rotation is seamless — cloudflared picks
-up the new token without pod restarts.
+On-demand rotation is also available via the CLI. Rotation updates the in-cluster Secret
+and performs a rolling restart of the tunnel pods so they pick up the new token.
 
 **Health check URL:** An HTTPS health check URL can be configured so the tunnel's liveness
 and readiness probes verify end-to-end connectivity through Cloudflare. The hostname is

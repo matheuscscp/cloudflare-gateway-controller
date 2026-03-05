@@ -6,6 +6,7 @@ package controller
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -72,6 +73,7 @@ type tokenRotationResult struct {
 	changes          []string
 	lastRotatedAt    string // set when a rotation was performed
 	rotationInterval time.Duration
+	tokenHash        string // truncated SHA-256 of the tunnel token
 }
 
 // reconcileTunnelTokenSecret reconciles the tunnel token Secret,
@@ -100,6 +102,7 @@ func (r *GatewayReconciler) reconcileTunnelTokenSecret(
 	if err != nil {
 		return nil, fmt.Errorf("getting tunnel token for %q: %w", tunnel.name, err)
 	}
+	result.tokenHash = fmt.Sprintf("%x", sha256.Sum256([]byte(tunnelToken)))
 	secret := buildTunnelTokenSecret(gw, tunnelToken)
 	if err := controllerutil.SetControllerReference(gw, secret, r.Scheme()); err != nil {
 		return nil, fmt.Errorf("setting owner reference on secret %q: %w", resourceName, err)
@@ -194,13 +197,15 @@ func (r *GatewayReconciler) maybeRotateToken(
 }
 
 // applyTunnelDeployments builds and applies a tunnel Deployment for each
-// replica via Server-Side Apply. Returns change messages.
-func (r *GatewayReconciler) applyTunnelDeployments(ctx context.Context, gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters, replicas []apiv1.ReplicaConfig) ([]string, error) {
+// replica via Server-Side Apply. The tokenHash is set as a pod template
+// annotation to trigger a rolling restart when the tunnel token changes.
+// Returns change messages.
+func (r *GatewayReconciler) applyTunnelDeployments(ctx context.Context, gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters, replicas []apiv1.ReplicaConfig, tokenHash string) ([]string, error) {
 	l := log.FromContext(ctx)
 	var changes []string
 	for i := range replicas {
 		deploymentName := apiv1.GatewayReplicaName(gw, replicas[i].Name)
-		deployObj, err := r.buildTunnelDeployment(gw, params, &replicas[i])
+		deployObj, err := r.buildTunnelDeployment(gw, params, &replicas[i], tokenHash)
 		if err != nil {
 			return nil, fmt.Errorf("building tunnel deployment %q: %w", deploymentName, err)
 		}
@@ -473,9 +478,9 @@ func buildTunnelTokenSecret(gw *gatewayv1.Gateway, tunnelToken string) *corev1.S
 //  2. User-defined RFC 6902 patches (terminal errors)
 //  3. Placement overrides from replica config (affinity, zone, nodeSelector)
 //  4. Convert to unstructured
-func (r *GatewayReconciler) buildTunnelDeployment(gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters, replica *apiv1.ReplicaConfig) (*unstructured.Unstructured, error) {
+func (r *GatewayReconciler) buildTunnelDeployment(gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters, replica *apiv1.ReplicaConfig, tokenHash string) (*unstructured.Unstructured, error) {
 	// Step 1: Build the base deployment (no placement).
-	apply := r.buildTunnelDeploymentApply(gw, params, replica)
+	apply := r.buildTunnelDeploymentApply(gw, params, replica, tokenHash)
 	data, err := json.Marshal(apply)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling deployment: %w", err)
@@ -609,7 +614,7 @@ func navigateToPodSpec(data []byte) (map[string]any, error) {
 // buildTunnelDeploymentApply builds the apply configuration for the
 // tunnel Deployment, including selector labels, infrastructure
 // labels/annotations, owner reference, and the tunnel container spec.
-func (r *GatewayReconciler) buildTunnelDeploymentApply(gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters, replica *apiv1.ReplicaConfig) *acappsv1.DeploymentApplyConfiguration {
+func (r *GatewayReconciler) buildTunnelDeploymentApply(gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters, replica *apiv1.ReplicaConfig, tokenHash string) *acappsv1.DeploymentApplyConfiguration {
 	deploymentName := apiv1.GatewayReplicaName(gw, replica.Name)
 	selectorLabels := apiv1.GatewayResourceLabels(gw.Name, replica.Name)
 	templateLabels := maps.Clone(selectorLabels)
@@ -618,6 +623,12 @@ func (r *GatewayReconciler) buildTunnelDeploymentApply(gw *gatewayv1.Gateway, pa
 	deployAnnotations := infrastructureAnnotations(gw.Spec.Infrastructure)
 	maps.Copy(templateLabels, infraLabels)
 	templateAnnotations := infrastructureAnnotations(gw.Spec.Infrastructure)
+	if tokenHash != "" {
+		if templateAnnotations == nil {
+			templateAnnotations = make(map[string]string, 1)
+		}
+		templateAnnotations[apiv1.AnnotationTokenHash] = tokenHash
+	}
 
 	// Deployment metadata gets both infrastructure labels and selector labels
 	// so the controller can list Deployments by label for cleanup/finalization.

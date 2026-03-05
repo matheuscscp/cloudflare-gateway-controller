@@ -327,8 +327,9 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	}
 	changes = append(changes, tunnelRBACChanges...)
 
-	// Apply tunnel Deployments for all replicas.
-	deployChanges, err := r.applyTunnelDeployments(ctx, gw, params, replicas)
+	// Apply tunnel Deployments for all replicas. The token hash is set as a
+	// pod template annotation so that token rotation triggers a rolling restart.
+	deployChanges, err := r.applyTunnelDeployments(ctx, gw, params, replicas, tokenResult.tokenHash)
 	if err != nil {
 		return r.reconcileError(ctx, gw, err)
 	}
