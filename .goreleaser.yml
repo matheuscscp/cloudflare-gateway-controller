@@ -1,27 +1,53 @@
 version: 2
 project_name: cfgwctl
+env:
+  - CGO_ENABLED=0
 builds:
-  - binary: cfgwctl
+  - id: cli
+    binary: cfgwctl
     main: ./cmd/cfgwctl
     ldflags:
       - -s -w -X main.VERSION={{ .Version }}
-    env:
-      - CGO_ENABLED=0
     goos:
       - linux
       - darwin
+    goarch:
+      - amd64
+      - arm64
+  - id: cli-windows
+    binary: cfgwctl
+    main: ./cmd/cfgwctl
+    ldflags:
+      - -s -w -X main.VERSION={{ .Version }}
+    goos:
       - windows
     goarch:
       - amd64
       - arm64
 archives:
   - name_template: "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    format_overrides:
-      - goos: windows
-        format: zip
+    id: unix
+    ids:
+      - cli
+    formats: ['tar.gz']
     files:
-      - none*
+      - LICENSE
+  - name_template: "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    id: windows
+    ids:
+      - cli-windows
+    formats: ['zip']
+    files:
+      - LICENSE
 checksum:
   name_template: 'checksums.txt'
+source:
+  enabled: true
+  name_template: '{{ .ProjectName }}_{{ .Version }}_source_code'
+sboms:
+  - id: source
+    artifacts: source
+    documents:
+      - "{{ .ProjectName }}_{{ .Version }}_sbom.spdx.json"
 changelog:
   use: github-native
