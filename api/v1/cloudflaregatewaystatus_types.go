@@ -42,6 +42,21 @@ type CloudflareGatewayStatusDetail struct {
 	// Inventory lists all Kubernetes objects managed by this Gateway.
 	// +optional
 	Inventory []ResourceRef `json:"inventory,omitempty"`
+
+	// LastHandledReconcileAt is the value of the reconcileRequestedAt annotation
+	// at the time the last reconciliation was handled.
+	// +optional
+	LastHandledReconcileAt string `json:"lastHandledReconcileAt,omitempty"`
+
+	// LastHandledTokenRotateAt is the value of the rotateTokenRequestedAt annotation
+	// at the time the last token rotation request was handled.
+	// +optional
+	LastHandledTokenRotateAt string `json:"lastHandledTokenRotateAt,omitempty"`
+
+	// LastTokenRotatedAt is the timestamp of the last successful token rotation
+	// (either scheduled or on-demand).
+	// +optional
+	LastTokenRotatedAt string `json:"lastTokenRotatedAt,omitempty"`
 }
 
 // TunnelStatus records the state of the Cloudflare tunnel managed for

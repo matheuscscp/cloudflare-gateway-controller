@@ -373,3 +373,104 @@ upstream before testing.
 11. Verify VPA is deleted (cleanup).
 12. Delete `Gateway`; verify deleted.
 13. Clean up `CloudflareGatewayParameters`.
+
+## test_suspend_gateway
+
+Tests the `cfgwctl suspend gateway` CLI command: suspending a running Gateway
+and the idempotent already-suspended path.
+
+**Resources created:**
+- `CloudflareGatewayParameters` with DNS zone config
+- `Gateway` referencing the parameters
+
+**Cloudflare resources:** 1 tunnel.
+
+**Steps:**
+
+1. Create `CloudflareGatewayParameters` and `Gateway`; wait for Programmed.
+2. Run `cfgwctl suspend gateway`; verify output contains "Suspended reconciliation".
+3. Verify the `cloudflare-gateway-controller.io/reconcile` annotation is `disabled`.
+4. Run `cfgwctl suspend gateway` again; verify output contains "already suspended".
+5. Remove annotation, delete `Gateway` and `CloudflareGatewayParameters`.
+
+## test_resume_gateway
+
+Tests the `cfgwctl resume gateway` CLI command: resuming a suspended Gateway
+(which triggers a reconciliation) and the idempotent not-suspended path.
+
+**Resources created:**
+- `CloudflareGatewayParameters` with DNS zone config
+- `Gateway` referencing the parameters
+
+**Cloudflare resources:** 1 tunnel.
+
+**Steps:**
+
+1. Create `CloudflareGatewayParameters` and `Gateway`; wait for Programmed.
+2. Suspend the Gateway via `cfgwctl suspend gateway`.
+3. Run `cfgwctl resume gateway`; verify output contains "Resumed reconciliation"
+   and "Reconciliation completed".
+4. Verify the `cloudflare-gateway-controller.io/reconcile` annotation is `enabled`.
+5. Run `cfgwctl resume gateway` again (not suspended); verify output contains
+   "not suspended".
+6. Delete `Gateway` and `CloudflareGatewayParameters`.
+
+## test_reconcile_gateway
+
+Tests the `cfgwctl reconcile gateway` CLI command: triggering an on-demand
+reconciliation and the error path when the Gateway is suspended.
+
+**Resources created:**
+- `CloudflareGatewayParameters` with DNS zone config
+- `Gateway` referencing the parameters
+
+**Cloudflare resources:** 1 tunnel.
+
+**Steps:**
+
+1. Create `CloudflareGatewayParameters` and `Gateway`; wait for Programmed.
+2. Run `cfgwctl reconcile gateway`; verify output contains "Requested reconciliation"
+   and "Reconciliation completed".
+3. Suspend the Gateway via `cfgwctl suspend gateway`.
+4. Run `cfgwctl reconcile gateway` on the suspended Gateway; verify it fails with
+   an error mentioning "suspended".
+5. Remove annotation, delete `Gateway` and `CloudflareGatewayParameters`.
+
+## test_rotate_gateway_token
+
+Tests the `cfgwctl rotate gateway token` CLI command: rotating the tunnel token
+while traffic is flowing, verifying zero downtime, and the error path when the
+Gateway is suspended.
+
+**Resources created:**
+- 1-replica `Deployment` running `cfgwctl test serve` (selector `app=rot-test`)
+- `Service` `rot-backend` (port 80 → targetPort 8080)
+- `Gateway` with bare Secret (no CGP)
+- `HTTPRoute` with one hostname (on `TEST_TRAFFIC_ZONE_NAME`)
+
+**Cloudflare resources:** 1 tunnel, 1 DNS CNAME record.
+
+**Pass criteria:**
+- All requests during the 1-minute load test return 2xx (zero failures).
+- Token changed on Cloudflare API after rotation.
+- In-cluster tunnel token Secret matches the new Cloudflare API token.
+- Tunnel pod was not restarted (same pod name and restart count).
+
+**Steps:**
+
+1. Deploy test server and `Service`; wait for rollout.
+2. Create `Gateway` (bare Secret); wait for Programmed.
+3. Create `HTTPRoute`; wait for HTTPS endpoint reachable.
+4. Record tunnel ID, Cloudflare API token, pod name, and restart count.
+5. Start background load generator (`cfgwctl test load --duration 1m`).
+6. Wait 10 seconds for traffic to stabilize.
+7. Run `cfgwctl rotate gateway token`; verify output contains
+   "Requested token rotation" and "Token rotation completed".
+8. Wait for load generator to finish; verify zero failures.
+9. Verify Cloudflare API token changed.
+10. Verify in-cluster tunnel token Secret matches the new Cloudflare API token.
+11. Verify tunnel pod was not restarted (same name and restart count).
+12. Suspend the Gateway via `cfgwctl suspend gateway`.
+13. Run `cfgwctl rotate gateway token` on the suspended Gateway; verify it fails
+    with an error mentioning "suspended".
+14. Remove annotation, delete `HTTPRoute`, `Gateway`, `Deployment`, and `Service`.

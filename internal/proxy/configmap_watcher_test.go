@@ -17,7 +17,7 @@ import (
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/proxy"
 )
 
-func TestWatcher_LoadsConfigFromConfigMap(t *testing.T) {
+func TestConfigMapWatcher_LoadsConfigFromConfigMap(t *testing.T) {
 	g := NewWithT(t)
 
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -43,7 +43,7 @@ func TestWatcher_LoadsConfigFromConfigMap(t *testing.T) {
 
 	clientset := fake.NewClientset(cm)
 	p := &proxy.Proxy{}
-	watcher := proxy.NewWatcher(clientset, "default", "test-proxy-config", "config.yaml", p)
+	watcher := proxy.NewConfigMapWatcher(clientset, "default", "test-proxy-config", "config.yaml", p)
 
 	stopCh := make(chan struct{})
 	defer close(stopCh)
@@ -59,7 +59,7 @@ func TestWatcher_LoadsConfigFromConfigMap(t *testing.T) {
 	}).WithTimeout(5 * time.Second).WithPolling(50 * time.Millisecond).Should(Succeed())
 }
 
-func TestWatcher_IgnoresMissingKey(t *testing.T) {
+func TestConfigMapWatcher_IgnoresMissingKey(t *testing.T) {
 	g := NewWithT(t)
 
 	cm := &corev1.ConfigMap{
@@ -74,7 +74,7 @@ func TestWatcher_IgnoresMissingKey(t *testing.T) {
 
 	clientset := fake.NewClientset(cm)
 	p := &proxy.Proxy{}
-	watcher := proxy.NewWatcher(clientset, "default", "test-proxy-config", "config.yaml", p)
+	watcher := proxy.NewConfigMapWatcher(clientset, "default", "test-proxy-config", "config.yaml", p)
 
 	stopCh := make(chan struct{})
 	defer close(stopCh)
@@ -90,7 +90,7 @@ func TestWatcher_IgnoresMissingKey(t *testing.T) {
 	g.Expect(rec.Code).To(Equal(http.StatusServiceUnavailable))
 }
 
-func TestWatcher_IgnoresInvalidYAML(t *testing.T) {
+func TestConfigMapWatcher_IgnoresInvalidYAML(t *testing.T) {
 	g := NewWithT(t)
 
 	cm := &corev1.ConfigMap{
@@ -105,7 +105,7 @@ func TestWatcher_IgnoresInvalidYAML(t *testing.T) {
 
 	clientset := fake.NewClientset(cm)
 	p := &proxy.Proxy{}
-	watcher := proxy.NewWatcher(clientset, "default", "test-proxy-config", "config.yaml", p)
+	watcher := proxy.NewConfigMapWatcher(clientset, "default", "test-proxy-config", "config.yaml", p)
 
 	stopCh := make(chan struct{})
 	defer close(stopCh)
@@ -121,7 +121,7 @@ func TestWatcher_IgnoresInvalidYAML(t *testing.T) {
 	g.Expect(rec.Code).To(Equal(http.StatusServiceUnavailable))
 }
 
-func TestWatcher_IgnoresInvalidServiceURL(t *testing.T) {
+func TestConfigMapWatcher_IgnoresInvalidServiceURL(t *testing.T) {
 	g := NewWithT(t)
 
 	cm := &corev1.ConfigMap{
@@ -141,7 +141,7 @@ func TestWatcher_IgnoresInvalidServiceURL(t *testing.T) {
 
 	clientset := fake.NewClientset(cm)
 	p := &proxy.Proxy{}
-	watcher := proxy.NewWatcher(clientset, "default", "test-proxy-config", "config.yaml", p)
+	watcher := proxy.NewConfigMapWatcher(clientset, "default", "test-proxy-config", "config.yaml", p)
 
 	stopCh := make(chan struct{})
 	defer close(stopCh)

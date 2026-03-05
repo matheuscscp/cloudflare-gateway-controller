@@ -22,9 +22,6 @@ import (
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/proxy"
 )
 
-// routeConfigMapKey is the key used to store the route config in the ConfigMap.
-const routeConfigMapKey = "config.yaml"
-
 // routeConfigMapLabels returns the standard labels for the route ConfigMap.
 func routeConfigMapLabels(gw *gatewayv1.Gateway) map[string]string {
 	lbls := apiv1.GatewayResourceLabels(gw.Name, apiv1.LabelAppComponentRoutes)
@@ -61,7 +58,7 @@ func (r *GatewayReconciler) reconcileRouteConfigMap(ctx context.Context, gw *gat
 	result, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
 		cm.Labels = routeConfigMapLabels(gw)
 		cm.Data = map[string]string{
-			routeConfigMapKey: string(data),
+			proxy.RouteConfigMapKey: string(data),
 		}
 		return controllerutil.SetControllerReference(gw, cm, r.Scheme())
 	})
@@ -176,7 +173,7 @@ func (r *GatewayReconciler) getExistingRouteConfig(ctx context.Context, gw *gate
 		}
 		return nil, fmt.Errorf("getting route ConfigMap %s: %w", cmName, err)
 	}
-	data, ok := cm.Data[routeConfigMapKey]
+	data, ok := cm.Data[proxy.RouteConfigMapKey]
 	if !ok {
 		return nil, nil
 	}

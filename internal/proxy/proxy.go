@@ -24,6 +24,17 @@ import (
 // proxied one.
 const HeaderConfigNotLoaded = "X-Proxy-Config-Not-Loaded"
 
+// RouteConfigMapKey is the key used to store the route config in the ConfigMap.
+const RouteConfigMapKey = "config.yaml"
+
+const (
+	// FlagNamespace is the tunnel command flag for the namespace.
+	FlagNamespace = "namespace"
+
+	// FlagConfigMapName is the tunnel command flag for the ConfigMap name.
+	FlagConfigMapName = "configmap-name"
+)
+
 // noKeepAliveTransport is a shared http.Transport with keep-alives disabled.
 // Each request opens a fresh TCP connection through kube-proxy.
 var noKeepAliveTransport = &http.Transport{DisableKeepAlives: true}
@@ -46,6 +57,11 @@ type Proxy struct {
 // SetConfig atomically replaces the routing table.
 func (p *Proxy) SetConfig(cfg *Config) {
 	p.config.Store(cfg)
+}
+
+// ConfigLoaded returns true if the proxy has a routing configuration loaded.
+func (p *Proxy) ConfigLoaded() bool {
+	return p.config.Load() != nil
 }
 
 // resolveBackend matches a request to a route and picks a backend.

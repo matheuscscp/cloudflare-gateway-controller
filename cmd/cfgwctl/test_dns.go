@@ -24,7 +24,7 @@ func newDNSListZonesCmd(credentialsFile *string) *cobra.Command {
 		Use:   "list-zones",
 		Short: "List all zone IDs in the account",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := newClient(*credentialsFile)
+			c, err := newCloudflareClient(*credentialsFile)
 			if err != nil {
 				return err
 			}
@@ -43,7 +43,7 @@ func newDNSFindZoneCmd(credentialsFile *string) *cobra.Command {
 		Use:   "find-zone",
 		Short: "Find a zone ID by hostname",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := newClient(*credentialsFile)
+			c, err := newCloudflareClient(*credentialsFile)
 			if err != nil {
 				return err
 			}
@@ -65,7 +65,7 @@ func newDNSDeleteCNAMECmd(credentialsFile *string) *cobra.Command {
 		Use:   "delete-cname",
 		Short: "Delete a DNS CNAME record",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := newClient(*credentialsFile)
+			c, err := newCloudflareClient(*credentialsFile)
 			if err != nil {
 				return err
 			}
@@ -85,7 +85,7 @@ func newDNSListCNAMEsCmd(credentialsFile *string) *cobra.Command {
 		Use:   "list-cnames",
 		Short: "List DNS CNAME records pointing to a target",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := newClient(*credentialsFile)
+			c, err := newCloudflareClient(*credentialsFile)
 			if err != nil {
 				return err
 			}

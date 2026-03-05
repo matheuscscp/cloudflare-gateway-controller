@@ -5,6 +5,7 @@ package cloudflare
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
@@ -39,6 +40,7 @@ type Client interface {
 	CleanupTunnelConnections(ctx context.Context, tunnelID string) error
 	DeleteTunnel(ctx context.Context, tunnelID string) error
 	GetTunnelToken(ctx context.Context, tunnelID string) (token string, err error)
+	RotateTunnelSecret(ctx context.Context, tunnelID string, newSecret []byte) error
 
 	// Zone/DNS operations.
 	ListZoneIDs(ctx context.Context) ([]string, error)
@@ -158,6 +160,15 @@ func (c *client) GetTunnelToken(ctx context.Context, tunnelID string) (string, e
 		return "", err
 	}
 	return *token, nil
+}
+
+func (c *client) RotateTunnelSecret(ctx context.Context, tunnelID string, newSecret []byte) error {
+	encoded := base64.StdEncoding.EncodeToString(newSecret)
+	_, err := c.client.ZeroTrust.Tunnels.Cloudflared.Edit(ctx, tunnelID, zero_trust.TunnelCloudflaredEditParams{
+		AccountID:    cloudflare.String(c.accountID),
+		TunnelSecret: cloudflare.F(encoded),
+	})
+	return err
 }
 
 // --- Zone/DNS operations ---

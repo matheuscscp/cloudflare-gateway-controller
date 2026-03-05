@@ -209,6 +209,10 @@ func TestWithRetry_DelegatesAllMethods(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(hostnames).To(Equal([]string{"app.example.com"}))
 	g.Expect(inner.calls["ListDNSCNAMEsByTarget"]).To(Equal(1))
+
+	err = c.RotateTunnelSecret(ctx, "tunnel-id", []byte("secret"))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(inner.calls["RotateTunnelSecret"]).To(Equal(1))
 }
 
 // mockRetryClient implements cloudflare.Client with configurable overrides
@@ -284,4 +288,9 @@ func (m *mockRetryClient) DeleteDNSCNAME(_ context.Context, _, _ string) error {
 func (m *mockRetryClient) ListDNSCNAMEsByTarget(_ context.Context, _, _ string) ([]string, error) {
 	m.calls["ListDNSCNAMEsByTarget"]++
 	return []string{"app.example.com"}, nil
+}
+
+func (m *mockRetryClient) RotateTunnelSecret(_ context.Context, _ string, _ []byte) error {
+	m.calls["RotateTunnelSecret"]++
+	return nil
 }

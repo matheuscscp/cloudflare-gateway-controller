@@ -102,6 +102,10 @@ jobs:
           - test_traffic_splitting
           - test_session_persistence
           - test_vpa_autoscaling
+          - test_suspend_gateway
+          - test_resume_gateway
+          - test_reconcile_gateway
+          - test_rotate_gateway_token
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

@@ -73,4 +73,5 @@ TEST=test_multi_zone_dns \
   make test-e2e
 ```
 
-Test cases are documented in `docs/tests/e2e.md`.
+Test cases must be documented in `docs/e2e/README.md`.
+Test cases must be added to the `.github/workflows/e2e.yaml` matrix to run in CI.

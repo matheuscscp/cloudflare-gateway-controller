@@ -219,18 +219,20 @@ func (r *GatewayReconciler) getCGS(ctx context.Context, gw *gatewayv1.Gateway) (
 }
 
 // reconcileCGS creates or updates the CloudflareGatewayStatus resource state
-// (tunnel, DNS). Conditions are patched separately in patchGatewayStatus.
-// Returns the CGS pointer (which may be newly created) so the caller can pass
-// it to patchGatewayStatus for condition mirroring.
+// (tunnel, DNS, token rotation timestamps). Conditions are patched separately
+// in patchGatewayStatus. Returns the CGS pointer (which may be newly created)
+// so the caller can pass it to patchGatewayStatus for condition mirroring.
 func (r *GatewayReconciler) reconcileCGS(
 	ctx context.Context,
 	gw *gatewayv1.Gateway,
 	cgs *apiv1.CloudflareGatewayStatus,
 	params *apiv1.CloudflareGatewayParameters,
 	tunnel tunnelState,
-	resourceName string,
 	replicas []apiv1.ReplicaConfig,
+	tokenResult *tokenRotationResult,
 ) (*apiv1.CloudflareGatewayStatus, error) {
+	resourceName := apiv1.GatewayResourceName(gw)
+
 	// Build desired status detail.
 	desired := apiv1.CloudflareGatewayStatusDetail{}
 
@@ -262,6 +264,18 @@ func (r *GatewayReconciler) reconcileCGS(
 				APIVersion: apiv1.APIVersionAutoscaling, Kind: apiv1.KindVerticalPodAutoscaler, Name: apiv1.GatewayReplicaName(gw, r.Name),
 			})
 		}
+	}
+
+	// Copy annotation values to status on every reconcile.
+	desired.LastHandledReconcileAt = gw.Annotations[apiv1.AnnotationReconcileRequestedAt]
+	desired.LastHandledTokenRotateAt = gw.Annotations[apiv1.AnnotationRotateTokenRequestedAt]
+
+	// Preserve existing LastTokenRotatedAt and update if rotation occurred.
+	if cgs != nil {
+		desired.LastTokenRotatedAt = cgs.Status.LastTokenRotatedAt
+	}
+	if tokenResult != nil && tokenResult.lastRotatedAt != "" {
+		desired.LastTokenRotatedAt = tokenResult.lastRotatedAt
 	}
 
 	if cgs == nil || !cgs.DeletionTimestamp.IsZero() {
@@ -309,7 +323,7 @@ func (r *GatewayReconciler) reconcileCGS(
 	}
 
 	// Update existing CGS status (preserve conditions, they're patched separately).
-	// Only patch when resource state (tunnels, DNS, LB) actually changed.
+	// Only patch when resource state actually changed.
 	desired.Conditions = cgs.Status.Conditions
 	if !reflect.DeepEqual(cgs.Status, desired) {
 		cgsPatch := client.MergeFrom(cgs.DeepCopy())

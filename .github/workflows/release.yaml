@@ -19,6 +19,7 @@ permissions:
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}
+  CHART: ghcr.io/${{ github.repository_owner }}/charts/cloudflare-gateway-controller
 
 jobs:
   release:
@@ -33,6 +34,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
 
       - name: Prepare
         id: prep
@@ -117,14 +120,14 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         id: helm-push
         run: |
-          helm push cloudflare-gateway-controller-${{ steps.prep.outputs.SEMVER }}.tgz oci://${{ env.IMAGE }}/charts 2>&1 | tee helm-push.log
+          helm push cloudflare-gateway-controller-${{ steps.prep.outputs.SEMVER }}.tgz oci://ghcr.io/${{ github.repository_owner }}/charts 2>&1 | tee helm-push.log
           digest=$(grep Digest: helm-push.log | awk '{print $NF}')
           echo "digest=$digest" >> $GITHUB_OUTPUT
 
       - name: Sign Helm chart
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          cosign sign --yes ${{ env.IMAGE }}/charts/cloudflare-gateway-controller@${{ steps.helm-push.outputs.digest }}
+          cosign sign --yes ${{ env.CHART }}@${{ steps.helm-push.outputs.digest }}
 
       - name: Verify Helm chart signature
         if: startsWith(github.ref, 'refs/tags/v')
@@ -134,16 +137,22 @@ jobs:
           cosign verify \
             --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
             --certificate-identity="https://github.com/${REPOSITORY}/.github/workflows/release.yaml@${GITHUB_REF}" \
-            ${{ env.IMAGE }}/charts/cloudflare-gateway-controller@${{ steps.helm-push.outputs.digest }}
+            ${{ env.CHART }}@${{ steps.helm-push.outputs.digest }}
 
-      - name: Create GitHub release
+      - name: Set up Go
         if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+
+      - name: Run GoReleaser
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: goreleaser/goreleaser-action@9c156ee8a17a598857849441385a2041ef570552 # v6.3.0
+        with:
+          version: latest
+          args: release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release create ${{ steps.prep.outputs.VERSION }} \
-            --repo=${{ github.repository }} \
-            --generate-notes
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate SLSA metadata
         id: slsa

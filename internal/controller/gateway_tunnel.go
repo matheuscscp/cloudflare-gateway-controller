@@ -5,10 +5,12 @@ package controller
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"maps"
 	"strings"
+	"time"
 
 	jsonpatch "github.com/evanphx/json-patch/v5"
 	"github.com/fluxcd/pkg/ssa"
@@ -29,10 +31,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 
+	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
+	"github.com/matheuscscp/cloudflare-gateway-controller/internal/proxy"
 )
 
 // ensureTunnel creates or looks up the desired tunnel, filling in the
@@ -64,21 +67,45 @@ func (r *GatewayReconciler) ensureTunnel(ctx context.Context, tc cloudflare.Clie
 	return []string{fmt.Sprintf("created tunnel %s", tunnel.name)}, nil
 }
 
-// reconcileTunnelTokenSecret reconciles the tunnel token Secret,
-// setting the Gateway as the controller owner reference. Returns change messages.
-func (r *GatewayReconciler) reconcileTunnelTokenSecret(ctx context.Context, gw *gatewayv1.Gateway, tc cloudflare.Client, tunnel tunnelState, resourceName string) ([]string, error) {
-	l := log.FromContext(ctx)
+// tokenRotationResult holds the results of token rotation check and execution.
+type tokenRotationResult struct {
+	changes          []string
+	lastRotatedAt    string // set when a rotation was performed
+	rotationInterval time.Duration
+}
 
+// reconcileTunnelTokenSecret reconciles the tunnel token Secret,
+// performing token rotation if needed (on-demand or scheduled), and
+// setting the Gateway as the controller owner reference. Returns change messages.
+func (r *GatewayReconciler) reconcileTunnelTokenSecret(
+	ctx context.Context,
+	gw *gatewayv1.Gateway,
+	tc cloudflare.Client,
+	tunnel tunnelState,
+	cgs *apiv1.CloudflareGatewayStatus,
+	params *apiv1.CloudflareGatewayParameters,
+) (*tokenRotationResult, error) {
+	l := log.FromContext(ctx)
+	result := &tokenRotationResult{}
+	resourceName := apiv1.GatewayResourceName(gw)
+
+	// Check if token rotation is needed.
+	rotated, err := r.maybeRotateToken(ctx, gw, tc, tunnel, cgs, params, result)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fetch the (possibly new) token.
 	tunnelToken, err := tc.GetTunnelToken(ctx, tunnel.id)
 	if err != nil {
 		return nil, fmt.Errorf("getting tunnel token for %q: %w", tunnel.name, err)
 	}
-	secret := buildTunnelTokenSecret(gw, resourceName, tunnelToken)
+	secret := buildTunnelTokenSecret(gw, tunnelToken)
 	if err := controllerutil.SetControllerReference(gw, secret, r.Scheme()); err != nil {
 		return nil, fmt.Errorf("setting owner reference on secret %q: %w", resourceName, err)
 	}
-	result, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
-		desired := buildTunnelTokenSecret(gw, resourceName, tunnelToken)
+	createOrUpdateResult, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
+		desired := buildTunnelTokenSecret(gw, tunnelToken)
 		secret.Data = desired.Data
 		secret.Labels = desired.Labels
 		secret.Annotations = desired.Annotations
@@ -87,22 +114,93 @@ func (r *GatewayReconciler) reconcileTunnelTokenSecret(ctx context.Context, gw *
 	if err != nil {
 		return nil, fmt.Errorf("creating/updating tunnel token secret %q: %w", resourceName, err)
 	}
-	var changes []string
-	if result != controllerutil.OperationResultNone {
-		changes = append(changes, fmt.Sprintf("tunnel token Secret %s %s", resourceName, result))
+	if createOrUpdateResult != controllerutil.OperationResultNone {
+		result.changes = append(result.changes, fmt.Sprintf("tunnel token Secret %s %s", resourceName, createOrUpdateResult))
 	}
-	l.V(1).Info("Reconciled tunnel token Secret", "secret", resourceName, "result", result)
-	return changes, nil
+	l.V(1).Info("Reconciled tunnel token Secret", "secret", resourceName, "result", createOrUpdateResult, "rotated", rotated)
+	return result, nil
+}
+
+// maybeRotateToken checks if token rotation is needed (on-demand or scheduled)
+// and performs it if so.
+func (r *GatewayReconciler) maybeRotateToken(
+	ctx context.Context,
+	gw *gatewayv1.Gateway,
+	tc cloudflare.Client,
+	tunnel tunnelState,
+	cgs *apiv1.CloudflareGatewayStatus,
+	params *apiv1.CloudflareGatewayParameters,
+	result *tokenRotationResult,
+) (bool, error) {
+	// Determine rotation config from parameters.
+	// Default: enabled=true, interval=24h — rotation is on by default even
+	// without a CGP or without any rotation fields set.
+	rotationEnabled := true
+	rotationInterval := 24 * time.Hour
+	if params != nil && params.Spec.Tunnel != nil && params.Spec.Tunnel.Token != nil && params.Spec.Tunnel.Token.Rotation != nil {
+		rot := params.Spec.Tunnel.Token.Rotation
+		if rot.Enabled != nil {
+			rotationEnabled = *rot.Enabled
+		}
+		if rot.Interval.Duration > 0 {
+			rotationInterval = rot.Interval.Duration
+		}
+	}
+	if rotationEnabled {
+		result.rotationInterval = rotationInterval
+	}
+
+	var lastHandledRotateAt, lastTokenRotatedAt string
+	if cgs != nil {
+		lastHandledRotateAt = cgs.Status.LastHandledTokenRotateAt
+		lastTokenRotatedAt = cgs.Status.LastTokenRotatedAt
+	}
+
+	// On-demand rotation: annotation differs from last handled value.
+	requestedAt := gw.Annotations[apiv1.AnnotationRotateTokenRequestedAt]
+	onDemand := requestedAt != "" && requestedAt != lastHandledRotateAt
+
+	// Scheduled rotation: time since last rotation exceeds interval (only when enabled).
+	scheduled := false
+	if rotationEnabled {
+		if lastTokenRotatedAt != "" {
+			if t, err := time.Parse(time.RFC3339, lastTokenRotatedAt); err == nil {
+				scheduled = time.Since(t) >= rotationInterval
+			}
+		} else {
+			// First rotation: no last rotation recorded.
+			scheduled = true
+		}
+	}
+
+	if !onDemand && !scheduled {
+		return false, nil
+	}
+
+	// Generate 32 random bytes.
+	newSecret := make([]byte, 32)
+	if _, err := rand.Read(newSecret); err != nil {
+		return false, fmt.Errorf("generating random secret: %w", err)
+	}
+
+	// Rotate the tunnel secret.
+	if err := tc.RotateTunnelSecret(ctx, tunnel.id, newSecret); err != nil {
+		return false, fmt.Errorf("rotating tunnel secret for %q: %w", tunnel.name, err)
+	}
+
+	result.lastRotatedAt = time.Now().Format(time.RFC3339)
+	result.changes = append(result.changes, "rotated tunnel token")
+	return true, nil
 }
 
 // applyTunnelDeployments builds and applies a tunnel Deployment for each
 // replica via Server-Side Apply. Returns change messages.
-func (r *GatewayReconciler) applyTunnelDeployments(ctx context.Context, gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters, resourceName string, replicas []apiv1.ReplicaConfig) ([]string, error) {
+func (r *GatewayReconciler) applyTunnelDeployments(ctx context.Context, gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters, replicas []apiv1.ReplicaConfig) ([]string, error) {
 	l := log.FromContext(ctx)
 	var changes []string
 	for i := range replicas {
 		deploymentName := apiv1.GatewayReplicaName(gw, replicas[i].Name)
-		deployObj, err := r.buildTunnelDeployment(gw, params, resourceName, &replicas[i])
+		deployObj, err := r.buildTunnelDeployment(gw, params, &replicas[i])
 		if err != nil {
 			return nil, fmt.Errorf("building tunnel deployment %q: %w", deploymentName, err)
 		}
@@ -287,7 +385,7 @@ func removeOwnerRef(obj client.Object, ownerUID types.UID) bool {
 // cleanupStaleTunnelResources deletes Deployments and Secrets
 // that are no longer part of the desired replicas. This handles replica
 // addition/removal, service changes, and mode switches.
-func (r *GatewayReconciler) cleanupStaleTunnelResources(ctx context.Context, gw *gatewayv1.Gateway, resourceName string, replicas []apiv1.ReplicaConfig) ([]string, []string) {
+func (r *GatewayReconciler) cleanupStaleTunnelResources(ctx context.Context, gw *gatewayv1.Gateway, replicas []apiv1.ReplicaConfig) ([]string, []string) {
 	l := log.FromContext(ctx)
 
 	// Build set of desired Deployment names.
@@ -334,7 +432,7 @@ func (r *GatewayReconciler) cleanupStaleTunnelResources(ctx context.Context, gw 
 		return changes, errs
 	}
 
-	desiredSecrets := map[string]struct{}{resourceName: {}}
+	desiredSecrets := map[string]struct{}{apiv1.GatewayResourceName(gw): {}}
 	for i := range secretList.Items {
 		secret := &secretList.Items[i]
 		if _, ok := desiredSecrets[secret.Name]; ok {
@@ -351,18 +449,18 @@ func (r *GatewayReconciler) cleanupStaleTunnelResources(ctx context.Context, gw 
 	return changes, errs
 }
 
-func buildTunnelTokenSecret(gw *gatewayv1.Gateway, resourceName string, tunnelToken string) *corev1.Secret {
+func buildTunnelTokenSecret(gw *gatewayv1.Gateway, tunnelToken string) *corev1.Secret {
 	lbls := apiv1.GatewayResourceLabels(gw.Name)
 	maps.Copy(lbls, infrastructureLabels(gw.Spec.Infrastructure))
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        resourceName,
+			Name:        apiv1.GatewayResourceName(gw),
 			Namespace:   gw.Namespace,
 			Labels:      lbls,
 			Annotations: infrastructureAnnotations(gw.Spec.Infrastructure),
 		},
 		Data: map[string][]byte{
-			"TUNNEL_TOKEN": []byte(tunnelToken),
+			cloudflare.TunnelTokenSecretKey: []byte(tunnelToken),
 		},
 	}
 }
@@ -375,9 +473,9 @@ func buildTunnelTokenSecret(gw *gatewayv1.Gateway, resourceName string, tunnelTo
 //  2. User-defined RFC 6902 patches (terminal errors)
 //  3. Placement overrides from replica config (affinity, zone, nodeSelector)
 //  4. Convert to unstructured
-func (r *GatewayReconciler) buildTunnelDeployment(gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters, resourceName string, replica *apiv1.ReplicaConfig) (*unstructured.Unstructured, error) {
+func (r *GatewayReconciler) buildTunnelDeployment(gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters, replica *apiv1.ReplicaConfig) (*unstructured.Unstructured, error) {
 	// Step 1: Build the base deployment (no placement).
-	apply := r.buildTunnelDeploymentApply(gw, params, resourceName, replica)
+	apply := r.buildTunnelDeploymentApply(gw, params, replica)
 	data, err := json.Marshal(apply)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling deployment: %w", err)
@@ -511,7 +609,7 @@ func navigateToPodSpec(data []byte) (map[string]any, error) {
 // buildTunnelDeploymentApply builds the apply configuration for the
 // tunnel Deployment, including selector labels, infrastructure
 // labels/annotations, owner reference, and the tunnel container spec.
-func (r *GatewayReconciler) buildTunnelDeploymentApply(gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters, resourceName string, replica *apiv1.ReplicaConfig) *acappsv1.DeploymentApplyConfiguration {
+func (r *GatewayReconciler) buildTunnelDeploymentApply(gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters, replica *apiv1.ReplicaConfig) *acappsv1.DeploymentApplyConfiguration {
 	deploymentName := apiv1.GatewayReplicaName(gw, replica.Name)
 	selectorLabels := apiv1.GatewayResourceLabels(gw.Name, replica.Name)
 	templateLabels := maps.Clone(selectorLabels)
@@ -531,40 +629,40 @@ func (r *GatewayReconciler) buildTunnelDeploymentApply(gw *gatewayv1.Gateway, pa
 		tunnelResources = params.Spec.Tunnel.Resources
 	}
 
+	const portName = "http"
 	tunnelContainer := accorev1.Container().
 		WithName("tunnel").
 		WithImage(r.TunnelImage).
 		WithArgs(
 			"tunnel",
-			"--namespace", gw.Namespace,
-			"--configmap-name", apiv1.GatewayResourceName(gw),
-			"--configmap-key", routeConfigMapKey,
+			"--"+proxy.FlagNamespace, gw.Namespace,
+			"--"+proxy.FlagConfigMapName, apiv1.GatewayResourceName(gw),
 		).
 		WithEnv(accorev1.EnvVar().
-			WithName("TUNNEL_TOKEN").
+			WithName(cloudflare.TunnelTokenSecretKey).
 			WithValueFrom(accorev1.EnvVarSource().
 				WithSecretKeyRef(accorev1.SecretKeySelector().
-					WithName(resourceName).
-					WithKey("TUNNEL_TOKEN"),
+					WithName(apiv1.GatewayResourceName(gw)).
+					WithKey(cloudflare.TunnelTokenSecretKey),
 				),
 			),
 		).
 		WithPorts(accorev1.ContainerPort().
-			WithName("metrics").
-			WithContainerPort(2000).
+			WithName(portName).
+			WithContainerPort(8080).
 			WithProtocol(corev1.ProtocolTCP),
 		).
 		WithResources(resolveResources(tunnelResources)).
 		WithLivenessProbe(accorev1.Probe().
 			WithHTTPGet(accorev1.HTTPGetAction().
 				WithPath("/healthz").
-				WithPort(intstr.FromInt32(8081)),
+				WithPort(intstr.FromString(portName)),
 			),
 		).
 		WithReadinessProbe(accorev1.Probe().
 			WithHTTPGet(accorev1.HTTPGetAction().
-				WithPath("/ready").
-				WithPort(intstr.FromInt32(2000)),
+				WithPath("/readyz").
+				WithPort(intstr.FromString(portName)),
 			),
 		)
 
@@ -610,8 +708,7 @@ func (r *GatewayReconciler) reconcileTunnelRBAC(ctx context.Context, gw *gateway
 	l := log.FromContext(ctx)
 	var changes []string
 
-	saName := apiv1.GatewayResourceName(gw)
-	cmName := apiv1.GatewayResourceName(gw)
+	resourceName := apiv1.GatewayResourceName(gw)
 	labels := tunnelRBACLabels(gw)
 
 	ownerRef := metav1.OwnerReference{
@@ -630,7 +727,7 @@ func (r *GatewayReconciler) reconcileTunnelRBAC(ctx context.Context, gw *gateway
 			Kind:       apiv1.KindServiceAccount,
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:            saName,
+			Name:            resourceName,
 			Namespace:       gw.Namespace,
 			Labels:          labels,
 			OwnerReferences: []metav1.OwnerReference{ownerRef},
@@ -643,12 +740,12 @@ func (r *GatewayReconciler) reconcileTunnelRBAC(ctx context.Context, gw *gateway
 
 	ssaEntry, err := r.ResourceManager.Apply(ctx, sa, ssaApplyOptions)
 	if err != nil {
-		return nil, fmt.Errorf("applying tunnel ServiceAccount %s: %w", saName, err)
+		return nil, fmt.Errorf("applying tunnel ServiceAccount %s: %w", resourceName, err)
 	}
 	if ssaEntry.Action != ssa.UnchangedAction {
-		changes = append(changes, fmt.Sprintf("tunnel ServiceAccount %s %s", saName, ssaEntry.Action))
+		changes = append(changes, fmt.Sprintf("tunnel ServiceAccount %s %s", resourceName, ssaEntry.Action))
 	}
-	l.V(1).Info("Reconciled tunnel ServiceAccount", "serviceaccount", saName, "action", ssaEntry.Action)
+	l.V(1).Info("Reconciled tunnel ServiceAccount", "serviceaccount", resourceName, "action", ssaEntry.Action)
 
 	// Role
 	roleTyped := &rbacv1.Role{
@@ -657,17 +754,19 @@ func (r *GatewayReconciler) reconcileTunnelRBAC(ctx context.Context, gw *gateway
 			Kind:       apiv1.KindRole,
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:            saName,
+			Name:            resourceName,
 			Namespace:       gw.Namespace,
 			Labels:          labels,
 			OwnerReferences: []metav1.OwnerReference{ownerRef},
 		},
-		Rules: []rbacv1.PolicyRule{{
-			APIGroups:     []string{""},
-			Resources:     []string{"configmaps"},
-			ResourceNames: []string{cmName},
-			Verbs:         []string{"get", "list", "watch"},
-		}},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups:     []string{""},
+				Resources:     []string{"configmaps"},
+				ResourceNames: []string{resourceName},
+				Verbs:         []string{"get", "list", "watch"},
+			},
+		},
 	}
 	role, err := toUnstructured(roleTyped)
 	if err != nil {
@@ -676,12 +775,12 @@ func (r *GatewayReconciler) reconcileTunnelRBAC(ctx context.Context, gw *gateway
 
 	ssaEntry, err = r.ResourceManager.Apply(ctx, role, ssaApplyOptions)
 	if err != nil {
-		return nil, fmt.Errorf("applying tunnel Role %s: %w", saName, err)
+		return nil, fmt.Errorf("applying tunnel Role %s: %w", resourceName, err)
 	}
 	if ssaEntry.Action != ssa.UnchangedAction {
-		changes = append(changes, fmt.Sprintf("tunnel Role %s %s", saName, ssaEntry.Action))
+		changes = append(changes, fmt.Sprintf("tunnel Role %s %s", resourceName, ssaEntry.Action))
 	}
-	l.V(1).Info("Reconciled tunnel Role", "role", saName, "action", ssaEntry.Action)
+	l.V(1).Info("Reconciled tunnel Role", "role", resourceName, "action", ssaEntry.Action)
 
 	// RoleBinding
 	rbTyped := &rbacv1.RoleBinding{
@@ -690,7 +789,7 @@ func (r *GatewayReconciler) reconcileTunnelRBAC(ctx context.Context, gw *gateway
 			Kind:       apiv1.KindRoleBinding,
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:            saName,
+			Name:            resourceName,
 			Namespace:       gw.Namespace,
 			Labels:          labels,
 			OwnerReferences: []metav1.OwnerReference{ownerRef},
@@ -698,11 +797,11 @@ func (r *GatewayReconciler) reconcileTunnelRBAC(ctx context.Context, gw *gateway
 		RoleRef: rbacv1.RoleRef{
 			APIGroup: rbacv1.SchemeGroupVersion.Group,
 			Kind:     apiv1.KindRole,
-			Name:     saName,
+			Name:     resourceName,
 		},
 		Subjects: []rbacv1.Subject{{
 			Kind:      apiv1.KindServiceAccount,
-			Name:      saName,
+			Name:      resourceName,
 			Namespace: gw.Namespace,
 		}},
 	}
@@ -713,12 +812,12 @@ func (r *GatewayReconciler) reconcileTunnelRBAC(ctx context.Context, gw *gateway
 
 	ssaEntry, err = r.ResourceManager.Apply(ctx, rb, ssaApplyOptions)
 	if err != nil {
-		return nil, fmt.Errorf("applying tunnel RoleBinding %s: %w", saName, err)
+		return nil, fmt.Errorf("applying tunnel RoleBinding %s: %w", resourceName, err)
 	}
 	if ssaEntry.Action != ssa.UnchangedAction {
-		changes = append(changes, fmt.Sprintf("tunnel RoleBinding %s %s", saName, ssaEntry.Action))
+		changes = append(changes, fmt.Sprintf("tunnel RoleBinding %s %s", resourceName, ssaEntry.Action))
 	}
-	l.V(1).Info("Reconciled tunnel RoleBinding", "rolebinding", saName, "action", ssaEntry.Action)
+	l.V(1).Info("Reconciled tunnel RoleBinding", "rolebinding", resourceName, "action", ssaEntry.Action)
 
 	return changes, nil
 }

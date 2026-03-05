@@ -293,7 +293,6 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	// Compute desired tunnel state and replicas.
 	replicas := resolveReplicas(params)
 	tunnel := tunnelState{name: apiv1.TunnelName(gw)}
-	resourceName := apiv1.GatewayResourceName(gw)
 
 	// Ensure the tunnel exists.
 	tunnelChanges, err := r.ensureTunnel(ctx, tc, &tunnel)
@@ -302,12 +301,15 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	}
 	changes = append(changes, tunnelChanges...)
 
-	// Reconcile the tunnel token Secret.
-	secretChanges, err := r.reconcileTunnelTokenSecret(ctx, gw, tc, tunnel, resourceName)
+	// Fetch CGS early so token rotation can read the last rotation timestamps.
+	cgs, _ := r.getCGS(ctx, gw)
+
+	// Reconcile the tunnel token Secret (includes token rotation).
+	tokenResult, err := r.reconcileTunnelTokenSecret(ctx, gw, tc, tunnel, cgs, params)
 	if err != nil {
 		return r.reconcileError(ctx, gw, err)
 	}
-	changes = append(changes, secretChanges...)
+	changes = append(changes, tokenResult.changes...)
 
 	// Reconcile route ConfigMap.
 	var routeDeniedRefs map[types.NamespacedName][]string
@@ -325,7 +327,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	changes = append(changes, tunnelRBACChanges...)
 
 	// Apply tunnel Deployments for all replicas.
-	deployChanges, err := r.applyTunnelDeployments(ctx, gw, params, resourceName, replicas)
+	deployChanges, err := r.applyTunnelDeployments(ctx, gw, params, replicas)
 	if err != nil {
 		return r.reconcileError(ctx, gw, err)
 	}
@@ -342,7 +344,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 
 	// Clean up stale Kubernetes resources (Deployments, Secrets) that are no
 	// longer desired. Tunnel names are deterministic, so no previous state needed.
-	cleanupChanges, cleanupErrs := r.cleanupStaleTunnelResources(ctx, gw, resourceName, replicas)
+	cleanupChanges, cleanupErrs := r.cleanupStaleTunnelResources(ctx, gw, replicas)
 	changes = append(changes, cleanupChanges...)
 	errs = append(errs, cleanupErrs...)
 
@@ -389,22 +391,39 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	// Reconcile the CloudflareGatewayStatus (observability only — tunnel info
 	// and mirrored conditions). Done before the Gateway status patch so CGS
 	// reflects the latest state even if the status patch fails.
-	cgs, _ := r.getCGS(ctx, gw)
-	if updatedCGS, err := r.reconcileCGS(ctx, gw, cgs, params, tunnel, resourceName, replicas); err != nil {
+	// Copy annotation values to CGS status and update rotation timestamps.
+	if updatedCGS, err := r.reconcileCGS(ctx, gw, cgs, params, tunnel, replicas, tokenResult); err != nil {
 		errs = append(errs, fmt.Sprintf("failed to reconcile CloudflareGatewayStatus: %v", err))
 	} else {
 		cgs = updatedCGS
 	}
 
-	// Compute requeue interval (validated by validateGateway, error is defensive).
+	// Compute requeue interval.
+	requeueAfter, requeueErrs := computeRequeueAfter(gw, cgs, tokenResult)
+	errs = append(errs, requeueErrs...)
+
+	// Patch Gateway status and emit events
+	return r.patchGatewayStatus(ctx, gw, cgs, tunnel, desiredListeners, changes, errs, readiness, dns, requeueAfter)
+}
+
+// computeRequeueAfter computes the requeue interval, taking into account the
+// reconcile interval and the time until the next scheduled token rotation.
+func computeRequeueAfter(gw *gatewayv1.Gateway, cgs *apiv1.CloudflareGatewayStatus, tokenResult *tokenRotationResult) (time.Duration, []string) {
+	var errs []string
 	requeueAfter, err := apiv1.ReconcileInterval(gw.Annotations)
 	if err != nil {
 		errs = append(errs, err.Error())
 		requeueAfter = apiv1.DefaultReconcileInterval
 	}
-
-	// Patch Gateway status and emit events
-	return r.patchGatewayStatus(ctx, gw, cgs, tunnel, desiredListeners, changes, errs, readiness, dns, requeueAfter)
+	if tokenResult.rotationInterval > 0 && cgs != nil && cgs.Status.LastTokenRotatedAt != "" {
+		if t, err := time.Parse(time.RFC3339, cgs.Status.LastTokenRotatedAt); err == nil {
+			timeUntilNext := max(tokenResult.rotationInterval-time.Since(t), 0)
+			if timeUntilNext < requeueAfter {
+				requeueAfter = timeUntilNext
+			}
+		}
+	}
+	return requeueAfter, errs
 }
 
 // dnsResult holds the results of DNS reconciliation.
@@ -600,7 +619,12 @@ func (r *GatewayReconciler) patchGatewayStatus(ctx context.Context, gw *gatewayv
 		if readyTerminal {
 			eventReason = readiness.readyReason
 		}
-		l.Error(fmt.Errorf("%s", strings.Join(warnings, "; ")), "Gateway reconciled with errors", "changes", changes)
+		// Only log at error level when not returning an error (terminal
+		// transitions without transient errors). When len(errs) > 0 the
+		// error is returned to controller-runtime, which logs it.
+		if len(errs) == 0 {
+			l.Error(fmt.Errorf("%s", strings.Join(warnings, "; ")), "Gateway reconciled with errors", "changes", changes)
+		}
 		r.Eventf(gw, nil, corev1.EventTypeWarning, eventReason,
 			apiv1.EventActionReconcile, "%s", truncateEventMessage(strings.Join(summary, "\n")))
 	} else if len(changes) > 0 || statusChanged {
@@ -673,6 +697,21 @@ func (r *GatewayReconciler) reconcileError(ctx context.Context, gw *gatewayv1.Ga
 		log.FromContext(ctx).V(1).Info("Patched Gateway status with error conditions")
 	}
 
+	// Best-effort: copy annotation values to CGS status and mirror conditions
+	// so the CLI wait logic can detect that the controller handled the request
+	// even when reconciliation fails before reconcileCGS runs.
+	if cgs, _ := r.getCGS(ctx, gw); cgs != nil {
+		cgsPatch := client.MergeFrom(cgs.DeepCopy())
+		cgs.Status.LastHandledReconcileAt = gw.Annotations[apiv1.AnnotationReconcileRequestedAt]
+		cgs.Status.LastHandledTokenRotateAt = gw.Annotations[apiv1.AnnotationRotateTokenRequestedAt]
+		for _, c := range desiredConds {
+			cgs.Status.Conditions = conditions.Upsert(cgs.Status.Conditions, c)
+		}
+		if err := r.Status().Patch(ctx, cgs, cgsPatch); err != nil {
+			log.FromContext(ctx).Error(err, "Failed to patch CloudflareGatewayStatus in error path")
+		}
+	}
+
 	r.Eventf(gw, nil, corev1.EventTypeWarning, readyReason,
 		apiv1.EventActionReconcile, "Reconciliation failed: %v", reconcileErr)
 	return ctrl.Result{}, reconcileErr
@@ -706,7 +745,8 @@ func (r *GatewayReconciler) finalizeError(ctx context.Context, gw *gatewayv1.Gat
 	summary := make([]string, 0, 1+len(changes))
 	summary = append(summary, fmt.Sprintf("Finalization failed: %v", finalizeErr))
 	summary = append(summary, changes...)
-	l.Error(finalizeErr, "Finalization failed", "changes", changes)
+	// Do not log at error level — the error is returned to
+	// controller-runtime, which logs it.
 	r.Eventf(gw, nil, corev1.EventTypeWarning, apiv1.ReasonProgressingWithRetry,
 		apiv1.EventActionFinalize, "%s", truncateEventMessage(strings.Join(summary, "\n")))
 	return ctrl.Result{}, finalizeErr

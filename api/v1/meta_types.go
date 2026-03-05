@@ -85,6 +85,23 @@ const (
 	// AnnotationReconcileEvery overrides the default reconciliation interval.
 	// The value must be a valid Go duration string (e.g. "5m", "1h").
 	AnnotationReconcileEvery = Group + "/reconcileEvery"
+
+	// AnnotationReconcileRequestedAt is set by the CLI to trigger an
+	// on-demand reconciliation. The value is an RFC3339Nano timestamp.
+	AnnotationReconcileRequestedAt = Group + "/reconcileRequestedAt"
+
+	// AnnotationRotateTokenRequestedAt is set by the CLI to trigger an
+	// on-demand tunnel token rotation. The value is an RFC3339Nano timestamp.
+	AnnotationRotateTokenRequestedAt = Group + "/rotateTokenRequestedAt"
+)
+
+// Labels.
+const (
+	// LabelComponent identifies the component role of a resource managed by this project.
+	LabelComponent = Group + "/component"
+
+	// LabelComponentController is the LabelComponent value for the controller Deployment.
+	LabelComponentController = "controller"
 )
 
 // Label values.

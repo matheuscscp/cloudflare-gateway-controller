@@ -72,10 +72,48 @@ type DNSZoneConfig struct {
 	Name string `json:"name"`
 }
 
+// TokenConfig configures tunnel token management.
+//
+// Token rotation is enabled by default (interval: 24h) even when this
+// field is absent from the spec or when the rotation sub-field is absent.
+// To disable automatic rotation, set rotation.enabled to false explicitly.
+//
+// On-demand rotation can always be triggered via
+// "cfgwctl rotate gateway token", regardless of this configuration.
+type TokenConfig struct {
+	// Rotation configures automatic token rotation. When absent, rotation
+	// is enabled with the default interval (24h). Set rotation.enabled to
+	// false to disable automatic rotation.
+	// +optional
+	Rotation *TokenRotationConfig `json:"rotation,omitempty"`
+}
+
+// TokenRotationConfig configures automatic tunnel token rotation.
+//
+// When this struct is present (even if all fields are omitted), automatic
+// rotation is enabled unless explicitly disabled via enabled: false.
+type TokenRotationConfig struct {
+	// Enabled controls whether automatic token rotation is active.
+	// When absent, defaults to true (rotation is on). Set to false to
+	// disable automatic rotation. Even when disabled, on-demand rotation
+	// via "cfgwctl rotate gateway token" still works.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Interval is the minimum duration between automatic token rotations.
+	// Defaults to 24h when absent or when set to zero or a negative value.
+	// +optional
+	Interval metav1.Duration `json:"interval,omitempty"`
+}
+
 // TunnelConfig configures Cloudflare tunnel settings.
 //
 // +kubebuilder:validation:XValidation:rule="!has(self.replicas) || self.replicas.all(r, self.replicas.exists_one(s, s.name == r.name))",message="replica names must be unique"
 type TunnelConfig struct {
+	// Token configures tunnel token management.
+	// +optional
+	Token *TokenConfig `json:"token,omitempty"`
+
 	// Resources configures compute resource requirements for the tunnel container.
 	// When absent, the controller uses defaults (requests: 50m CPU, 64Mi
 	// memory; limits: 500m CPU, 256Mi memory). When set, replaces defaults.

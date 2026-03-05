@@ -13,6 +13,7 @@ func newTestTunnelCmd(credentialsFile *string) *cobra.Command {
 	cmd.AddCommand(
 		newTunnelListCmd(credentialsFile),
 		newTunnelGetIDCmd(credentialsFile),
+		newTunnelGetTokenCmd(credentialsFile),
 		newTunnelDeleteCmd(credentialsFile),
 		newTunnelCleanupConnectionsCmd(credentialsFile),
 	)
@@ -24,7 +25,7 @@ func newTunnelListCmd(credentialsFile *string) *cobra.Command {
 		Use:   "list",
 		Short: "List all active Cloudflare tunnels",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := newClient(*credentialsFile)
+			c, err := newCloudflareClient(*credentialsFile)
 			if err != nil {
 				return err
 			}
@@ -52,7 +53,7 @@ func newTunnelGetIDCmd(credentialsFile *string) *cobra.Command {
 		Use:   "get-id",
 		Short: "Look up a tunnel ID by name",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := newClient(*credentialsFile)
+			c, err := newCloudflareClient(*credentialsFile)
 			if err != nil {
 				return err
 			}
@@ -68,13 +69,35 @@ func newTunnelGetIDCmd(credentialsFile *string) *cobra.Command {
 	return cmd
 }
 
+func newTunnelGetTokenCmd(credentialsFile *string) *cobra.Command {
+	var tunnelID string
+	cmd := &cobra.Command{
+		Use:   "get-token",
+		Short: "Get the current tunnel token",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := newCloudflareClient(*credentialsFile)
+			if err != nil {
+				return err
+			}
+			token, err := c.GetTunnelToken(cmd.Context(), tunnelID)
+			if err != nil {
+				return err
+			}
+			return printJSON(map[string]string{"token": token})
+		},
+	}
+	cmd.Flags().StringVar(&tunnelID, "tunnel-id", "", "tunnel ID")
+	cobra.CheckErr(cmd.MarkFlagRequired("tunnel-id"))
+	return cmd
+}
+
 func newTunnelDeleteCmd(credentialsFile *string) *cobra.Command {
 	var tunnelID string
 	cmd := &cobra.Command{
 		Use:   "delete",
 		Short: "Delete a Cloudflare tunnel",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := newClient(*credentialsFile)
+			c, err := newCloudflareClient(*credentialsFile)
 			if err != nil {
 				return err
 			}
@@ -92,7 +115,7 @@ func newTunnelCleanupConnectionsCmd(credentialsFile *string) *cobra.Command {
 		Use:   "cleanup-connections",
 		Short: "Clean up stale connections for a tunnel",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := newClient(*credentialsFile)
+			c, err := newCloudflareClient(*credentialsFile)
 			if err != nil {
 				return err
 			}

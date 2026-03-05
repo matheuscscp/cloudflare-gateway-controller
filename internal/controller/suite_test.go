@@ -309,6 +309,10 @@ type mockCloudflareClient struct {
 	zoneIDs               []string          // zone IDs returned by ListZoneIDs
 	listDNSCNAMEsByTarget []string          // hostnames returned by ListDNSCNAMEsByTarget
 
+	// Token rotation tracking.
+	rotateTunnelSecretCalls int
+	lastRotatedSecret       []byte
+
 	// Error injection fields — set these to make mock methods return errors.
 	newClientErr                error
 	getTunnelIDByNameErr        error
@@ -316,6 +320,7 @@ type mockCloudflareClient struct {
 	deleteTunnelErr             error
 	getTunnelTokenErr           error
 	cleanupTunnelConnectionsErr error
+	rotateTunnelSecretErr       error
 	listTunnelsErr              error
 	listZoneIDsErr              error
 	findZoneIDErr               error
@@ -426,6 +431,15 @@ func (m *mockCloudflareClient) GetTunnelToken(_ context.Context, _ string) (stri
 		return "", m.getTunnelTokenErr
 	}
 	return m.tunnelToken, nil
+}
+
+func (m *mockCloudflareClient) RotateTunnelSecret(_ context.Context, _ string, newSecret []byte) error {
+	if m.rotateTunnelSecretErr != nil {
+		return m.rotateTunnelSecretErr
+	}
+	m.rotateTunnelSecretCalls++
+	m.lastRotatedSecret = newSecret
+	return nil
 }
 
 func (m *mockCloudflareClient) ListZoneIDs(_ context.Context) ([]string, error) {
@@ -676,6 +690,9 @@ func resetMockErrors(t *testing.T) {
 		testMock.deleteTunnelErr = nil
 		testMock.getTunnelTokenErr = nil
 		testMock.cleanupTunnelConnectionsErr = nil
+		testMock.rotateTunnelSecretErr = nil
+		testMock.rotateTunnelSecretCalls = 0
+		testMock.lastRotatedSecret = nil
 		testMock.listTunnelsErr = nil
 		testMock.listZoneIDsErr = nil
 		testMock.findZoneIDErr = nil

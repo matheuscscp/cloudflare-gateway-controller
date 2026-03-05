@@ -670,6 +670,42 @@ func TestIsNotFound(t *testing.T) {
 	g.Expect(cloudflare.IsNotFound(cfErr)).To(BeFalse())
 }
 
+func TestRotateTunnelSecret(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("PATCH /accounts/{accountID}/cfd_tunnel/{tunnelID}", func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			var params map[string]any
+			g.Expect(json.Unmarshal(body, &params)).To(Succeed())
+			g.Expect(params).To(HaveKey("tunnel_secret"))
+			writeJSON(w, http.StatusOK, envelope(map[string]any{
+				"id":   r.PathValue("tunnelID"),
+				"name": "my-tunnel",
+			}))
+		})
+		c := newTestClient(t, mux)
+
+		secret := make([]byte, 32)
+		for i := range secret {
+			secret[i] = byte(i)
+		}
+		g.Expect(c.RotateTunnelSecret(context.Background(), "tunnel-123", secret)).To(Succeed())
+	})
+
+	t.Run("API error", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("PATCH /accounts/{accountID}/cfd_tunnel/{tunnelID}", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
+		})
+		c := newTestClient(t, mux)
+
+		secret := make([]byte, 32)
+		g.Expect(c.RotateTunnelSecret(context.Background(), "tunnel-123", secret)).To(HaveOccurred())
+	})
+}
+
 func TestListDNSCNAMEsByTarget(t *testing.T) {
 	t.Run("returns matching hostnames", func(t *testing.T) {
 		g := NewWithT(t)

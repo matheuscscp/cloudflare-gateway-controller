@@ -3986,3 +3986,114 @@ func TestGatewayReconciler_FinalizeErrorStatusPatchFails(t *testing.T) {
 	g.Expect(err).To(MatchError(ContainSubstring(longErr[:50])))
 	g.Expect(result).To(Equal(ctrl.Result{}))
 }
+
+func TestGatewayReconciler_TokenRotation(t *testing.T) {
+	g := NewWithT(t)
+	resetMockErrors(t)
+
+	ns := createTestNamespace(g)
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, ns.Name+"-gc", ns.Name)
+	waitForGatewayClassReady(g, gc)
+	gw := createTestGateway(g, "tok-rot", ns.Name, gc.Name)
+	waitForGatewayProgrammed(g, gw)
+
+	// The default rotation is enabled (interval=24h) even without a CGP.
+	// On first reconciliation, rotation fires because no lastTokenRotatedAt exists yet.
+	g.Eventually(func(g Gomega) {
+		g.Expect(testMock.rotateTunnelSecretCalls).To(BeNumerically(">", 0))
+	}).WithTimeout(30 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Verify CGS has lastTokenRotatedAt set.
+	g.Eventually(func(g Gomega) {
+		var cgs apiv1.CloudflareGatewayStatus
+		g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &cgs)).To(Succeed())
+		g.Expect(cgs.Status.LastTokenRotatedAt).NotTo(BeEmpty())
+	}).WithTimeout(30 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Clean up.
+	g.Expect(testClient.Delete(testCtx, gw)).To(Succeed())
+	g.Eventually(func(g Gomega) {
+		g.Expect(apierrors.IsNotFound(testClient.Get(testCtx, client.ObjectKeyFromObject(gw), gw))).To(BeTrue())
+	}).WithTimeout(30 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func TestGatewayReconciler_TokenRotationDisabled(t *testing.T) {
+	g := NewWithT(t)
+	resetMockErrors(t)
+
+	ns := createTestNamespace(g)
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, ns.Name+"-gc", ns.Name)
+	waitForGatewayClassReady(g, gc)
+
+	// Create CGP with rotation explicitly disabled.
+	enabled := false
+	createTestParameters(g, "tok-rot-disabled-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		Tunnel: &apiv1.TunnelConfig{
+			Token: &apiv1.TokenConfig{
+				Rotation: &apiv1.TokenRotationConfig{
+					Enabled: &enabled,
+				},
+			},
+		},
+	})
+
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "tok-rot-disabled",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef("tok-rot-disabled-params"),
+			},
+			Listeners: []gatewayv1.Listener{{
+				Name: "https", Protocol: gatewayv1.HTTPSProtocolType, Port: 443,
+			}},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	waitForGatewayProgrammed(g, gw)
+
+	// Rotation should NOT have been called because it's disabled.
+	g.Expect(testMock.rotateTunnelSecretCalls).To(Equal(0))
+
+	// Clean up.
+	g.Expect(testClient.Delete(testCtx, gw)).To(Succeed())
+	g.Eventually(func(g Gomega) {
+		g.Expect(apierrors.IsNotFound(testClient.Get(testCtx, client.ObjectKeyFromObject(gw), gw))).To(BeTrue())
+	}).WithTimeout(30 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func TestGatewayReconciler_TokenRotationError(t *testing.T) {
+	g := NewWithT(t)
+	resetMockErrors(t)
+
+	ns := createTestNamespace(g)
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, ns.Name+"-gc", ns.Name)
+	waitForGatewayClassReady(g, gc)
+
+	testMock.rotateTunnelSecretErr = fmt.Errorf("rotation API error")
+	gw := createTestGateway(g, "tok-rot-err", ns.Name, gc.Name)
+
+	// Should see ProgressingWithRetry due to the rotation error.
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &result)).To(Succeed())
+		ready := conditions.Find(result.Status.Conditions, apiv1.ConditionReady)
+		g.Expect(ready).NotTo(BeNil())
+		g.Expect(ready.Status).To(Equal(metav1.ConditionUnknown))
+		g.Expect(ready.Reason).To(Equal(apiv1.ReasonProgressingWithRetry))
+		g.Expect(ready.Message).To(ContainSubstring("rotation API error"))
+	}).WithTimeout(30 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Clean up.
+	testMock.rotateTunnelSecretErr = nil
+	g.Expect(testClient.Delete(testCtx, gw)).To(Succeed())
+	g.Eventually(func(g Gomega) {
+		g.Expect(apierrors.IsNotFound(testClient.Get(testCtx, client.ObjectKeyFromObject(gw), gw))).To(BeTrue())
+	}).WithTimeout(30 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}

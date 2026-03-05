@@ -134,6 +134,12 @@ func (r *retryClient) GetTunnelToken(ctx context.Context, tunnelID string) (stri
 	})
 }
 
+func (r *retryClient) RotateTunnelSecret(ctx context.Context, tunnelID string, newSecret []byte) error {
+	return retry0(ctx, r.maxRetries, func() error {
+		return r.inner.RotateTunnelSecret(ctx, tunnelID, newSecret)
+	})
+}
+
 // --- Zone/DNS operations ---
 
 func (r *retryClient) ListZoneIDs(ctx context.Context) ([]string, error) {
