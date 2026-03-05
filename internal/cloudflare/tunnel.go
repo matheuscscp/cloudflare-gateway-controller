@@ -194,22 +194,23 @@ func cloudflaredVersion() string {
 // the given handler in-process (no localhost TCP). It starts an HTTP server
 // on serverAddr serving /healthz (liveness), /ready (tunnel readiness), and
 // /metrics (Prometheus). It blocks until the context is cancelled.
-func RunTunnel(ctx context.Context, handler http.Handler, rt http.RoundTripper, serverAddr string, configLoaded func() bool, token string, graceShutdownC <-chan struct{}) error {
+//
+// When healthURL is non-empty, the /healthz and /readyz handlers additionally
+// perform an HTTPS GET to the URL and fail the check on errors or non-2xx
+// responses.
+func RunTunnel(ctx context.Context, handler http.Handler, rt http.RoundTripper, serverAddr string, configLoaded func() bool, token, healthURL string, zlog *zerolog.Logger, graceShutdownC <-chan struct{}) error {
 	_ = os.Setenv("QUIC_GO_DISABLE_ECN", "1")
-
-	// zerolog is required by the cloudflared framework.
-	zlog := zerolog.New(os.Stdout).With().Timestamp().Logger()
 
 	listener, err := net.Listen("tcp", serverAddr)
 	if err != nil {
 		return fmt.Errorf("listening on server address %s: %w", serverAddr, err)
 	}
 
-	return runTunnelOnce(ctx, handler, rt, listener, graceShutdownC, configLoaded, token, &zlog)
+	return runTunnelOnce(ctx, handler, rt, listener, graceShutdownC, configLoaded, token, healthURL, zlog)
 }
 
 // runTunnelOnce starts a single instance of the cloudflared tunnel daemon.
-func runTunnelOnce(ctx context.Context, handler http.Handler, rt http.RoundTripper, listener net.Listener, graceShutdownC <-chan struct{}, configLoaded func() bool, tokenStr string, zlog *zerolog.Logger) error {
+func runTunnelOnce(ctx context.Context, handler http.Handler, rt http.RoundTripper, listener net.Listener, graceShutdownC <-chan struct{}, configLoaded func() bool, tokenStr, healthURL string, zlog *zerolog.Logger) error {
 	version := cloudflaredVersion()
 	platform := runtime.GOOS + "/" + runtime.GOARCH
 
@@ -278,16 +279,45 @@ func runTunnelOnce(ctx context.Context, handler http.Handler, rt http.RoundTripp
 	tracker := tunnelstate.NewConnTracker(zlog)
 	observer.RegisterSink(tracker)
 
+	// serveHealth probes the configured health URL (when set) and then
+	// delegates to cloudflared's connection health handler.
+	serveCloudflaredHealth := cfdmetrics.NewReadyServer(connectorID, tracker).ServeHTTP
+	serveHealth := serveCloudflaredHealth
+	if healthURL != "" {
+		healthClient := &http.Client{Timeout: 5 * time.Second}
+		serveHealth = func(w http.ResponseWriter, r *http.Request) {
+			resp, err := healthClient.Get(healthURL)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("health URL probe failed: %v", err), http.StatusServiceUnavailable)
+				return
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				http.Error(w, fmt.Sprintf("health URL returned %d", resp.StatusCode), http.StatusServiceUnavailable)
+				return
+			}
+			serveCloudflaredHealth(w, r)
+		}
+	}
+
+	// Build mux.
 	mux := http.NewServeMux()
-	mux.Handle("/healthz", cfdmetrics.NewReadyServer(connectorID, tracker))
-	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/healthz", serveHealth)
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
 		if !configLoaded() {
 			http.Error(w, "not ready", http.StatusServiceUnavailable)
 			return
 		}
-		w.WriteHeader(http.StatusOK)
+		serveHealth(w, r)
 	})
-	mux.Handle("/metrics", promhttp.Handler())
+	mux.Handle("/metrics", promhttp.InstrumentMetricHandler(
+		prometheus.DefaultRegisterer, promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{
+			EnableOpenMetrics: true,
+			ProcessStartTime:  time.Now(),
+		}),
+	))
+
+	// Start server.
 	server := &http.Server{Handler: mux}
 	go func() {
 		<-ctx.Done()

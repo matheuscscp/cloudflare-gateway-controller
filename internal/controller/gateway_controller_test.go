@@ -4097,3 +4097,265 @@ func TestGatewayReconciler_TokenRotationError(t *testing.T) {
 		g.Expect(apierrors.IsNotFound(testClient.Get(testCtx, client.ObjectKeyFromObject(gw), gw))).To(BeTrue())
 	}).WithTimeout(30 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
+
+// --- Health URL XValidation tests ---
+
+func TestCGP_XValidation_HealthURLPattern(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	// URL without https:// prefix should be rejected.
+	cgp := &apiv1.CloudflareGatewayParameters{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-health-bad-scheme",
+			Namespace: ns.Name,
+		},
+		Spec: apiv1.CloudflareGatewayParametersSpec{
+			Tunnel: &apiv1.TunnelConfig{
+				Health: &apiv1.HealthConfig{
+					URL: "http://app.example.com",
+				},
+			},
+		},
+	}
+	err := testClient.Create(testCtx, cgp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), "expected Invalid error, got: %v", err)
+}
+
+func TestCGP_XValidation_HealthURLNoPath(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	// URL with a path should be rejected.
+	cgp := &apiv1.CloudflareGatewayParameters{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-health-with-path",
+			Namespace: ns.Name,
+		},
+		Spec: apiv1.CloudflareGatewayParametersSpec{
+			Tunnel: &apiv1.TunnelConfig{
+				Health: &apiv1.HealthConfig{
+					URL: "https://app.example.com/healthz",
+				},
+			},
+		},
+	}
+	err := testClient.Create(testCtx, cgp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), "expected Invalid error, got: %v", err)
+}
+
+func TestCGP_XValidation_HealthURLMinLength(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	// Empty URL should be rejected by MinLength=1.
+	cgp := &apiv1.CloudflareGatewayParameters{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-health-empty-url",
+			Namespace: ns.Name,
+		},
+		Spec: apiv1.CloudflareGatewayParametersSpec{
+			Tunnel: &apiv1.TunnelConfig{
+				Health: &apiv1.HealthConfig{
+					URL: "",
+				},
+			},
+		},
+	}
+	err := testClient.Create(testCtx, cgp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), "expected Invalid error, got: %v", err)
+}
+
+func TestCGP_XValidation_HealthURLDNSDisabled(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	// Health URL with DNS disabled (empty zones) should be rejected.
+	cgp := &apiv1.CloudflareGatewayParameters{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-health-dns-disabled",
+			Namespace: ns.Name,
+		},
+		Spec: apiv1.CloudflareGatewayParametersSpec{
+			DNS: &apiv1.DNSConfig{
+				Zones: []apiv1.DNSZoneConfig{},
+			},
+			Tunnel: &apiv1.TunnelConfig{
+				Health: &apiv1.HealthConfig{
+					URL: "https://app.example.com",
+				},
+			},
+		},
+	}
+	err := testClient.Create(testCtx, cgp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), "expected Invalid error, got: %v", err)
+	g.Expect(err.Error()).To(ContainSubstring("tunnel.health.url hostname must be a single-level subdomain of a dns.zones entry"))
+}
+
+func TestCGP_XValidation_HealthURLNoMatchingZone(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	// Health URL hostname not matching any zone should be rejected.
+	cgp := &apiv1.CloudflareGatewayParameters{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-health-no-zone-match",
+			Namespace: ns.Name,
+		},
+		Spec: apiv1.CloudflareGatewayParametersSpec{
+			DNS: &apiv1.DNSConfig{
+				Zones: []apiv1.DNSZoneConfig{
+					{Name: "other.com"},
+				},
+			},
+			Tunnel: &apiv1.TunnelConfig{
+				Health: &apiv1.HealthConfig{
+					URL: "https://app.example.com",
+				},
+			},
+		},
+	}
+	err := testClient.Create(testCtx, cgp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), "expected Invalid error, got: %v", err)
+	g.Expect(err.Error()).To(ContainSubstring("tunnel.health.url hostname must be a single-level subdomain of a dns.zones entry"))
+}
+
+func TestCGP_XValidation_HealthURLMatchingZone(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	// Health URL hostname matching a zone should be accepted.
+	cgp := &apiv1.CloudflareGatewayParameters{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-health-zone-match",
+			Namespace: ns.Name,
+		},
+		Spec: apiv1.CloudflareGatewayParametersSpec{
+			DNS: &apiv1.DNSConfig{
+				Zones: []apiv1.DNSZoneConfig{
+					{Name: "example.com"},
+				},
+			},
+			Tunnel: &apiv1.TunnelConfig{
+				Health: &apiv1.HealthConfig{
+					URL: "https://app.example.com",
+				},
+			},
+		},
+	}
+	err := testClient.Create(testCtx, cgp)
+	g.Expect(err).NotTo(HaveOccurred())
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, cgp) })
+}
+
+func TestCGP_XValidation_HealthURLAllZones(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	// Health URL with dns absent (all-zones mode) should be accepted.
+	cgp := &apiv1.CloudflareGatewayParameters{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-health-all-zones",
+			Namespace: ns.Name,
+		},
+		Spec: apiv1.CloudflareGatewayParametersSpec{
+			Tunnel: &apiv1.TunnelConfig{
+				Health: &apiv1.HealthConfig{
+					URL: "https://app.example.com",
+				},
+			},
+		},
+	}
+	err := testClient.Create(testCtx, cgp)
+	g.Expect(err).NotTo(HaveOccurred())
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, cgp) })
+}
+
+func TestGatewayReconciler_HealthURL(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-health-url", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	params := createTestParameters(g, "test-health-url-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		Tunnel: &apiv1.TunnelConfig{
+			Health: &apiv1.HealthConfig{
+				URL: "https://health.example.com",
+			},
+		},
+	})
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-health-url",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "https",
+					Protocol: gatewayv1.HTTPSProtocolType,
+					Port:     443,
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayProgrammed(g, gw)
+
+	// Verify Deployment has --health-url arg.
+	var deploy appsv1.Deployment
+	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name + "-primary", Namespace: gw.Namespace}
+	g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
+	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
+	container := deploy.Spec.Template.Spec.Containers[0]
+	g.Expect(container.Args).To(ContainElement("--health-url"))
+	g.Expect(container.Args).To(ContainElement("https://health.example.com"))
+
+	// Verify startup probe is present when health URL is configured.
+	g.Expect(container.StartupProbe).NotTo(BeNil())
+	g.Expect(container.StartupProbe.HTTPGet).NotTo(BeNil())
+	g.Expect(container.StartupProbe.HTTPGet.Path).To(Equal("/healthz"))
+	g.Expect(container.StartupProbe.PeriodSeconds).To(Equal(int32(2)))
+	g.Expect(container.StartupProbe.FailureThreshold).To(Equal(int32(60)))
+}

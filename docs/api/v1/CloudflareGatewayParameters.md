@@ -144,6 +144,36 @@ On-demand rotation can also be triggered via `cfgwctl rotate gateway token`,
 regardless of whether automatic rotation is configured. See the
 [Gateway annotation](Gateway.md#on-demand-token-rotation) for details.
 
+#### Health check URL
+
+The `.spec.tunnel.health` field configures an additional health check for the
+tunnel. The value must be an HTTPS origin — `https://` followed by a hostname
+only (no path, query, or fragment). When set, the tunnel's `/healthz` and
+`/readyz` endpoints probe the URL via HTTPS GET. If the probe fails (network
+error or non-2xx response), the health check fails and Kubernetes may restart
+the pod.
+
+The embedded reverse proxy serves a 200 OK response at the root path of the
+health hostname, so no backend service is required for the health check. A
+startup probe is automatically added to the tunnel container so the pod has
+time to establish connectivity through Cloudflare before the liveness probe
+starts.
+
+```yaml
+spec:
+  tunnel:
+    health:
+      url: "https://health.example.com"
+```
+
+The hostname of the health URL is automatically included in the set of desired
+DNS CNAME records pointing to the tunnel, subject to the same DNS zone filtering
+rules as HTTPRoute hostnames.
+
+**Validation:** The URL must be `https://` followed by a hostname only — no
+path, query, or fragment. When `dns.zones` is set, the hostname must be a
+single-level subdomain of at least one configured zone.
+
 #### Patches
 
 The `.spec.tunnel.patches` field is optional and specifies

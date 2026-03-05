@@ -106,6 +106,7 @@ jobs:
           - test_resume_gateway
           - test_reconcile_gateway
           - test_rotate_gateway_token
+          - test_health_url
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

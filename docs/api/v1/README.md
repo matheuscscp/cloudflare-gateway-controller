@@ -24,7 +24,7 @@ These are CRDs defined by this controller.
 
 - [CloudflareGatewayParameters](CloudflareGatewayParameters.md) — Optional
   typed configuration for a Gateway: credentials, DNS zones, tunnel replicas,
-  patches, container resources, autoscaling, and token rotation.
+  patches, container resources, autoscaling, token rotation, and health checking.
 - [CloudflareGatewayStatus](CloudflareGatewayStatus.md) — Read-only
   observability resource that mirrors Gateway conditions and tracks tunnel
   info, managed resource inventory, and token rotation timestamps.

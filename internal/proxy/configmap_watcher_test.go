@@ -6,16 +6,20 @@ package proxy_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
 	. "github.com/onsi/gomega"
+	"github.com/rs/zerolog"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/proxy"
 )
+
+var testLogger = zerolog.New(os.Stderr).With().Timestamp().Logger()
 
 func TestConfigMapWatcher_LoadsConfigFromConfigMap(t *testing.T) {
 	g := NewWithT(t)
@@ -42,8 +46,8 @@ func TestConfigMapWatcher_LoadsConfigFromConfigMap(t *testing.T) {
 	}
 
 	clientset := fake.NewClientset(cm)
-	p := &proxy.Proxy{}
-	watcher := proxy.NewConfigMapWatcher(clientset, "default", "test-proxy-config", "config.yaml", p)
+	p := proxy.NewProxy(nil, "")
+	watcher := proxy.NewConfigMapWatcher(clientset, "default", "test-proxy-config", "config.yaml", p, &testLogger)
 
 	stopCh := make(chan struct{})
 	defer close(stopCh)
@@ -73,8 +77,8 @@ func TestConfigMapWatcher_IgnoresMissingKey(t *testing.T) {
 	}
 
 	clientset := fake.NewClientset(cm)
-	p := &proxy.Proxy{}
-	watcher := proxy.NewConfigMapWatcher(clientset, "default", "test-proxy-config", "config.yaml", p)
+	p := proxy.NewProxy(nil, "")
+	watcher := proxy.NewConfigMapWatcher(clientset, "default", "test-proxy-config", "config.yaml", p, &testLogger)
 
 	stopCh := make(chan struct{})
 	defer close(stopCh)
@@ -104,8 +108,8 @@ func TestConfigMapWatcher_IgnoresInvalidYAML(t *testing.T) {
 	}
 
 	clientset := fake.NewClientset(cm)
-	p := &proxy.Proxy{}
-	watcher := proxy.NewConfigMapWatcher(clientset, "default", "test-proxy-config", "config.yaml", p)
+	p := proxy.NewProxy(nil, "")
+	watcher := proxy.NewConfigMapWatcher(clientset, "default", "test-proxy-config", "config.yaml", p, &testLogger)
 
 	stopCh := make(chan struct{})
 	defer close(stopCh)
@@ -140,8 +144,8 @@ func TestConfigMapWatcher_IgnoresInvalidServiceURL(t *testing.T) {
 	}
 
 	clientset := fake.NewClientset(cm)
-	p := &proxy.Proxy{}
-	watcher := proxy.NewConfigMapWatcher(clientset, "default", "test-proxy-config", "config.yaml", p)
+	p := proxy.NewProxy(nil, "")
+	watcher := proxy.NewConfigMapWatcher(clientset, "default", "test-proxy-config", "config.yaml", p, &testLogger)
 
 	stopCh := make(chan struct{})
 	defer close(stopCh)
