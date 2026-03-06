@@ -4,7 +4,9 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"os"
 
 	"github.com/rs/zerolog"
@@ -22,32 +24,30 @@ const serverAddr = ":8080"
 func newTunnelCmd() *cobra.Command {
 	var namespace string
 	var configMapName string
-	var healthURL string
 
 	cmd := &cobra.Command{
 		Use:   "tunnel",
 		Short: "Run the tunnel proxy",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runTunnel(namespace, configMapName, healthURL)
+			return runTunnel(namespace, configMapName)
 		},
 	}
 
 	cmd.Flags().StringVar(&namespace, proxy.FlagNamespace, "", "namespace of the Gateway resources (required)")
 	cmd.Flags().StringVar(&configMapName, proxy.FlagConfigMapName, "", "name of the route ConfigMap for this Gateway (required)")
-	cmd.Flags().StringVar(&healthURL, proxy.FlagHealthURL, "", "HTTPS URL to probe for additional health checking on /healthz and /readyz")
 	cobra.CheckErr(cmd.MarkFlagRequired(proxy.FlagNamespace))
 	cobra.CheckErr(cmd.MarkFlagRequired(proxy.FlagConfigMapName))
 
 	return cmd
 }
 
-func runTunnel(namespace, configMapName, healthURL string) error {
+func runTunnel(namespace, configMapName string) error {
 	ctx := ctrl.SetupSignalHandler()
 
 	// Single JSON logger for the entire tunnel process.
 	zlog := zerolog.New(os.Stdout).With().Timestamp().Logger()
 
-	p := proxy.NewProxy(&zlog, healthURL)
+	p := proxy.NewProxy(&zlog)
 
 	// Initialize Kubernetes client.
 	cfg, err := rest.InClusterConfig()
@@ -74,7 +74,10 @@ func runTunnel(namespace, configMapName, healthURL string) error {
 	if token == "" {
 		return fmt.Errorf("environment variable %s is required", cfclient.TunnelTokenSecretKey)
 	}
-	if err := cfclient.RunTunnel(ctx, p, p, serverAddr, p.ConfigLoaded, token, healthURL, &zlog, graceShutdownC); err != nil {
+	startHealthServer := func(ctx context.Context, cloudflaredHealth http.Handler) {
+		p.StartHealthServer(ctx, serverAddr, cloudflaredHealth)
+	}
+	if err := cfclient.RunTunnel(ctx, p, p, token, startHealthServer, &zlog, graceShutdownC); err != nil {
 		return fmt.Errorf("tunnel error: %w", err)
 	}
 	return nil

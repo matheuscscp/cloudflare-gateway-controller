@@ -33,7 +33,7 @@ func TestProxy_HostnameRouting(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{Hostname: "app.example.com", Backends: []proxy.Backend{{Service: backend.URL, Weight: 1}}},
@@ -50,7 +50,7 @@ func TestProxy_HostnameRouting(t *testing.T) {
 func TestProxy_NoMatch404(t *testing.T) {
 	g := NewWithT(t)
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{Hostname: "app.example.com", Backends: []proxy.Backend{{Service: "http://backend:8080", Weight: 1}}},
@@ -76,7 +76,7 @@ func TestProxy_LongestPathPrefixMatch(t *testing.T) {
 	}))
 	defer rootBackend.Close()
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{Hostname: "app.example.com", PathPrefix: "/", Backends: []proxy.Backend{{Service: rootBackend.URL, Weight: 1}}},
@@ -102,7 +102,7 @@ func TestProxy_LongestPathPrefixMatch(t *testing.T) {
 func TestProxy_NoConfig503(t *testing.T) {
 	g := NewWithT(t)
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 
 	req := httptest.NewRequest("GET", "http://app.example.com/", nil)
 	rec := httptest.NewRecorder()
@@ -121,7 +121,7 @@ func TestProxy_HostHeaderForwarded(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{Hostname: "app.example.com", Backends: []proxy.Backend{{Service: backend.URL, Weight: 1}}},
@@ -202,7 +202,7 @@ func TestProxy_DisableKeepAlives(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{Hostname: "app.example.com", Backends: []proxy.Backend{{Service: backend.URL, Weight: 1}}},
@@ -227,7 +227,7 @@ func TestProxy_PathForwardedAsIs(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{Hostname: "app.example.com", PathPrefix: "/api", Backends: []proxy.Backend{{Service: backend.URL, Weight: 1}}},
@@ -250,7 +250,7 @@ func TestProxy_HostWithPort(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{Hostname: "app.example.com", Backends: []proxy.Backend{{Service: backend.URL, Weight: 1}}},
@@ -274,7 +274,7 @@ func TestProxy_SingleBackend(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{Hostname: "app.example.com", Backends: []proxy.Backend{{Service: backend.URL, Weight: 1}}},
@@ -306,7 +306,7 @@ func TestProxy_WeightedBackends(t *testing.T) {
 	}))
 	defer backendB.Close()
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{Hostname: "app.example.com", Backends: []proxy.Backend{
@@ -351,7 +351,7 @@ func TestProxy_ZeroWeightSkipped(t *testing.T) {
 	}))
 	defer backendB.Close()
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{Hostname: "app.example.com", Backends: []proxy.Backend{
@@ -376,7 +376,7 @@ func TestProxy_ZeroWeightSkipped(t *testing.T) {
 func TestProxy_AllZeroWeights502(t *testing.T) {
 	g := NewWithT(t)
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{Hostname: "app.example.com", Backends: []proxy.Backend{
@@ -407,7 +407,7 @@ func TestProxy_CookieSessionPersistence(t *testing.T) {
 	}))
 	defer backendB.Close()
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{
@@ -464,7 +464,7 @@ func TestProxy_CookieSessionPersistence_BackendRemoved(t *testing.T) {
 	}))
 	defer backendB.Close()
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	sp := &proxy.SessionPersistence{
 		Type:               "Cookie",
 		SessionName:        "cgw-session",
@@ -524,7 +524,7 @@ func TestProxy_CookieSessionPersistence_PermanentCookie(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 
 	// Permanent cookie with AbsoluteTimeout should have Max-Age.
 	setConfig(t, p, &proxy.Config{
@@ -582,7 +582,7 @@ func TestProxy_CookieSessionPersistence_AbsoluteTimeout(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{
@@ -629,7 +629,7 @@ func TestProxy_CookieSessionPersistence_IdleTimeout(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{
@@ -688,7 +688,7 @@ func TestProxy_CookieSessionPersistence_BothTimeouts(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{
@@ -768,7 +768,7 @@ func TestProxy_CookieSessionPersistence_IdleTimeoutReissue(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{
@@ -828,7 +828,7 @@ func TestProxy_SessionPersistence_MalformedCookieValues(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{
@@ -892,7 +892,7 @@ func TestProxy_CookieSessionPersistence_PermanentIdleTimeoutOnly(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{
@@ -925,7 +925,7 @@ func TestProxy_CookieSessionPersistence_PermanentNoTimeouts(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{
@@ -957,7 +957,7 @@ func TestProxy_CookieSessionPersistence_BothTimeoutsRemainingSmaller(t *testing.
 	}))
 	defer backend.Close()
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{
@@ -1012,7 +1012,7 @@ func TestProxy_HeaderSessionPersistence_UnknownBackend(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{
@@ -1053,7 +1053,7 @@ func TestProxy_HeaderSessionPersistence(t *testing.T) {
 	}))
 	defer backendB.Close()
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	cfg := &proxy.Config{
 		Routes: []proxy.Route{
 			{
@@ -1224,7 +1224,7 @@ func TestProxy_SessionPersistence_InvalidToken(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{
@@ -1275,7 +1275,7 @@ func TestProxy_SessionPersistence_ZeroWeightBackend(t *testing.T) {
 		CookieLifetimeType: "Session",
 	}
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{
@@ -1330,7 +1330,7 @@ func TestProxy_SessionPersistence_NoPersistenceField(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{
@@ -1360,7 +1360,7 @@ func TestProxy_CookieSessionPersistence_PathScope(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{
@@ -1385,20 +1385,6 @@ func TestProxy_CookieSessionPersistence_PathScope(t *testing.T) {
 	g.Expect(cookies[0].Path).To(Equal("/api"))
 }
 
-func TestProxy_ConfigLoaded(t *testing.T) {
-	g := NewWithT(t)
-
-	p := proxy.NewProxy(nil, "")
-	g.Expect(p.ConfigLoaded()).To(BeFalse())
-
-	setConfig(t, p, &proxy.Config{
-		Routes: []proxy.Route{
-			{Hostname: "app.example.com", Backends: []proxy.Backend{{Service: "http://backend:8080", Weight: 1}}},
-		},
-	})
-	g.Expect(p.ConfigLoaded()).To(BeTrue())
-}
-
 func TestProxy_RoundTrip(t *testing.T) {
 	g := NewWithT(t)
 
@@ -1407,7 +1393,7 @@ func TestProxy_RoundTrip(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{Hostname: "app.example.com", Backends: []proxy.Backend{{Service: backend.URL, Weight: 1}}},
@@ -1426,7 +1412,7 @@ func TestProxy_RoundTrip(t *testing.T) {
 func TestProxy_RoundTrip_NoConfig(t *testing.T) {
 	g := NewWithT(t)
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	req := httptest.NewRequest("GET", "http://app.example.com/", nil)
 	_, err := p.RoundTrip(req)
 	g.Expect(err).To(HaveOccurred())
@@ -1436,7 +1422,7 @@ func TestProxy_RoundTrip_NoConfig(t *testing.T) {
 func TestProxy_RoundTrip_NoRoute(t *testing.T) {
 	g := NewWithT(t)
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{Hostname: "app.example.com", Backends: []proxy.Backend{{Service: "http://backend:8080", Weight: 1}}},
@@ -1452,7 +1438,7 @@ func TestProxy_RoundTrip_NoRoute(t *testing.T) {
 func TestProxy_RoundTrip_NoBackend(t *testing.T) {
 	g := NewWithT(t)
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{Hostname: "app.example.com", Backends: []proxy.Backend{{Service: "http://backend:8080", Weight: 0}}},
@@ -1465,88 +1451,88 @@ func TestProxy_RoundTrip_NoBackend(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("no available backend"))
 }
 
-func TestProxy_HealthRequest_ServeHTTP(t *testing.T) {
+func TestProxy_HealthProbe_ServeHTTP(t *testing.T) {
 	g := NewWithT(t)
 
-	p := proxy.NewProxy(nil, "https://health.example.com")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{Hostname: "app.example.com", Backends: []proxy.Backend{{Service: "http://backend:8080", Weight: 1}}},
 		},
 	})
 
-	// Health hostname at root path returns 200.
-	req := httptest.NewRequest("GET", "http://health.example.com/", nil)
+	// Request with X-Health-Probe header is intercepted and returns 200
+	// with the proxy's health ID.
+	req := httptest.NewRequest("GET", "http://app.example.com/", nil)
+	req.Header.Set(proxy.HeaderHealthProbe, "some-probe-id")
 	rec := httptest.NewRecorder()
 	p.ServeHTTP(rec, req)
 	g.Expect(rec.Code).To(Equal(http.StatusOK))
+	g.Expect(rec.Header().Get(proxy.HeaderHealthProbe)).NotTo(BeEmpty())
 
-	// Health hostname at non-root path falls through to normal routing (404).
-	req = httptest.NewRequest("GET", "http://health.example.com/other", nil)
-	rec = httptest.NewRecorder()
-	p.ServeHTTP(rec, req)
-	g.Expect(rec.Code).To(Equal(http.StatusNotFound))
-
-	// Health hostname with port at root path returns 200.
-	req = httptest.NewRequest("GET", "http://health.example.com:8080/", nil)
-	rec = httptest.NewRecorder()
-	p.ServeHTTP(rec, req)
-	g.Expect(rec.Code).To(Equal(http.StatusOK))
-
-	// Non-health hostname is routed normally.
+	// Request without X-Health-Probe header is routed normally.
 	req = httptest.NewRequest("GET", "http://app.example.com/", nil)
 	rec = httptest.NewRecorder()
 	p.ServeHTTP(rec, req)
 	g.Expect(rec.Code).To(Equal(http.StatusBadGateway)) // backend is unreachable
 }
 
-func TestProxy_HealthRequest_RoundTrip(t *testing.T) {
+func TestProxy_HealthProbe_RoundTrip(t *testing.T) {
 	g := NewWithT(t)
 
-	p := proxy.NewProxy(nil, "https://health.example.com")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{Hostname: "app.example.com", Backends: []proxy.Backend{{Service: "http://backend:8080", Weight: 1}}},
 		},
 	})
 
-	// Health hostname at root path returns 200.
-	req := httptest.NewRequest("GET", "http://health.example.com/", nil)
+	// Request with X-Health-Probe header returns 200 with the proxy's health ID.
+	req := httptest.NewRequest("GET", "http://app.example.com/", nil)
+	req.Header.Set(proxy.HeaderHealthProbe, "some-probe-id")
 	resp, err := p.RoundTrip(req)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(resp.StatusCode).To(Equal(http.StatusOK))
+	g.Expect(resp.Header.Get(proxy.HeaderHealthProbe)).NotTo(BeEmpty())
 }
 
-func TestProxy_HealthRequest_NoHealthURL(t *testing.T) {
+func TestProxy_HealthProbe_ConsistentID(t *testing.T) {
 	g := NewWithT(t)
 
-	p := proxy.NewProxy(nil, "")
-	setConfig(t, p, &proxy.Config{
-		Routes: []proxy.Route{
-			{Hostname: "health.example.com", Backends: []proxy.Backend{{Service: "http://backend:8080", Weight: 1}}},
-		},
-	})
-
-	// Without a health URL, the health hostname is routed normally.
-	req := httptest.NewRequest("GET", "http://health.example.com/", nil)
-	rec := httptest.NewRecorder()
-	p.ServeHTTP(rec, req)
-	g.Expect(rec.Code).To(Equal(http.StatusBadGateway)) // backend is unreachable
-}
-
-func TestProxy_EmptyHealthURL(t *testing.T) {
-	p := proxy.NewProxy(nil, "")
-	// No panic, and health requests are not intercepted.
-	g := NewWithT(t)
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{Hostname: "app.example.com", Backends: []proxy.Backend{{Service: "http://backend:8080", Weight: 1}}},
 		},
 	})
-	req := httptest.NewRequest("GET", "http://app.example.com/", nil)
-	rec := httptest.NewRecorder()
-	p.ServeHTTP(rec, req)
-	g.Expect(rec.Code).To(Equal(http.StatusBadGateway))
+
+	// Two requests should return the same health ID.
+	req1 := httptest.NewRequest("GET", "http://app.example.com/", nil)
+	req1.Header.Set(proxy.HeaderHealthProbe, "probe")
+	rec1 := httptest.NewRecorder()
+	p.ServeHTTP(rec1, req1)
+
+	req2 := httptest.NewRequest("GET", "http://app.example.com/", nil)
+	req2.Header.Set(proxy.HeaderHealthProbe, "probe")
+	rec2 := httptest.NewRecorder()
+	p.ServeHTTP(rec2, req2)
+
+	id1 := rec1.Header().Get(proxy.HeaderHealthProbe)
+	id2 := rec2.Header().Get(proxy.HeaderHealthProbe)
+	g.Expect(id1).To(Equal(id2))
+
+	// Different proxy instances should have different health IDs.
+	p2 := proxy.NewProxy(nil)
+	setConfig(t, p2, &proxy.Config{
+		Routes: []proxy.Route{
+			{Hostname: "app.example.com", Backends: []proxy.Backend{{Service: "http://backend:8080", Weight: 1}}},
+		},
+	})
+	req3 := httptest.NewRequest("GET", "http://app.example.com/", nil)
+	req3.Header.Set(proxy.HeaderHealthProbe, "probe")
+	rec3 := httptest.NewRecorder()
+	p2.ServeHTTP(rec3, req3)
+	g.Expect(rec3.Header().Get(proxy.HeaderHealthProbe)).NotTo(Equal(id1))
 }
 
 func TestProxy_GRPCRouteMatching(t *testing.T) {
@@ -1557,7 +1543,7 @@ func TestProxy_GRPCRouteMatching(t *testing.T) {
 	}))
 	defer httpBackend.Close()
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{Hostname: "app.example.com", Backends: []proxy.Backend{{Service: httpBackend.URL, Weight: 1}}},
@@ -1587,7 +1573,7 @@ func TestProxy_GRPCNoMatchHTTP(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{Hostname: "app.example.com", Protocol: proxy.ProtocolGRPC, Backends: []proxy.Backend{{Service: backend.URL, Weight: 1}}},
@@ -1604,7 +1590,7 @@ func TestProxy_GRPCRoundTrip_NoRoute(t *testing.T) {
 	g := NewWithT(t)
 
 	// RoundTrip for a gRPC request that doesn't match any route returns error.
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	setConfig(t, p, &proxy.Config{
 		Routes: []proxy.Route{
 			{Hostname: "app.example.com", Backends: []proxy.Backend{{Service: "http://backend:8080", Weight: 1}}},

@@ -28,6 +28,15 @@ PATH="$(pwd)/bin:$PATH"
 CHART_DIR="charts/cloudflare-gateway-controller"
 RELEASE_NAME="cloudflare-gateway-controller"
 CONTROLLER_NS="cfgw-system"
+if [ -z "${PROM_PUSH_TOKEN:-}" ] && [ -f ./grafana.token ]; then
+    PROM_PUSH_TOKEN=$(cat ./grafana.token)
+    export PROM_PUSH_TOKEN
+fi
+if [ -n "${GITHUB_RUN_ID:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ]; then
+    PROM_PUSH_RUN_URL=$(gh run view "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+        --json jobs --jq ".jobs[] | select(.name | test(\"${TEST:-}\")) | .url" 2>/dev/null || true)
+    export PROM_PUSH_RUN_URL
+fi
 
 # Derived values.
 IMAGE_REPO="${IMAGE%:*}"

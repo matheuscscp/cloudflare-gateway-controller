@@ -168,45 +168,6 @@ func validateParameters(params *apiv1.CloudflareGatewayParameters) *gatewayValid
 		}
 	}
 
-	// Reject health URL when DNS zones don't include the hostname's zone
-	// (defense-in-depth, mirrors CEL XValidation).
-	if params != nil && params.Spec.Tunnel != nil && params.Spec.Tunnel.Health != nil && params.Spec.Tunnel.Health.URL != "" {
-		if params.Spec.DNS != nil {
-			hostname := healthURLHostname(params.Spec.Tunnel.Health.URL)
-			if hostname == "" {
-				msg := fmt.Sprintf("invalid tunnel.health.url %q: cannot parse hostname", params.Spec.Tunnel.Health.URL)
-				return &gatewayValidationError{
-					err: reconcile.TerminalError(fmt.Errorf("%s", msg)),
-					cond: metav1.Condition{
-						Type:    string(gatewayv1.GatewayConditionAccepted),
-						Status:  metav1.ConditionFalse,
-						Reason:  string(gatewayv1.GatewayReasonInvalidParameters),
-						Message: msg,
-					},
-				}
-			}
-			matched := false
-			for _, z := range params.Spec.DNS.Zones {
-				if hostnameInZone(hostname, z.Name) {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				msg := fmt.Sprintf("tunnel.health.url hostname %q is not a single-level subdomain of any dns.zones entry", hostname)
-				return &gatewayValidationError{
-					err: reconcile.TerminalError(fmt.Errorf("%s", msg)),
-					cond: metav1.Condition{
-						Type:    string(gatewayv1.GatewayConditionAccepted),
-						Status:  metav1.ConditionFalse,
-						Reason:  string(gatewayv1.GatewayReasonInvalidParameters),
-						Message: msg,
-					},
-				}
-			}
-		}
-	}
-
 	return nil
 }
 

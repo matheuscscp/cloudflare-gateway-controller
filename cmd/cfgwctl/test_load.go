@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/cobra"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -36,6 +37,7 @@ func newTestLoadCmd() *cobra.Command {
 		tolerance      float64
 		hostname       string
 		minSuccessRate float64
+		promPushFlag   bool
 	)
 
 	cmd := &cobra.Command{
@@ -43,6 +45,30 @@ func newTestLoadCmd() *cobra.Command {
 		Short: "Generate HTTP load and optionally check pod distribution",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+
+			// Prometheus histogram for latency instrumentation.
+			// Buckets are tuned for millisecond-scale HTTP latency through
+			// Cloudflare tunnels: fine resolution from 5ms–500ms where most
+			// requests land, with coverage up to 10s for outliers.
+			loadStart := time.Now()
+			registry := prometheus.NewRegistry()
+			latencyHist := prometheus.NewHistogramVec(prometheus.HistogramOpts{
+				Name: "cfgw_e2e_load_request_duration_seconds",
+				Help: "HTTP request latency during e2e load test",
+				Buckets: []float64{
+					0.005, 0.01, 0.025, 0.05,
+					0.1, 0.15, 0.25, 0.5,
+					1, 2.5, 5, 10,
+				},
+			}, []string{"status"})
+			registry.MustRegister(latencyHist)
+			if promPushFlag {
+				defer func() {
+					if err := promPush(registry, loadStart); err != nil {
+						fmt.Printf("Warning: failed to push metrics to Prometheus: %v\n", err)
+					}
+				}()
+			}
 
 			// Phase 1: Generate load.
 			var (
@@ -55,9 +81,12 @@ func newTestLoadCmd() *cobra.Command {
 
 			sendOne := func() {
 				total.Add(1)
+				start := time.Now()
 				resp, err := http.Get(url)
+				elapsed := time.Since(start).Seconds()
 				if err != nil {
 					other.Add(1)
+					latencyHist.WithLabelValues("other").Observe(elapsed)
 					return
 				}
 				if hostname != "" && resp.StatusCode >= 200 && resp.StatusCode < 300 {
@@ -74,10 +103,13 @@ func newTestLoadCmd() *cobra.Command {
 				switch {
 				case resp.StatusCode >= 200 && resp.StatusCode < 300:
 					ok2xx.Add(1)
+					latencyHist.WithLabelValues("2xx").Observe(elapsed)
 				case resp.StatusCode >= 500:
 					err5xx.Add(1)
+					latencyHist.WithLabelValues("5xx").Observe(elapsed)
 				default:
 					other.Add(1)
+					latencyHist.WithLabelValues("other").Observe(elapsed)
 				}
 			}
 
@@ -144,77 +176,7 @@ func newTestLoadCmd() *cobra.Command {
 			}
 
 			// Phase 2b: Even pod distribution check (optional).
-			if namespace == "" || labelSelector == "" {
-				fmt.Println("\nSkipping pod distribution check (no --namespace/--label-selector)")
-				return nil
-			}
-
-			fmt.Printf("\nChecking pod distribution (namespace=%s, selector=%s)...\n", namespace, labelSelector)
-
-			clientset, err := buildClientset(kubeconfig)
-			if err != nil {
-				return err
-			}
-
-			pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-				LabelSelector: labelSelector,
-			})
-			if err != nil {
-				return fmt.Errorf("listing pods: %w", err)
-			}
-
-			if len(pods.Items) == 0 {
-				return fmt.Errorf("no pods found matching selector %q in namespace %q", labelSelector, namespace)
-			}
-
-			type podCount struct {
-				Name  string
-				Count int64
-			}
-			var counts []podCount
-
-			for _, pod := range pods.Items {
-				count, err := getPodCount(ctx, clientset, namespace, pod.Name, podPort)
-				if err != nil {
-					return fmt.Errorf("getting count from pod %s: %w", pod.Name, err)
-				}
-				counts = append(counts, podCount{Name: pod.Name, Count: count})
-			}
-
-			fmt.Printf("\nPer-pod request counts:\n")
-			var sum int64
-			for _, pc := range counts {
-				fmt.Printf("  %s: %d\n", pc.Name, pc.Count)
-				sum += pc.Count
-			}
-
-			mean := float64(sum) / float64(len(counts))
-			var varianceSum float64
-			for _, pc := range counts {
-				diff := float64(pc.Count) - mean
-				varianceSum += diff * diff
-			}
-			stddev := math.Sqrt(varianceSum / float64(len(counts)))
-			cv := stddev / mean
-
-			fmt.Printf("\nDistribution stats:\n")
-			fmt.Printf("  total: %d\n", sum)
-			fmt.Printf("  mean: %.1f\n", mean)
-			fmt.Printf("  stddev: %.1f\n", stddev)
-			fmt.Printf("  CV (stddev/mean): %.3f (max: %.3f)\n", cv, maxCV)
-
-			for _, pc := range counts {
-				if pc.Count == 0 {
-					return fmt.Errorf("pod %s received 0 requests", pc.Name)
-				}
-			}
-
-			if cv > maxCV {
-				return fmt.Errorf("coefficient of variation %.3f exceeds max %.3f", cv, maxCV)
-			}
-
-			fmt.Println("\nDistribution check PASSED")
-			return nil
+			return checkEvenDistribution(ctx, namespace, labelSelector, podPort, maxCV, kubeconfig)
 		},
 	}
 
@@ -233,6 +195,7 @@ func newTestLoadCmd() *cobra.Command {
 		"max deviation from expected share (0.15 = ±15%) for --backend checks")
 	cmd.Flags().StringVar(&hostname, "hostname", "", "expected Host header value in responses (optional)")
 	cmd.Flags().Float64Var(&minSuccessRate, "min-success-rate", 1.0, "minimum required success rate (e.g. 0.99999 for 5 nines)")
+	cmd.Flags().BoolVar(&promPushFlag, "prom-push", false, "push latency metrics to a Prometheus remote-write endpoint (configured via PROM_PUSH_* env vars)")
 	cobra.CheckErr(cmd.MarkFlagRequired("url"))
 
 	return cmd
@@ -349,6 +312,80 @@ func checkWeightedDistribution(ctx context.Context, namespace string, backendFla
 	}
 
 	fmt.Println("\nWeighted distribution check PASSED")
+	return nil
+}
+
+func checkEvenDistribution(ctx context.Context, namespace, labelSelector string, podPort int, maxCV float64, kubeconfig string) error {
+	if namespace == "" || labelSelector == "" {
+		fmt.Println("\nSkipping pod distribution check (no --namespace/--label-selector)")
+		return nil
+	}
+
+	fmt.Printf("\nChecking pod distribution (namespace=%s, selector=%s)...\n", namespace, labelSelector)
+
+	clientset, err := buildClientset(kubeconfig)
+	if err != nil {
+		return err
+	}
+
+	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: labelSelector,
+	})
+	if err != nil {
+		return fmt.Errorf("listing pods: %w", err)
+	}
+
+	if len(pods.Items) == 0 {
+		return fmt.Errorf("no pods found matching selector %q in namespace %q", labelSelector, namespace)
+	}
+
+	type podCount struct {
+		Name  string
+		Count int64
+	}
+	var counts []podCount
+
+	for _, pod := range pods.Items {
+		count, err := getPodCount(ctx, clientset, namespace, pod.Name, podPort)
+		if err != nil {
+			return fmt.Errorf("getting count from pod %s: %w", pod.Name, err)
+		}
+		counts = append(counts, podCount{Name: pod.Name, Count: count})
+	}
+
+	fmt.Printf("\nPer-pod request counts:\n")
+	var sum int64
+	for _, pc := range counts {
+		fmt.Printf("  %s: %d\n", pc.Name, pc.Count)
+		sum += pc.Count
+	}
+
+	mean := float64(sum) / float64(len(counts))
+	var varianceSum float64
+	for _, pc := range counts {
+		diff := float64(pc.Count) - mean
+		varianceSum += diff * diff
+	}
+	stddev := math.Sqrt(varianceSum / float64(len(counts)))
+	cv := stddev / mean
+
+	fmt.Printf("\nDistribution stats:\n")
+	fmt.Printf("  total: %d\n", sum)
+	fmt.Printf("  mean: %.1f\n", mean)
+	fmt.Printf("  stddev: %.1f\n", stddev)
+	fmt.Printf("  CV (stddev/mean): %.3f (max: %.3f)\n", cv, maxCV)
+
+	for _, pc := range counts {
+		if pc.Count == 0 {
+			return fmt.Errorf("pod %s received 0 requests", pc.Name)
+		}
+	}
+
+	if cv > maxCV {
+		return fmt.Errorf("coefficient of variation %.3f exceeds max %.3f", cv, maxCV)
+	}
+
+	fmt.Println("\nDistribution check PASSED")
 	return nil
 }
 

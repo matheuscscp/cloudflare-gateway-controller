@@ -143,25 +143,6 @@ spec:
                     required:
                     - enabled
                     type: object
-                  health:
-                    description: Health configures tunnel health checking.
-                    properties:
-                      url:
-                        description: |-
-                          URL is an HTTPS origin (e.g. "https://health.example.com") that
-                          the tunnel's /healthz endpoint will probe via HTTP GET on every
-                          liveness check. The value must be "https://" followed by a hostname
-                          only — no path, query, or fragment. When set, the hostname is
-                          automatically included in the set of desired DNS CNAME records
-                          pointing to the tunnel. The hostname must be a single-level
-                          subdomain of a dns.zones entry when dns.zones is set.
-                        maxLength: 2048
-                        minLength: 1
-                        pattern: ^https://[^/?#]+$
-                        type: string
-                    required:
-                    - url
-                    type: object
                   patches:
                     description: |-
                       Patches are RFC 6902 JSON Patch operations applied to the
@@ -1257,14 +1238,6 @@ spec:
                   rule: '!has(self.replicas) || self.replicas.all(r, self.replicas.exists_one(s,
                     s.name == r.name))'
             type: object
-            x-kubernetes-validations:
-            - message: tunnel.health.url hostname must be a single-level subdomain
-                of a dns.zones entry when dns.zones is set
-              rule: '!has(self.tunnel) || !has(self.tunnel.health) || !has(self.dns)
-                || self.dns.zones.exists(z, self.tunnel.health.url.split(''://'')[1].split(''/'')[0].split('':'')[0].endsWith(''.''
-                + z.name) && !self.tunnel.health.url.split(''://'')[1].split(''/'')[0].split('':'')[0].substring(0,
-                self.tunnel.health.url.split(''://'')[1].split(''/'')[0].split('':'')[0].size()
-                - z.name.size() - 1).contains(''.''))'
         type: object
     served: true
     storage: true

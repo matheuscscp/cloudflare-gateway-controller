@@ -445,7 +445,8 @@ Gateway is suspended.
 **Resources created:**
 - 1-replica `Deployment` running `cfgwctl test serve` (selector `app=rot-test`)
 - `Service` `rot-backend` (port 80 → targetPort 8080)
-- `Gateway` with bare Secret (no CGP)
+- `CloudflareGatewayParameters` `rot-params`
+- `Gateway` referencing `rot-params`
 - `HTTPRoute` with one hostname (on `TEST_TRAFFIC_ZONE_NAME`)
 
 **Cloudflare resources:** 1 tunnel, 1 DNS CNAME record.
@@ -459,58 +460,22 @@ Gateway is suspended.
 **Steps:**
 
 1. Deploy test server and `Service`; wait for rollout.
-2. Create `Gateway` (bare Secret); wait for Programmed.
-3. Create `HTTPRoute`; wait for HTTPS endpoint reachable.
-4. Record tunnel ID, Cloudflare API token, pod name, and restart count.
-5. Start background load generator (`cfgwctl test load --duration 1m`).
-6. Wait 10 seconds for traffic to stabilize.
-7. Run `cfgwctl rotate gateway token`; verify output contains
+2. Create `CloudflareGatewayParameters`.
+3. Create `Gateway` referencing the parameters; wait for Programmed.
+4. Create `HTTPRoute`; wait for HTTPS endpoint reachable.
+5. Record tunnel ID, Cloudflare API token, pod name, and restart count.
+6. Start background load generator (`cfgwctl test load --duration 1m`).
+7. Wait 10 seconds for traffic to stabilize.
+8. Run `cfgwctl rotate gateway token`; verify output contains
    "Requested token rotation" and "Token rotation completed".
-8. Wait for load generator to finish; verify zero failures.
-9. Verify Cloudflare API token changed.
-10. Verify in-cluster tunnel token Secret matches the new Cloudflare API token.
-11. Verify tunnel pod was replaced via rolling restart (new pod name).
-12. Suspend the Gateway via `cfgwctl suspend gateway`.
-13. Run `cfgwctl rotate gateway token` on the suspended Gateway; verify it fails
+9. Wait for load generator to finish; verify zero failures.
+10. Verify Cloudflare API token changed.
+11. Verify in-cluster tunnel token Secret matches the new Cloudflare API token.
+12. Verify tunnel pod was replaced via rolling restart (new pod name).
+13. Suspend the Gateway via `cfgwctl suspend gateway`.
+14. Run `cfgwctl rotate gateway token` on the suspended Gateway; verify it fails
     with an error mentioning "suspended".
-14. Remove annotation, delete `HTTPRoute`, `Gateway`, `Deployment`, and `Service`.
-
-## test_health_url
-
-Tests the `spec.tunnel.health.url` feature: configuring a health URL that the
-tunnel's `/healthz` and `/readyz` endpoints probe, and verifying that the health
-URL hostname is included in DNS CNAME records.
-
-**Resources created:**
-- 1-replica `Deployment` running `cfgwctl test serve` (selector `app=hu-test`)
-- `Service` `hu-backend` (port 80 → targetPort 8080)
-- `CloudflareGatewayParameters` with `tunnel.health.url` set to `https://<hostname>`
-- `Gateway` referencing the parameters
-- `HTTPRoute` with one hostname (on `TEST_TRAFFIC_ZONE_NAME`)
-
-**Cloudflare resources:** 1 tunnel, 1 DNS CNAME record.
-
-**Pass criteria:**
-- Tunnel Deployment includes `--health-url` arg.
-- Gateway becomes Programmed (implies health probes are passing).
-- Tunnel pod has zero restarts (health check is not failing).
-- DNS CNAME exists for the hostname.
-- HTTPS endpoint is reachable through the tunnel.
-- `cfgwctl check gateway` passes (performs the health URL probe locally).
-
-**Steps:**
-
-1. Deploy test server and `Service`; wait for rollout.
-2. Create `CloudflareGatewayParameters` with `tunnel.health.url`.
-3. Create `Gateway`; wait for Programmed.
-4. Create `HTTPRoute`.
-5. Verify tunnel Deployment has `--health-url` arg.
-6. Wait for HTTPS endpoint reachable.
-7. Verify tunnel pod has zero restarts.
-8. Verify DNS CNAME exists for the hostname.
-9. Run `cfgwctl check gateway`; verify health check passes.
-10. Delete `HTTPRoute`, `Gateway` (wait for deletion), `Deployment`, `Service`,
-    and `CloudflareGatewayParameters`.
+15. Remove annotation, delete `HTTPRoute`, `Gateway`, `CGP`, `Deployment`, and `Service`.
 
 ## test_podinfo
 

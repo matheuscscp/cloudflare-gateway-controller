@@ -46,7 +46,7 @@ func TestConfigMapWatcher_LoadsConfigFromConfigMap(t *testing.T) {
 	}
 
 	clientset := fake.NewClientset(cm)
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	watcher := proxy.NewConfigMapWatcher(clientset, "default", "test-proxy-config", "config.yaml", p, &testLogger)
 
 	stopCh := make(chan struct{})
@@ -77,7 +77,7 @@ func TestConfigMapWatcher_IgnoresMissingKey(t *testing.T) {
 	}
 
 	clientset := fake.NewClientset(cm)
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	watcher := proxy.NewConfigMapWatcher(clientset, "default", "test-proxy-config", "config.yaml", p, &testLogger)
 
 	stopCh := make(chan struct{})
@@ -108,7 +108,7 @@ func TestConfigMapWatcher_IgnoresInvalidYAML(t *testing.T) {
 	}
 
 	clientset := fake.NewClientset(cm)
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	watcher := proxy.NewConfigMapWatcher(clientset, "default", "test-proxy-config", "config.yaml", p, &testLogger)
 
 	stopCh := make(chan struct{})
@@ -144,7 +144,7 @@ func TestConfigMapWatcher_IgnoresInvalidServiceURL(t *testing.T) {
 	}
 
 	clientset := fake.NewClientset(cm)
-	p := proxy.NewProxy(nil, "")
+	p := proxy.NewProxy(nil)
 	watcher := proxy.NewConfigMapWatcher(clientset, "default", "test-proxy-config", "config.yaml", p, &testLogger)
 
 	stopCh := make(chan struct{})

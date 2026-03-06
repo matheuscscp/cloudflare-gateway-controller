@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
 
@@ -397,9 +396,6 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		dns = dnsPolicy{enabled: true, zones: zones}
 	}
 
-	// Extract health URL hostname for DNS inclusion.
-	extraHostnames := extraHealthHostnames(params)
-
 	// Extract hostnames from all valid routes for DNS reconciliation.
 	var routeHostnames []gatewayv1.Hostname
 	for _, route := range validRoutes {
@@ -407,7 +403,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	}
 
 	// Reconcile DNS, handling zone changes.
-	dnsResult := r.reconcileDNSWithZoneChange(ctx, tc, tunnel.id, routeHostnames, dns, extraHostnames)
+	dnsResult := r.reconcileDNSWithZoneChange(ctx, tc, tunnel.id, routeHostnames, dns)
 	changes = append(changes, dnsResult.changes...)
 	errs = append(errs, dnsResult.errs...)
 
@@ -470,38 +466,16 @@ type dnsResult struct {
 func (r *GatewayReconciler) reconcileDNSWithZoneChange(
 	ctx context.Context, tc cloudflare.Client,
 	tunnelID string, routeHostnames []gatewayv1.Hostname,
-	dns dnsPolicy, extraHostnames []string,
+	dns dnsPolicy,
 ) dnsResult {
 	var res dnsResult
-	dnsChanges, dnsErr := r.reconcileDNS(ctx, tc, tunnelID, dns, routeHostnames, extraHostnames)
+	dnsChanges, dnsErr := r.reconcileDNS(ctx, tc, tunnelID, dns, routeHostnames)
 	res.changes = append(res.changes, dnsChanges...)
 	res.dnsErr = dnsErr
 	if dnsErr != nil {
 		res.errs = append(res.errs, *dnsErr)
 	}
 	return res
-}
-
-// extraHealthHostnames returns the health URL hostname as a slice for DNS
-// inclusion, or nil if no health URL is configured.
-func extraHealthHostnames(params *apiv1.CloudflareGatewayParameters) []string {
-	if params == nil || params.Spec.Tunnel == nil || params.Spec.Tunnel.Health == nil || params.Spec.Tunnel.Health.URL == "" {
-		return nil
-	}
-	if h := healthURLHostname(params.Spec.Tunnel.Health.URL); h != "" {
-		return []string{h}
-	}
-	return nil
-}
-
-// healthURLHostname extracts the hostname from a URL string. Returns ""
-// if the URL cannot be parsed.
-func healthURLHostname(rawURL string) string {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return ""
-	}
-	return u.Hostname()
 }
 
 // buildDNSManagementCondition builds the DNSManagement condition for the
@@ -961,7 +935,7 @@ func (r *GatewayReconciler) finalizeEnabled(ctx context.Context, gw *gatewayv1.G
 	}
 	if tunnelID != "" {
 		// Delete DNS CNAME records pointing to this tunnel.
-		dnsChanges, dnsErr := r.reconcileDNS(ctx, tc, tunnelID, dnsPolicy{}, nil, nil)
+		dnsChanges, dnsErr := r.reconcileDNS(ctx, tc, tunnelID, dnsPolicy{}, nil)
 		changes = append(changes, dnsChanges...)
 		if dnsErr != nil {
 			return changes, fmt.Errorf("cleaning up DNS for tunnel %s: %s", tunnelName, *dnsErr)
