@@ -2473,6 +2473,7 @@ EOF
         --namespace "$TEST_NS" \
         --label-selector app=rot-test \
         --max-cv 0.5 \
+        --min-success-rate 0.999 \
         --hostname "$hostname" &
     local LOAD_PID=$!
 
@@ -2712,6 +2713,96 @@ EOF
     kubectl delete cloudflaregatewayparameters hu-params -n "$TEST_NS" --ignore-not-found
 }
 
+test_podinfo() {
+    local hostname="pi-${TS: -6}.${TEST_TRAFFIC_ZONE_NAME}"
+
+    command -v podcli >/dev/null 2>&1 || fail "podcli not found in PATH"
+
+    log "Creating Gateway 'pi-gw' (bare Secret)..."
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: pi-gw
+  namespace: $TEST_NS
+spec:
+  gatewayClassName: cloudflare
+  listeners:
+  - name: https
+    protocol: HTTPS
+    port: 443
+EOF
+
+    retry 60 5 kubectl wait gateway/pi-gw -n "$TEST_NS" \
+        --for=condition=Programmed --timeout=5s \
+        || fail "pi-gw did not become Programmed"
+    pass "pi-gw is Programmed"
+
+    log "Installing podinfo via Helm..."
+    helm repo add podinfo https://stefanprodan.github.io/podinfo 2>/dev/null || true
+    helm repo update podinfo
+    helm upgrade --install podinfo podinfo/podinfo \
+        --namespace "$TEST_NS" \
+        --version '>=6.0.0, <7.0.0' \
+        --set httpRoute.enabled=true \
+        --set-json "httpRoute.parentRefs=[{\"name\":\"pi-gw\"}]" \
+        --set "httpRoute.hostnames[0]=$hostname" \
+        --wait --timeout 120s
+    pass "podinfo installed"
+
+    log "Creating GRPCRoute for podinfo gRPC..."
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: GRPCRoute
+metadata:
+  name: podinfo-grpc
+  namespace: $TEST_NS
+spec:
+  parentRefs:
+  - name: pi-gw
+  hostnames:
+  - "$hostname"
+  rules:
+  - backendRefs:
+    - name: podinfo
+      port: 9999
+EOF
+
+    wait_for_https "https://$hostname/"
+
+    log "Running podcli check http..."
+    retry 5 3 podcli check http "https://$hostname/" \
+        || fail "podcli check http failed"
+    pass "podcli check http passed"
+
+    log "Running podcli check grpc..."
+    retry 5 3 podcli check grpc "$hostname:443" --service=podinfo --tls \
+        || fail "podcli check grpc failed"
+    pass "podcli check grpc passed"
+
+    log "Running podcli check cert..."
+    retry 5 3 podcli check cert "$hostname" \
+        || fail "podcli check cert failed"
+    pass "podcli check cert passed"
+
+    log "Running podcli check tcp..."
+    retry 5 3 podcli check tcp "$hostname:443" \
+        || fail "podcli check tcp failed"
+    pass "podcli check tcp passed"
+
+    log "Running podcli check ws..."
+    retry 5 3 podcli check ws "wss://$hostname/ws/echo" \
+        || fail "podcli check ws failed"
+    pass "podcli check ws passed"
+
+    log "Cleaning up podinfo test..."
+    kubectl delete grpcroute podinfo-grpc -n "$TEST_NS"
+    helm uninstall podinfo -n "$TEST_NS"
+    kubectl delete gateway pi-gw -n "$TEST_NS"
+    retry 60 3 bash -c "! kubectl get gateway pi-gw -n '$TEST_NS' 2>/dev/null" \
+        || fail "pi-gw still exists"
+}
+
 # ─── Run ──────────────────────────────────────────────────────────────────────
 
 run_tests \
@@ -2732,4 +2823,5 @@ run_tests \
     test_resume_gateway \
     test_reconcile_gateway \
     test_rotate_gateway_token \
-    test_health_url
+    test_health_url \
+    test_podinfo

@@ -72,6 +72,10 @@ func (r *GatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(mapHTTPRouteToGateway),
 			builder.WithPredicates(predicates.Debug(apiv1.KindHTTPRoute,
 				predicate.GenerationChangedPredicate{}))).
+		Watches(&gatewayv1.GRPCRoute{},
+			handler.EnqueueRequestsFromMapFunc(mapGRPCRouteToGateway),
+			builder.WithPredicates(predicates.Debug(apiv1.KindGRPCRoute,
+				predicate.GenerationChangedPredicate{}))).
 		Watches(&gatewayv1beta1.ReferenceGrant{},
 			handler.EnqueueRequestsFromMapFunc(r.mapReferenceGrantToGateway),
 			builder.WithPredicates(predicates.Debug(apiv1.KindReferenceGrant,
@@ -135,6 +139,52 @@ func mapHTTPRouteToGateway(_ context.Context, obj client.Object) []reconcile.Req
 	return requests
 }
 
+// mapGRPCRouteToGateway maps a GRPCRoute event to reconcile requests for its
+// parent Gateways (from spec.parentRefs) and any Gateways that have existing
+// status.parents entries managed by our controller.
+func mapGRPCRouteToGateway(_ context.Context, obj client.Object) []reconcile.Request {
+	route, ok := obj.(*gatewayv1.GRPCRoute)
+	if !ok {
+		return nil
+	}
+	seen := make(map[types.NamespacedName]struct{})
+	var requests []reconcile.Request
+	for _, ref := range route.Spec.ParentRefs {
+		if ref.Group != nil && *ref.Group != gatewayv1.Group(gatewayv1.GroupName) {
+			continue
+		}
+		if ref.Kind != nil && *ref.Kind != gatewayv1.Kind(apiv1.KindGateway) {
+			continue
+		}
+		ns := route.Namespace
+		if ref.Namespace != nil {
+			ns = string(*ref.Namespace)
+		}
+		key := types.NamespacedName{Namespace: ns, Name: string(ref.Name)}
+		if _, ok := seen[key]; !ok {
+			seen[key] = struct{}{}
+			requests = append(requests, reconcile.Request{NamespacedName: key})
+		}
+	}
+	for _, s := range route.Status.Parents {
+		if s.ControllerName != apiv1.ControllerName {
+			continue
+		}
+		if s.ParentRef.Namespace == nil {
+			continue
+		}
+		key := types.NamespacedName{
+			Namespace: string(*s.ParentRef.Namespace),
+			Name:      string(s.ParentRef.Name),
+		}
+		if _, ok := seen[key]; !ok {
+			seen[key] = struct{}{}
+			requests = append(requests, reconcile.Request{NamespacedName: key})
+		}
+	}
+	return requests
+}
+
 // mapGatewayClassToGateway maps a GatewayClass event to reconcile requests for
 // all Gateways that reference it via spec.gatewayClassName.
 func (r *GatewayReconciler) mapGatewayClassToGateway(ctx context.Context, obj client.Object) []reconcile.Request {
@@ -155,8 +205,8 @@ func (r *GatewayReconciler) mapGatewayClassToGateway(ctx context.Context, obj cl
 }
 
 // mapReferenceGrantToGateway maps a ReferenceGrant event to reconcile requests
-// for Gateways whose attached HTTPRoutes have cross-namespace backend Service
-// references affected by the grant. The grant's from entries (Kind=HTTPRoute)
+// for Gateways whose attached routes (HTTPRoute or GRPCRoute) have cross-namespace
+// backend Service references affected by the grant. The grant's from entries
 // combined with the grant's own namespace (where the Service lives) form exact
 // index queries to find the affected routes, whose parentRefs yield the Gateways.
 func (r *GatewayReconciler) mapReferenceGrantToGateway(ctx context.Context, obj client.Object) []reconcile.Request {
@@ -177,43 +227,62 @@ func (r *GatewayReconciler) mapReferenceGrantToGateway(ctx context.Context, obj 
 		return nil
 	}
 
-	// For each "from" entry with Kind=HTTPRoute, query the index to find
-	// routes in that namespace with cross-namespace backends in the grant's
-	// namespace, then collect their parent Gateways.
+	// For each "from" entry with Kind=HTTPRoute or Kind=GRPCRoute, query the
+	// index to find routes in that namespace with cross-namespace backends in
+	// the grant's namespace, then collect their parent Gateways.
 	seen := make(map[types.NamespacedName]struct{})
 	var requests []reconcile.Request
+
+	collectParentGateways := func(parentRefs []gatewayv1.ParentReference, routeNamespace string) {
+		for _, ref := range parentRefs {
+			if ref.Group != nil && *ref.Group != gatewayv1.Group(gatewayv1.GroupName) {
+				continue
+			}
+			if ref.Kind != nil && *ref.Kind != gatewayv1.Kind(apiv1.KindGateway) {
+				continue
+			}
+			ns := routeNamespace
+			if ref.Namespace != nil {
+				ns = string(*ref.Namespace)
+			}
+			key := types.NamespacedName{Namespace: ns, Name: string(ref.Name)}
+			if _, ok := seen[key]; !ok {
+				seen[key] = struct{}{}
+				requests = append(requests, reconcile.Request{NamespacedName: key})
+			}
+		}
+	}
+
 	for _, from := range grant.Spec.From {
-		if from.Group != gatewayv1beta1.Group(gatewayv1.GroupName) ||
-			from.Kind != gatewayv1beta1.Kind(apiv1.KindHTTPRoute) {
+		if from.Group != gatewayv1beta1.Group(gatewayv1.GroupName) {
 			continue
 		}
+		indexKey := string(from.Namespace) + "/" + grant.Namespace
 
-		var routes gatewayv1.HTTPRouteList
-		if err := r.List(ctx, &routes, client.MatchingFields{
-			indexHTTPRouteBackendServiceNS: string(from.Namespace) + "/" + grant.Namespace,
-		}); err != nil {
-			log.FromContext(ctx).Error(err, "failed to list HTTPRoutes for ReferenceGrant",
-				"fromNamespace", from.Namespace, "grantNamespace", grant.Namespace)
-			continue
-		}
-
-		for i := range routes.Items {
-			for _, ref := range routes.Items[i].Spec.ParentRefs {
-				if ref.Group != nil && *ref.Group != gatewayv1.Group(gatewayv1.GroupName) {
-					continue
-				}
-				if ref.Kind != nil && *ref.Kind != gatewayv1.Kind(apiv1.KindGateway) {
-					continue
-				}
-				ns := routes.Items[i].Namespace
-				if ref.Namespace != nil {
-					ns = string(*ref.Namespace)
-				}
-				key := types.NamespacedName{Namespace: ns, Name: string(ref.Name)}
-				if _, ok := seen[key]; !ok {
-					seen[key] = struct{}{}
-					requests = append(requests, reconcile.Request{NamespacedName: key})
-				}
+		switch string(from.Kind) {
+		case apiv1.KindHTTPRoute:
+			var routes gatewayv1.HTTPRouteList
+			if err := r.List(ctx, &routes, client.MatchingFields{
+				indexHTTPRouteBackendServiceNS: indexKey,
+			}); err != nil {
+				log.FromContext(ctx).Error(err, "failed to list HTTPRoutes for ReferenceGrant",
+					"fromNamespace", from.Namespace, "grantNamespace", grant.Namespace)
+				continue
+			}
+			for i := range routes.Items {
+				collectParentGateways(routes.Items[i].Spec.ParentRefs, routes.Items[i].Namespace)
+			}
+		case apiv1.KindGRPCRoute:
+			var routes gatewayv1.GRPCRouteList
+			if err := r.List(ctx, &routes, client.MatchingFields{
+				indexGRPCRouteBackendServiceNS: indexKey,
+			}); err != nil {
+				log.FromContext(ctx).Error(err, "failed to list GRPCRoutes for ReferenceGrant",
+					"fromNamespace", from.Namespace, "grantNamespace", grant.Namespace)
+				continue
+			}
+			for i := range routes.Items {
+				collectParentGateways(routes.Items[i].Spec.ParentRefs, routes.Items[i].Namespace)
 			}
 		}
 	}

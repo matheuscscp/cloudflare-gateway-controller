@@ -25,6 +25,8 @@ const (
 	indexGatewayClassGatewayFinalizer       = ".gatewayClass.gatewayFinalizer"
 	indexHTTPRouteParentGateway             = ".httpRoute.parentGateway"
 	indexHTTPRouteBackendServiceNS          = ".httpRoute.backendServiceNamespace"
+	indexGRPCRouteParentGateway             = ".grpcRoute.parentGateway"
+	indexGRPCRouteBackendServiceNS          = ".grpcRoute.backendServiceNamespace"
 )
 
 // SetupIndexes registers all shared cache indexes.
@@ -32,6 +34,7 @@ func SetupIndexes(ctx context.Context, mgr ctrl.Manager) {
 	setupGatewayIndexes(ctx, mgr)
 	setupGatewayClassIndexes(ctx, mgr)
 	setupHTTPRouteIndexes(ctx, mgr)
+	setupGRPCRouteIndexes(ctx, mgr)
 }
 
 func setupGatewayIndexes(ctx context.Context, mgr ctrl.Manager) {
@@ -192,5 +195,73 @@ func setupHTTPRouteIndexes(ctx context.Context, mgr ctrl.Manager) {
 			return keys
 		}); err != nil {
 		panic(fmt.Sprintf("failed to setup index %s: %v", indexHTTPRouteBackendServiceNS, err))
+	}
+}
+
+func setupGRPCRouteIndexes(ctx context.Context, mgr ctrl.Manager) {
+	// Index GRPCRoutes by their parent Gateway references (ns/name) and by
+	// existing status.parents entries managed by our controller.
+	if err := mgr.GetCache().IndexField(ctx, &gatewayv1.GRPCRoute{}, indexGRPCRouteParentGateway,
+		func(obj client.Object) []string {
+			route := obj.(*gatewayv1.GRPCRoute)
+			seen := make(map[string]struct{})
+			var keys []string
+			for _, ref := range route.Spec.ParentRefs {
+				if ref.Group != nil && *ref.Group != gatewayv1.Group(gatewayv1.GroupName) {
+					continue
+				}
+				if ref.Kind != nil && *ref.Kind != gatewayv1.Kind(apiv1.KindGateway) {
+					continue
+				}
+				ns := route.Namespace
+				if ref.Namespace != nil {
+					ns = string(*ref.Namespace)
+				}
+				key := ns + "/" + string(ref.Name)
+				if _, ok := seen[key]; !ok {
+					seen[key] = struct{}{}
+					keys = append(keys, key)
+				}
+			}
+			for _, s := range route.Status.Parents {
+				if s.ControllerName != apiv1.ControllerName {
+					continue
+				}
+				if s.ParentRef.Namespace == nil {
+					continue
+				}
+				key := string(*s.ParentRef.Namespace) + "/" + string(s.ParentRef.Name)
+				if _, ok := seen[key]; !ok {
+					seen[key] = struct{}{}
+					keys = append(keys, key)
+				}
+			}
+			return keys
+		}); err != nil {
+		panic(fmt.Sprintf("failed to setup index %s: %v", indexGRPCRouteParentGateway, err))
+	}
+
+	// Index GRPCRoutes by routeNamespace/backendServiceNamespace for
+	// cross-namespace backend Service references.
+	if err := mgr.GetCache().IndexField(ctx, &gatewayv1.GRPCRoute{}, indexGRPCRouteBackendServiceNS,
+		func(obj client.Object) []string {
+			route := obj.(*gatewayv1.GRPCRoute)
+			seen := make(map[string]struct{})
+			var keys []string
+			for _, rule := range route.Spec.Rules {
+				for _, ref := range rule.BackendRefs {
+					if ref.Namespace == nil || string(*ref.Namespace) == route.Namespace {
+						continue
+					}
+					key := route.Namespace + "/" + string(*ref.Namespace)
+					if _, ok := seen[key]; !ok {
+						seen[key] = struct{}{}
+						keys = append(keys, key)
+					}
+				}
+			}
+			return keys
+		}); err != nil {
+		panic(fmt.Sprintf("failed to setup index %s: %v", indexGRPCRouteBackendServiceNS, err))
 	}
 }

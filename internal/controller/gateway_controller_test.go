@@ -506,7 +506,7 @@ func TestGatewayReconciler_AllowedRoutesKinds(t *testing.T) {
 		g.Expect(accepted).NotTo(BeNil())
 		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
 		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.GatewayReasonListenersNotValid)))
-		g.Expect(accepted.Message).To(ContainSubstring("Only HTTPRoute kind is supported"))
+		g.Expect(accepted.Message).To(ContainSubstring("Only HTTPRoute and GRPCRoute kinds are supported"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 

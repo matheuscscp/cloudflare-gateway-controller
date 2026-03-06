@@ -110,6 +110,7 @@ func (r *GatewayClassReconciler) reconcile(ctx context.Context, gc *gatewayv1.Ga
 	desiredFeatures := []gatewayv1.SupportedFeature{
 		{Name: gatewayv1.FeatureName(features.SupportGateway)},
 		{Name: gatewayv1.FeatureName(features.SupportGatewayInfrastructurePropagation)},
+		{Name: gatewayv1.FeatureName(features.SupportGRPCRoute)},
 		{Name: gatewayv1.FeatureName(features.SupportHTTPRoute)},
 		{Name: gatewayv1.FeatureName(features.SupportReferenceGrant)},
 	}

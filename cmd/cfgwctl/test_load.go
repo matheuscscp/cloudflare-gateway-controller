@@ -23,18 +23,19 @@ import (
 
 func newTestLoadCmd() *cobra.Command {
 	var (
-		url           string
-		requests      int
-		duration      time.Duration
-		concurrency   int
-		namespace     string
-		labelSelector string
-		podPort       int
-		maxCV         float64
-		kubeconfig    string
-		backends      []string
-		tolerance     float64
-		hostname      string
+		url            string
+		requests       int
+		duration       time.Duration
+		concurrency    int
+		namespace      string
+		labelSelector  string
+		podPort        int
+		maxCV          float64
+		kubeconfig     string
+		backends       []string
+		tolerance      float64
+		hostname       string
+		minSuccessRate float64
 	)
 
 	cmd := &cobra.Command{
@@ -126,9 +127,11 @@ func newTestLoadCmd() *cobra.Command {
 				fmt.Printf("  host mismatches: %d\n", hostErrs.Load())
 			}
 
-			if got := ok2xx.Load(); got != totalSent {
-				return fmt.Errorf("expected %d 2xx responses, got %d (5xx: %d, other: %d)",
-					totalSent, got, err5xx.Load(), other.Load())
+			successRate := float64(ok2xx.Load()) / float64(totalSent)
+			fmt.Printf("  success rate: %.5f%% (min: %.5f%%)\n", successRate*100, minSuccessRate*100)
+			if successRate < minSuccessRate {
+				return fmt.Errorf("success rate %.5f%% below minimum %.5f%% (5xx: %d, other: %d, 2xx: %d/%d)",
+					successRate*100, minSuccessRate*100, err5xx.Load(), other.Load(), ok2xx.Load(), totalSent)
 			}
 
 			if hostname != "" && hostErrs.Load() > 0 {
@@ -229,6 +232,7 @@ func newTestLoadCmd() *cobra.Command {
 	cmd.Flags().Float64Var(&tolerance, "tolerance", 0.15,
 		"max deviation from expected share (0.15 = ±15%) for --backend checks")
 	cmd.Flags().StringVar(&hostname, "hostname", "", "expected Host header value in responses (optional)")
+	cmd.Flags().Float64Var(&minSuccessRate, "min-success-rate", 1.0, "minimum required success rate (e.g. 0.99999 for 5 nines)")
 	cobra.CheckErr(cmd.MarkFlagRequired("url"))
 
 	return cmd

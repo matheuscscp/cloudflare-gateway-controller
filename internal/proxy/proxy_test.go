@@ -1548,3 +1548,72 @@ func TestProxy_EmptyHealthURL(t *testing.T) {
 	p.ServeHTTP(rec, req)
 	g.Expect(rec.Code).To(Equal(http.StatusBadGateway))
 }
+
+func TestProxy_GRPCRouteMatching(t *testing.T) {
+	g := NewWithT(t)
+
+	httpBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("http"))
+	}))
+	defer httpBackend.Close()
+
+	p := proxy.NewProxy(nil, "")
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
+			{Hostname: "app.example.com", Backends: []proxy.Backend{{Service: httpBackend.URL, Weight: 1}}},
+			{Hostname: "app.example.com", Protocol: proxy.ProtocolGRPC, Backends: []proxy.Backend{{Service: "http://grpc-backend:9090", Weight: 1}}},
+		},
+	})
+
+	// Regular HTTP request matches the HTTP route (not the gRPC route).
+	req := httptest.NewRequest("GET", "http://app.example.com/", nil)
+	rec := httptest.NewRecorder()
+	p.ServeHTTP(rec, req)
+	g.Expect(rec.Code).To(Equal(http.StatusOK))
+	g.Expect(rec.Body.String()).To(Equal("http"))
+
+	// gRPC request does NOT match the HTTP route via ServeHTTP — returns 404
+	// because the only route for this hostname+protocol(grpc) has an unreachable
+	// backend. In practice, gRPC goes through RoundTrip, not ServeHTTP.
+	// We verify protocol isolation via the NoMatch test below.
+}
+
+func TestProxy_GRPCNoMatchHTTP(t *testing.T) {
+	g := NewWithT(t)
+
+	// Only a gRPC route — regular HTTP requests should get 404.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("grpc"))
+	}))
+	defer backend.Close()
+
+	p := proxy.NewProxy(nil, "")
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
+			{Hostname: "app.example.com", Protocol: proxy.ProtocolGRPC, Backends: []proxy.Backend{{Service: backend.URL, Weight: 1}}},
+		},
+	})
+
+	req := httptest.NewRequest("GET", "http://app.example.com/", nil)
+	rec := httptest.NewRecorder()
+	p.ServeHTTP(rec, req)
+	g.Expect(rec.Code).To(Equal(http.StatusNotFound))
+}
+
+func TestProxy_GRPCRoundTrip_NoRoute(t *testing.T) {
+	g := NewWithT(t)
+
+	// RoundTrip for a gRPC request that doesn't match any route returns error.
+	p := proxy.NewProxy(nil, "")
+	setConfig(t, p, &proxy.Config{
+		Routes: []proxy.Route{
+			{Hostname: "app.example.com", Backends: []proxy.Backend{{Service: "http://backend:8080", Weight: 1}}},
+		},
+	})
+
+	req := httptest.NewRequest("POST", "http://app.example.com/svc.Method", nil)
+	req.Header.Set("Content-Type", "application/grpc")
+	_, err := p.RoundTrip(req)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("no matching route"))
+}

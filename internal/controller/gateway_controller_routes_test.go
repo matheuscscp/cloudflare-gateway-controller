@@ -2178,3 +2178,905 @@ func TestGatewayReconciler_HTTPRouteNoMatchingSectionName(t *testing.T) {
 		g.Expect(result.Status.Listeners[0].AttachedRoutes).To(Equal(int32(0)))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
+
+func TestGatewayReconciler_GRPCRouteAccepted(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-grpc-accepted", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	gw := createTestGateway(g, "test-gw-grpc", ns.Name, gc.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+	waitForGatewayProgrammed(g, gw)
+
+	route := &gatewayv1.GRPCRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-grpcroute",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GRPCRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{
+						Name: gatewayv1.ObjectName(gw.Name),
+					},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"grpc.example.com"},
+			Rules: []gatewayv1.GRPCRouteRule{
+				{
+					BackendRefs: []gatewayv1.GRPCBackendRef{
+						{
+							BackendRef: gatewayv1.BackendRef{
+								BackendObjectReference: gatewayv1.BackendObjectReference{
+									Name: "my-grpc-service",
+									Port: new(gatewayv1.PortNumber(9090)),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.GRPCRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Verify GRPCRoute becomes Accepted and Ready
+	routeKey := client.ObjectKeyFromObject(route)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.GRPCRoute
+		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(HaveLen(1))
+		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
+		g.Expect(accepted.Message).To(Equal("GRPCRoute is accepted"))
+
+		resolvedRefs := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionResolvedRefs))
+		g.Expect(resolvedRefs).NotTo(BeNil())
+		g.Expect(resolvedRefs.Status).To(Equal(metav1.ConditionTrue))
+
+		ready := conditions.Find(result.Status.Parents[0].Conditions, apiv1.ConditionReady)
+		g.Expect(ready).NotTo(BeNil())
+		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+		g.Expect(ready.Reason).To(Equal(apiv1.ReasonReconciliationSucceeded))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Verify route ConfigMap has the correct gRPC route with Protocol.
+	g.Eventually(func(g Gomega) {
+		cfg := getRouteConfig(g, gw)
+		g.Expect(cfg.Routes).To(HaveLen(1))
+		g.Expect(cfg.Routes[0].Hostname).To(Equal("grpc.example.com"))
+		g.Expect(cfg.Routes[0].Protocol).To(Equal("grpc"))
+		g.Expect(cfg.Routes[0].Owner).To(Equal(ns.Name + "/test-grpcroute"))
+		g.Expect(cfg.Routes[0].Backends).To(HaveLen(1))
+		g.Expect(cfg.Routes[0].Backends[0].Service).To(Equal("http://my-grpc-service." + ns.Name + ".svc.cluster.local:9090"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Verify Gateway listener has AttachedRoutes=1
+	gwKey := client.ObjectKeyFromObject(gw)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
+		g.Expect(result.Status.Listeners).To(HaveLen(1))
+		g.Expect(result.Status.Listeners[0].AttachedRoutes).To(Equal(int32(1)))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func TestGatewayReconciler_GRPCRouteUnsupportedFeatures(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-grpc-unsupported", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	gw := createTestGateway(g, "test-gw-grpc-unsupported", ns.Name, gc.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+	waitForGatewayProgrammed(g, gw)
+
+	// GRPCRoute with unsupported features: parentRef.port, method match, header match
+	portNum := gatewayv1.PortNumber(443)
+	methodType := gatewayv1.GRPCMethodMatchExact
+	svcName := "mypackage.MyService"
+	methodName := "MyMethod"
+	route := &gatewayv1.GRPCRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-grpc-unsupported",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GRPCRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{
+						Name: gatewayv1.ObjectName(gw.Name),
+						Port: &portNum,
+					},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"grpc-bad.example.com"},
+			Rules: []gatewayv1.GRPCRouteRule{
+				{
+					Matches: []gatewayv1.GRPCRouteMatch{
+						{
+							Method: &gatewayv1.GRPCMethodMatch{
+								Type:    &methodType,
+								Service: &svcName,
+								Method:  &methodName,
+							},
+							Headers: []gatewayv1.GRPCHeaderMatch{
+								{
+									Name:  "x-custom",
+									Value: "v",
+								},
+							},
+						},
+					},
+					BackendRefs: []gatewayv1.GRPCBackendRef{
+						{
+							BackendRef: gatewayv1.BackendRef{
+								BackendObjectReference: gatewayv1.BackendObjectReference{
+									Name: "svc",
+									Port: new(gatewayv1.PortNumber(9090)),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.GRPCRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Verify GRPCRoute is rejected with UnsupportedValue
+	routeKey := client.ObjectKeyFromObject(route)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.GRPCRoute
+		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(HaveLen(1))
+		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.RouteReasonUnsupportedValue)))
+		g.Expect(accepted.Message).To(ContainSubstring("spec.parentRefs[0].port is not supported"))
+		g.Expect(accepted.Message).To(ContainSubstring("spec.rules[0].matches[0].method is not supported"))
+		g.Expect(accepted.Message).To(ContainSubstring("spec.rules[0].matches[0].headers is not supported"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func TestGatewayReconciler_GRPCRouteDeletion(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-grpc-delete", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	gw := createTestGateway(g, "test-gw-grpc-delete", ns.Name, gc.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+	waitForGatewayProgrammed(g, gw)
+
+	route := &gatewayv1.GRPCRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-grpc-delete",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GRPCRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{Name: gatewayv1.ObjectName(gw.Name)},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"grpc-del.example.com"},
+			Rules: []gatewayv1.GRPCRouteRule{
+				{
+					BackendRefs: []gatewayv1.GRPCBackendRef{
+						{
+							BackendRef: gatewayv1.BackendRef{
+								BackendObjectReference: gatewayv1.BackendObjectReference{
+									Name: "svc",
+									Port: new(gatewayv1.PortNumber(9090)),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
+
+	// Wait for route to be accepted
+	routeKey := client.ObjectKeyFromObject(route)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.GRPCRoute
+		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(HaveLen(1))
+		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Verify route is in ConfigMap
+	g.Eventually(func(g Gomega) {
+		cfg := getRouteConfig(g, gw)
+		g.Expect(cfg.Routes).To(HaveLen(1))
+		g.Expect(cfg.Routes[0].Protocol).To(Equal("grpc"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Delete the GRPCRoute
+	g.Expect(testClient.Delete(testCtx, route)).To(Succeed())
+
+	// Wait for it to disappear
+	g.Eventually(func() bool {
+		var result gatewayv1.GRPCRoute
+		return apierrors.IsNotFound(testClient.Get(testCtx, routeKey, &result))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(BeTrue())
+
+	// Verify route is removed from ConfigMap
+	g.Eventually(func(g Gomega) {
+		cfg := getRouteConfig(g, gw)
+		g.Expect(cfg.Routes).To(BeEmpty())
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Verify Gateway listener has 0 attached routes
+	gwKey := client.ObjectKeyFromObject(gw)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
+		g.Expect(result.Status.Listeners).To(HaveLen(1))
+		g.Expect(result.Status.Listeners[0].AttachedRoutes).To(Equal(int32(0)))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func TestGatewayReconciler_GRPCRouteAndHTTPRouteSameHostname(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-grpc-http-same", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	gw := createTestGateway(g, "test-gw-grpc-http", ns.Name, gc.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+	waitForGatewayProgrammed(g, gw)
+
+	// Create an HTTPRoute and a GRPCRoute on the same hostname
+	httpRoute := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-http-same",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{Name: gatewayv1.ObjectName(gw.Name)},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"shared.example.com"},
+			Rules: []gatewayv1.HTTPRouteRule{
+				{
+					BackendRefs: []gatewayv1.HTTPBackendRef{
+						{
+							BackendRef: gatewayv1.BackendRef{
+								BackendObjectReference: gatewayv1.BackendObjectReference{
+									Name: "http-svc",
+									Port: new(gatewayv1.PortNumber(8080)),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, httpRoute)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.HTTPRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(httpRoute), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	grpcRoute := &gatewayv1.GRPCRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-grpc-same",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GRPCRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{Name: gatewayv1.ObjectName(gw.Name)},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"shared.example.com"},
+			Rules: []gatewayv1.GRPCRouteRule{
+				{
+					BackendRefs: []gatewayv1.GRPCBackendRef{
+						{
+							BackendRef: gatewayv1.BackendRef{
+								BackendObjectReference: gatewayv1.BackendObjectReference{
+									Name: "grpc-svc",
+									Port: new(gatewayv1.PortNumber(9090)),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, grpcRoute)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.GRPCRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(grpcRoute), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Both routes accepted (no conflict — different protocols)
+	g.Eventually(func(g Gomega) {
+		var httpResult gatewayv1.HTTPRoute
+		g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(httpRoute), &httpResult)).To(Succeed())
+		g.Expect(httpResult.Status.Parents).To(HaveLen(1))
+		accepted := conditions.Find(httpResult.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	g.Eventually(func(g Gomega) {
+		var grpcResult gatewayv1.GRPCRoute
+		g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(grpcRoute), &grpcResult)).To(Succeed())
+		g.Expect(grpcResult.Status.Parents).To(HaveLen(1))
+		accepted := conditions.Find(grpcResult.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Verify ConfigMap has both routes (HTTP and gRPC)
+	g.Eventually(func(g Gomega) {
+		cfg := getRouteConfig(g, gw)
+		g.Expect(cfg.Routes).To(HaveLen(2))
+		var httpFound, grpcFound bool
+		for _, r := range cfg.Routes {
+			if r.Protocol == "" && r.Hostname == "shared.example.com" {
+				httpFound = true
+			}
+			if r.Protocol == "grpc" && r.Hostname == "shared.example.com" {
+				grpcFound = true
+			}
+		}
+		g.Expect(httpFound).To(BeTrue(), "expected HTTP route in config")
+		g.Expect(grpcFound).To(BeTrue(), "expected gRPC route in config")
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Verify Gateway listener counts both routes
+	gwKey := client.ObjectKeyFromObject(gw)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
+		g.Expect(result.Status.Listeners).To(HaveLen(1))
+		g.Expect(result.Status.Listeners[0].AttachedRoutes).To(Equal(int32(2)))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func TestGatewayReconciler_GRPCRouteCrossNamespaceBackendGranted(t *testing.T) {
+	g := NewWithT(t)
+
+	nsA := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, nsA) })
+
+	nsB := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, nsB) })
+
+	createTestSecret(g, nsA.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-grpc-xns-grant", nsA.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	gw := createTestGateway(g, "test-gw-grpc-xns-grant", nsA.Name, gc.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+	waitForGatewayProgrammed(g, gw)
+
+	// Create ReferenceGrant in nsB allowing GRPCRoute from nsA
+	grant := &gatewayv1beta1.ReferenceGrant{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "allow-grpc-backend",
+			Namespace: nsB.Name,
+		},
+		Spec: gatewayv1beta1.ReferenceGrantSpec{
+			From: []gatewayv1beta1.ReferenceGrantFrom{
+				{
+					Group:     gatewayv1beta1.Group(gatewayv1.GroupName),
+					Kind:      gatewayv1beta1.Kind(apiv1.KindGRPCRoute),
+					Namespace: gatewayv1beta1.Namespace(nsA.Name),
+				},
+			},
+			To: []gatewayv1beta1.ReferenceGrantTo{
+				{
+					Group: "",
+					Kind:  "Service",
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, grant)).To(Succeed())
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, grant) })
+
+	// Create GRPCRoute with cross-namespace backendRef
+	nsBNS := gatewayv1.Namespace(nsB.Name)
+	route := &gatewayv1.GRPCRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-grpc-xns",
+			Namespace: nsA.Name,
+		},
+		Spec: gatewayv1.GRPCRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{Name: gatewayv1.ObjectName(gw.Name)},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"grpc-xns.example.com"},
+			Rules: []gatewayv1.GRPCRouteRule{
+				{
+					BackendRefs: []gatewayv1.GRPCBackendRef{
+						{
+							BackendRef: gatewayv1.BackendRef{
+								BackendObjectReference: gatewayv1.BackendObjectReference{
+									Name:      "xns-svc",
+									Port:      new(gatewayv1.PortNumber(9090)),
+									Namespace: &nsBNS,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.GRPCRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Verify ResolvedRefs=True (grant allows cross-namespace reference)
+	routeKey := client.ObjectKeyFromObject(route)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.GRPCRoute
+		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(HaveLen(1))
+		resolved := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionResolvedRefs))
+		g.Expect(resolved).NotTo(BeNil())
+		g.Expect(resolved.Status).To(Equal(metav1.ConditionTrue))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Verify ConfigMap has the cross-namespace backend
+	g.Eventually(func(g Gomega) {
+		cfg := getRouteConfig(g, gw)
+		g.Expect(cfg.Routes).To(HaveLen(1))
+		g.Expect(cfg.Routes[0].Backends[0].Service).To(ContainSubstring(nsB.Name))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func TestGatewayReconciler_GRPCRouteCrossNamespaceBackendDenied(t *testing.T) {
+	g := NewWithT(t)
+
+	nsA := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, nsA) })
+
+	nsB := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, nsB) })
+
+	createTestSecret(g, nsA.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-grpc-xns-deny", nsA.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	gw := createTestGateway(g, "test-gw-grpc-xns-deny", nsA.Name, gc.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+	waitForGatewayProgrammed(g, gw)
+
+	// No ReferenceGrant — cross-namespace reference should be denied
+	nsBNS := gatewayv1.Namespace(nsB.Name)
+	route := &gatewayv1.GRPCRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-grpc-xns-deny",
+			Namespace: nsA.Name,
+		},
+		Spec: gatewayv1.GRPCRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{Name: gatewayv1.ObjectName(gw.Name)},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"grpc-deny.example.com"},
+			Rules: []gatewayv1.GRPCRouteRule{
+				{
+					BackendRefs: []gatewayv1.GRPCBackendRef{
+						{
+							BackendRef: gatewayv1.BackendRef{
+								BackendObjectReference: gatewayv1.BackendObjectReference{
+									Name:      "xns-svc",
+									Port:      new(gatewayv1.PortNumber(9090)),
+									Namespace: &nsBNS,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.GRPCRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Verify ResolvedRefs=False/RefNotPermitted
+	routeKey := client.ObjectKeyFromObject(route)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.GRPCRoute
+		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(HaveLen(1))
+		resolved := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionResolvedRefs))
+		g.Expect(resolved).NotTo(BeNil())
+		g.Expect(resolved.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(resolved.Reason).To(Equal(string(gatewayv1.RouteReasonRefNotPermitted)))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func TestGatewayReconciler_DeletionWithGRPCRoutes(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-grpc-gw-del", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	gw := createTestGateway(g, "test-gw-grpc-gw-del", ns.Name, gc.Name)
+	waitForGatewayProgrammed(g, gw)
+
+	route := &gatewayv1.GRPCRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-grpc-gw-del",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GRPCRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{Name: gatewayv1.ObjectName(gw.Name)},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"grpc-gwdel.example.com"},
+			Rules: []gatewayv1.GRPCRouteRule{
+				{
+					BackendRefs: []gatewayv1.GRPCBackendRef{
+						{
+							BackendRef: gatewayv1.BackendRef{
+								BackendObjectReference: gatewayv1.BackendObjectReference{
+									Name: "svc",
+									Port: new(gatewayv1.PortNumber(9090)),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.GRPCRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Wait for GRPCRoute to be accepted and have status.parents entry
+	routeKey := client.ObjectKeyFromObject(route)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.GRPCRoute
+		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(HaveLen(1))
+		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Delete the Gateway
+	g.Expect(testClient.Delete(testCtx, gw)).To(Succeed())
+
+	gwKey := client.ObjectKeyFromObject(gw)
+	g.Eventually(func() bool {
+		var result gatewayv1.Gateway
+		return apierrors.IsNotFound(testClient.Get(testCtx, gwKey, &result))
+	}).WithTimeout(30 * time.Second).WithPolling(100 * time.Millisecond).Should(BeTrue())
+
+	// Verify GRPCRoute status.parents entry was removed by finalization
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.GRPCRoute
+		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(BeEmpty())
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func TestGatewayReconciler_GRPCRouteListenerKindRestriction(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-grpc-kind-restrict", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	// Gateway with listener that only allows HTTPRoute (not GRPCRoute)
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-grpc-kind-restrict",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "https",
+					Protocol: gatewayv1.HTTPSProtocolType,
+					Port:     443,
+					AllowedRoutes: &gatewayv1.AllowedRoutes{
+						Kinds: []gatewayv1.RouteGroupKind{
+							{Kind: apiv1.KindHTTPRoute},
+						},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+	waitForGatewayProgrammed(g, gw)
+
+	// Create a GRPCRoute — should be rejected since listener only allows HTTPRoute
+	route := &gatewayv1.GRPCRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-grpc-kind-restrict",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GRPCRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{Name: gatewayv1.ObjectName(gw.Name)},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"grpc-restrict.example.com"},
+			Rules: []gatewayv1.GRPCRouteRule{
+				{
+					BackendRefs: []gatewayv1.GRPCBackendRef{
+						{
+							BackendRef: gatewayv1.BackendRef{
+								BackendObjectReference: gatewayv1.BackendObjectReference{
+									Name: "svc",
+									Port: new(gatewayv1.PortNumber(9090)),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.GRPCRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Verify GRPCRoute is rejected: NoMatchingParent (listener doesn't allow GRPCRoute)
+	routeKey := client.ObjectKeyFromObject(route)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.GRPCRoute
+		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(HaveLen(1))
+		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.RouteReasonNoMatchingParent)))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Verify Gateway listener has 0 attached routes (GRPCRoute not counted)
+	gwKey := client.ObjectKeyFromObject(gw)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
+		g.Expect(result.Status.Listeners).To(HaveLen(1))
+		g.Expect(result.Status.Listeners[0].AttachedRoutes).To(Equal(int32(0)))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func TestGatewayReconciler_GRPCRouteNoBackends(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-grpc-nobackend", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	gw := createTestGateway(g, "test-gw-grpc-nobackend", ns.Name, gc.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+	waitForGatewayProgrammed(g, gw)
+
+	// GRPCRoute with zero backendRefs
+	route := &gatewayv1.GRPCRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-grpc-nobackend",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GRPCRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{Name: gatewayv1.ObjectName(gw.Name)},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{"grpc-nobackend.example.com"},
+			Rules: []gatewayv1.GRPCRouteRule{
+				{
+					BackendRefs: []gatewayv1.GRPCBackendRef{},
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.GRPCRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	routeKey := client.ObjectKeyFromObject(route)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.GRPCRoute
+		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(HaveLen(1))
+		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.RouteReasonUnsupportedValue)))
+		g.Expect(accepted.Message).To(ContainSubstring("at least one backend is required"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}

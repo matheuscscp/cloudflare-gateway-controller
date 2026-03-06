@@ -9,29 +9,39 @@ A Kubernetes [Gateway API](https://gateway-api.sigs.k8s.io/) controller that man
 [Cloudflare Tunnels](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
 to expose cluster services to the internet.
 
-The controller watches `Gateway` and `HTTPRoute` resources and automatically provisions
-Cloudflare tunnels and DNS records to route external traffic to Kubernetes services — no
-public IPs or `LoadBalancer`-type Services required.
+The controller watches `Gateway`, `HTTPRoute`, and `GRPCRoute` resources and automatically
+provisions Cloudflare tunnels and DNS records to route external traffic to Kubernetes
+services — no public IPs or `LoadBalancer`-type Services required.
 
 ## How It Works
 
-A single Cloudflare tunnel handles all traffic, and DNS CNAME records point each hostname
-directly to the tunnel. Multiple HTTPRoutes can attach to the same Gateway — each hostname
-gets its own CNAME. The tunnel container embeds both cloudflared and a reverse proxy to
-route requests to the correct backend Service by hostname and path, with per-request load
-balancing through kube-proxy.
+A single Cloudflare tunnel handles all traffic, and proxied CNAME records point each hostname
+directly to the tunnel. Multiple HTTPRoutes and GRPCRoutes can attach to the same
+Gateway — each hostname gets its own CNAME. The tunnel container embeds both cloudflared
+and a reverse proxy to route requests to the correct backend Service by hostname, path,
+and protocol, with per-request load balancing through kube-proxy.
 
 ```mermaid
 flowchart LR
     C((Client))
-    C -->|app.example.com| CNA[CNAME app]
-    C -->|api.example.com| CNB[CNAME api]
-    CNA --> T[Tunnel]
-    CNB --> T
-    T --> TC[tunnel container]
-    TC --> SA[Service A]
-    TC --> SB[Service B]
+    C -->|app.example.com| CNA
+    C -->|api.example.com| CNB
+    subgraph cfe[Cloudflare edge]
+        CNA["CNAME app · L7 proxy"]
+        CNB["CNAME api · L7 proxy"]
+    end
+    CNA -->|"tunnel-uuid.cfargotunnel.com"| T
+    CNB -->|"tunnel-uuid.cfargotunnel.com"| T
+    subgraph Kubernetes
+        T[Tunnel client]
+        T -->|app.example.com| SA[Service app]
+        T -->|api.example.com| SB[Service api]
+    end
+    T -->|four HTTP/2 connections| cfe
 ```
+
+The diagram above illustrates the topology for a single Gateway resource. A cluster can
+have multiple Gateways, each will have its own tunnel client.
 
 A minimal setup needs a credentials Secret, a GatewayClass, a Gateway, and an HTTPRoute —
 no CloudflareGatewayParameters required. Credentials come from the GatewayClass
@@ -97,7 +107,11 @@ metadata:
   name: my-gateway
   namespace: default
 spec:
-  # ...
+  gatewayClassName: cloudflare
+  listeners:
+  - name: https
+    protocol: HTTPS
+    port: 443
   infrastructure:
     parametersRef:
       group: cloudflare-gateway-controller.io
@@ -116,6 +130,8 @@ spec:
         zone: us-east-1a
       - name: us-east-1b
         zone: us-east-1b
+      - name: us-east-1c
+        zone: us-east-1c
     autoscaling:
       enabled: true
     resources:
@@ -135,10 +151,10 @@ See the [CloudflareGatewayParameters](docs/api/v1/CloudflareGatewayParameters.md
 all options.
 
 **DNS:** The controller creates a CNAME record for each hostname declared in the attached
-HTTPRoutes. Each CNAME points directly to the tunnel address (`<tunnelID>.cfargotunnel.com`).
-When an HTTPRoute hostname is removed, its CNAME is deleted.
+routes (HTTPRoute and GRPCRoute). Each CNAME points directly to the tunnel address
+(`<tunnelID>.cfargotunnel.com`). When a route hostname is removed, its CNAME is deleted.
 
-**Cloudflare resources:** 1 tunnel, 1 CNAME record per HTTPRoute hostname.
+**Cloudflare resources:** 1 tunnel, 1 CNAME record per route hostname.
 
 **Kubernetes resources:** Per Gateway, the controller creates a tunnel Deployment,
 a tunnel token Secret, a routes ConfigMap, a ServiceAccount, a Role, and a RoleBinding.
@@ -211,12 +227,13 @@ with cloudflared's persistent connections. Without it, cloudflared opens a singl
 long-lived TCP connection to each backend Service, bypassing kube-proxy and pinning
 all traffic to one pod.
 
-The embedded reverse proxy receives all traffic from cloudflared, routes requests
-by hostname and path prefix to the correct backend Service, and disables HTTP
-keep-alives on egress so every request opens a fresh connection through kube-proxy
-for proper pod-level load balancing. When an HTTPRoute rule has multiple `backendRefs`
-with `weight` fields, the proxy distributes requests across backends according to
-their weights (traffic splitting). The proxy also supports
+The embedded reverse proxy receives all traffic from cloudflared and routes requests
+by hostname, path prefix, and protocol (HTTP vs gRPC) to the correct backend Service.
+HTTP requests use HTTP/1.1 with keep-alives disabled so every request opens a fresh
+connection through kube-proxy for proper pod-level load balancing. gRPC requests use
+HTTP/2 cleartext (h2c) to preserve streaming semantics. When a route rule has multiple
+`backendRefs` with `weight` fields, the proxy distributes requests across backends
+according to their weights (traffic splitting). The proxy also supports
 [session persistence](docs/api/v1/HTTPRoute.md#session-persistence) via cookie-based
 or header-based affinity to pin a client to the same backend across requests.
 
