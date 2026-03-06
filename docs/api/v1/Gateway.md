@@ -40,7 +40,7 @@ spec:
 The Gateway must have exactly one listener with `protocol: HTTPS` and
 `port: 443`. The `tls` field and hostnames on listeners are not supported.
 Cloudflare handles TLS termination; hostnames are configured on
-[HTTPRoute](HTTPRoute.md) resources instead.
+[HTTPRoute](HTTPRoute.md) and [GRPCRoute](GRPCRoute.md) resources instead.
 
 The `.spec.addresses` field is not supported and must not be set.
 
@@ -168,10 +168,10 @@ reconciliation. If any validation fails, the Gateway is rejected with
 - Cloudflare handles TLS termination, so the `tls` field must not be set.
   Rejected with `Accepted=False/ListenersNotValid`.
 - The listener `hostname` field must not be set. Hostnames are configured on
-  [HTTPRoutes](HTTPRoute.md) instead. Rejected with
-  `Accepted=False/ListenersNotValid`.
-- If `allowedRoutes.kinds` is set, it must only contain `HTTPRoute`. Other
-  kinds are rejected with `Accepted=False/ListenersNotValid`.
+  [HTTPRoutes](HTTPRoute.md) and [GRPCRoutes](GRPCRoute.md) instead. Rejected
+  with `Accepted=False/ListenersNotValid`.
+- If `allowedRoutes.kinds` is set, it must only contain `HTTPRoute` and/or
+  `GRPCRoute`. Other kinds are rejected with `Accepted=False/ListenersNotValid`.
 
 ### Addresses
 

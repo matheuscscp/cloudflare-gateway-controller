@@ -511,3 +511,32 @@ URL hostname is included in DNS CNAME records.
 9. Run `cfgwctl check gateway`; verify health check passes.
 10. Delete `HTTPRoute`, `Gateway` (wait for deletion), `Deployment`, `Service`,
     and `CloudflareGatewayParameters`.
+
+## test_podinfo
+
+Installs [podinfo](https://github.com/stefanprodan/podinfo) via Helm (latest
+`>=6.0.0, <7.0.0`) with an HTTPRoute, applies a separate GRPCRoute for the gRPC
+port, and runs all five `podcli check` subcommands through the Cloudflare tunnel.
+
+**Resources created:**
+- `Gateway` with bare Secret (no CGP)
+- podinfo Helm release (Deployment, Service, HTTPRoute) targeting port 9898
+- `GRPCRoute` targeting podinfo gRPC port 9999
+
+**Cloudflare resources:** 1 tunnel, 1 DNS CNAME record.
+
+**Pass criteria:**
+- All five `podcli check` subcommands succeed: `http`, `grpc`, `cert`, `tcp`, `ws`.
+
+**Steps:**
+
+1. Create `Gateway` (bare Secret); wait for Programmed.
+2. Install podinfo via Helm with HTTPRoute enabled and hostname set.
+3. Create `GRPCRoute` targeting podinfo port 9999 on the same hostname.
+4. Wait for HTTPS endpoint reachable.
+5. Run `podcli check http` against `https://<hostname>/`.
+6. Run `podcli check grpc` against `<hostname>:443` with `--service=podinfo --tls`.
+7. Run `podcli check cert` against `<hostname>`.
+8. Run `podcli check tcp` against `<hostname>:443`.
+9. Run `podcli check ws` against `wss://<hostname>/ws/echo`.
+10. Delete `GRPCRoute`, uninstall podinfo Helm release, delete `Gateway`.

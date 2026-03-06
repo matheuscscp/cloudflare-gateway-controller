@@ -31,7 +31,7 @@ func routeConfigMapLabels(gw *gatewayv1.Gateway) map[string]string {
 
 // reconcileRouteConfigMap builds the route Config from valid routes and
 // creates/updates the ConfigMap. Returns denied refs, change messages, and error.
-func (r *GatewayReconciler) reconcileRouteConfigMap(ctx context.Context, gw *gatewayv1.Gateway, routes []*gatewayv1.HTTPRoute) (map[types.NamespacedName][]string, []string, error) {
+func (r *GatewayReconciler) reconcileRouteConfigMap(ctx context.Context, gw *gatewayv1.Gateway, routes []routeObject) (map[types.NamespacedName][]string, []string, error) {
 	l := log.FromContext(ctx)
 
 	cfg, routesWithDeniedRefs, err := buildRouteConfig(ctx, r.Client, routes)
@@ -74,89 +74,22 @@ func (r *GatewayReconciler) reconcileRouteConfigMap(ctx context.Context, gw *gat
 	return routesWithDeniedRefs, changes, nil
 }
 
-// buildRouteConfig converts valid HTTPRoutes into route config entries.
-// Each rule's backendRefs are emitted as weighted backends on the route.
+// buildRouteConfig converts valid routes into route config entries.
+// Each route's rules are processed via buildProxyRoutes which handles
+// backend resolution and ReferenceGrant checks.
 // Returns the route config, a map of routes with denied backend refs, and
 // any transient error from ReferenceGrant checks.
-func buildRouteConfig(ctx context.Context, r client.Reader, routes []*gatewayv1.HTTPRoute) (proxy.Config, map[types.NamespacedName][]string, error) {
+func buildRouteConfig(ctx context.Context, r client.Reader, routes []routeObject) (proxy.Config, map[types.NamespacedName][]string, error) {
 	var cfgRoutes []proxy.Route
 	routesWithDeniedRefs := make(map[types.NamespacedName][]string)
 	for _, route := range routes {
-		owner := route.Namespace + "/" + route.Name
-		for _, rule := range route.Spec.Rules {
-			if len(rule.BackendRefs) == 0 {
-				continue
-			}
-			var backends []proxy.Backend
-			denied := false
-			for _, ref := range rule.BackendRefs {
-				ns := route.Namespace
-				if ref.Namespace != nil {
-					ns = string(*ref.Namespace)
-				}
-				granted, err := backendReferenceGranted(ctx, r, route.Namespace, ns, string(ref.Name))
-				if err != nil {
-					return proxy.Config{}, nil, fmt.Errorf("checking ReferenceGrant for backendRef %s/%s in HTTPRoute %s/%s: %w", ns, ref.Name, route.Namespace, route.Name, err)
-				}
-				if !granted {
-					key := types.NamespacedName{Namespace: route.Namespace, Name: route.Name}
-					routesWithDeniedRefs[key] = append(routesWithDeniedRefs[key], ns+"/"+string(ref.Name))
-					denied = true
-					continue
-				}
-				port := int32(80)
-				if ref.Port != nil {
-					port = *ref.Port
-				}
-				weight := int32(1)
-				if ref.Weight != nil {
-					weight = *ref.Weight
-				}
-				service := fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", string(ref.Name), ns, port)
-				backends = append(backends, proxy.Backend{Service: service, Weight: weight})
-			}
-			if denied || len(backends) == 0 {
-				continue
-			}
-			var sp *proxy.SessionPersistence
-			if rule.SessionPersistence != nil {
-				spType := "Cookie"
-				if rule.SessionPersistence.Type != nil {
-					spType = string(*rule.SessionPersistence.Type)
-				}
-				sessionName := "cgw-session"
-				if spType == "Header" {
-					sessionName = "X-Cgw-Session"
-				}
-				if rule.SessionPersistence.SessionName != nil {
-					sessionName = *rule.SessionPersistence.SessionName
-				}
-				sp = &proxy.SessionPersistence{
-					Type:        spType,
-					SessionName: sessionName,
-				}
-				if rule.SessionPersistence.AbsoluteTimeout != nil {
-					sp.AbsoluteTimeout = string(*rule.SessionPersistence.AbsoluteTimeout)
-				}
-				if rule.SessionPersistence.IdleTimeout != nil {
-					sp.IdleTimeout = string(*rule.SessionPersistence.IdleTimeout)
-				}
-				if rule.SessionPersistence.CookieConfig != nil && rule.SessionPersistence.CookieConfig.LifetimeType != nil {
-					sp.CookieLifetimeType = string(*rule.SessionPersistence.CookieConfig.LifetimeType)
-				} else {
-					sp.CookieLifetimeType = "Session"
-				}
-			}
-			pathPrefix := pathFromMatches(rule.Matches)
-			for _, hostname := range route.Spec.Hostnames {
-				cfgRoutes = append(cfgRoutes, proxy.Route{
-					Hostname:           string(hostname),
-					PathPrefix:         pathPrefix,
-					Owner:              owner,
-					Backends:           backends,
-					SessionPersistence: sp,
-				})
-			}
+		proxyRoutes, deniedRefs, err := route.buildProxyRoutes(ctx, r)
+		if err != nil {
+			return proxy.Config{}, nil, err
+		}
+		cfgRoutes = append(cfgRoutes, proxyRoutes...)
+		if len(deniedRefs) > 0 {
+			routesWithDeniedRefs[route.key()] = deniedRefs
 		}
 	}
 	return proxy.Config{Routes: cfgRoutes}, routesWithDeniedRefs, nil

@@ -107,6 +107,12 @@ func (p *Proxy) isHealthRequest(r *http.Request) bool {
 	return host == p.healthHostname && r.URL.Path == "/"
 }
 
+// isGRPC reports whether the request is a gRPC request by checking if the
+// Content-Type header starts with "application/grpc".
+func isGRPC(r *http.Request) bool {
+	return strings.HasPrefix(r.Header.Get("Content-Type"), "application/grpc")
+}
+
 // resolveBackend matches a request to a route and picks a backend.
 // Returns the route, backend, whether a session was hit, and the
 // session createdAt timestamp (for cookie re-issue).
@@ -116,7 +122,7 @@ func (p *Proxy) resolveBackend(r *http.Request) (*Route, *Backend, bool, int64, 
 		return nil, nil, false, 0, errConfigNotLoaded
 	}
 
-	route := matchRoute(cfg, r.Host, r.URL.Path)
+	route := matchRoute(cfg, r.Host, r.URL.Path, isGRPC(r))
 	if route == nil {
 		return nil, nil, false, 0, errNoRoute
 	}
@@ -146,10 +152,10 @@ var (
 	errNoBackend       = fmt.Errorf("no available backend")
 )
 
-// ServeHTTP implements http.Handler. It matches the request by hostname (exact)
-// then longest PathPrefix, picks a weighted backend, and forwards the request
-// with DisableKeepAlives so each request opens a fresh TCP connection through
-// kube-proxy.
+// ServeHTTP implements http.Handler. It is called by cloudflared's origin proxy
+// for regular HTTP requests (not WebSocket or gRPC). It matches the request by
+// hostname (exact) then longest PathPrefix, picks a weighted backend, and
+// forwards the request via httputil.ReverseProxy.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if p.isHealthRequest(r) {
 		w.WriteHeader(http.StatusOK)
@@ -181,30 +187,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Set or re-issue cookie (cookie-based persistence only).
 	// Re-issue on every response when idleTimeout is configured to refresh lastActivity.
-	if sp := route.SessionPersistence; sp != nil && sp.Type == "Cookie" && (!sessionHit || sp.idleTimeout > 0) {
-		backendID := backend.id
-		createdAt := sessionCreatedAt
-		if !sessionHit {
-			createdAt = time.Now().Unix()
-		}
-		cookiePath := route.PathPrefix
-		if cookiePath == "" {
-			cookiePath = "/"
-		}
+	if needsSessionCookie(route, sessionHit) {
 		proxy.ModifyResponse = func(resp *http.Response) error {
-			cookie := &http.Cookie{
-				Name:     sp.SessionName,
-				Value:    sessionCookieValue(backendID, createdAt, sp.idleTimeout > 0),
-				Path:     cookiePath,
-				HttpOnly: true,
-				SameSite: http.SameSiteLaxMode,
-			}
-			if sp.CookieLifetimeType == "Permanent" {
-				cookie.MaxAge = cookieMaxAge(sp, createdAt)
-			}
-			if v := cookie.String(); v != "" {
-				resp.Header.Add("Set-Cookie", v)
-			}
+			setSessionCookie(resp.Header, route, backend, sessionHit, sessionCreatedAt)
 			return nil
 		}
 	}
@@ -212,11 +197,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	proxy.ServeHTTP(w, r)
 }
 
-// RoundTrip implements http.RoundTripper. It resolves the backend using the
-// same routing logic as ServeHTTP, rewrites the request URL, and performs a
-// direct HTTP round-trip to the backend. This is used by the tunnel's origin
-// proxy for WebSocket upgrades, where httputil.ReverseProxy's Hijack-based
-// handling doesn't work with QUIC streams.
+// RoundTrip implements http.RoundTripper. It is called by cloudflared's origin
+// proxy for WebSocket upgrades and gRPC requests, which require direct control
+// over the HTTP round-trip (httputil.ReverseProxy's Hijack-based WebSocket
+// handling doesn't work with cloudflared's streams, and gRPC needs HTTP/2
+// framing with body flushing for streaming RPCs). It resolves the backend using
+// the same routing logic as ServeHTTP and rewrites the request URL.
 func (p *Proxy) RoundTrip(r *http.Request) (*http.Response, error) {
 	if p.isHealthRequest(r) {
 		return &http.Response{
@@ -226,19 +212,31 @@ func (p *Proxy) RoundTrip(r *http.Request) (*http.Response, error) {
 		}, nil
 	}
 
-	route, backend, _, _, err := p.resolveBackend(r)
+	route, backend, sessionHit, sessionCreatedAt, err := p.resolveBackend(r)
 	if err != nil {
 		return nil, err
 	}
 
 	r.URL.Scheme = backend.serviceURL.Scheme
 	r.URL.Host = backend.serviceURL.Host
-	return transportForRoute(route).RoundTrip(r)
+	resp, err := transportForRoute(route).RoundTrip(r)
+	if err != nil {
+		return nil, err
+	}
+
+	if needsSessionCookie(route, sessionHit) {
+		setSessionCookie(resp.Header, route, backend, sessionHit, sessionCreatedAt)
+	}
+	return resp, nil
 }
 
+// ProtocolGRPC is the Protocol value for gRPC routes.
+const ProtocolGRPC = "grpc"
+
 // transportForRoute returns the appropriate HTTP transport for the route's protocol.
+// gRPC routes use h2c (HTTP/2 cleartext); everything else uses HTTP/1.1.
 func transportForRoute(route *Route) http.RoundTripper {
-	if route.Protocol == "h2c" {
+	if route.Protocol == ProtocolGRPC {
 		return h2cTransport
 	}
 	return noKeepAliveTransport
@@ -374,6 +372,39 @@ func cookieMaxAge(sp *SessionPersistence, createdAt int64) int {
 	}
 }
 
+// needsSessionCookie reports whether a session cookie should be set or
+// re-issued on the response.
+func needsSessionCookie(route *Route, sessionHit bool) bool {
+	sp := route.SessionPersistence
+	return sp != nil && sp.Type == "Cookie" && (!sessionHit || sp.idleTimeout > 0)
+}
+
+// setSessionCookie adds a Set-Cookie header for session persistence.
+func setSessionCookie(h http.Header, route *Route, backend *Backend, sessionHit bool, sessionCreatedAt int64) {
+	sp := route.SessionPersistence
+	createdAt := sessionCreatedAt
+	if !sessionHit {
+		createdAt = time.Now().Unix()
+	}
+	cookiePath := route.PathPrefix
+	if cookiePath == "" {
+		cookiePath = "/"
+	}
+	cookie := &http.Cookie{
+		Name:     sp.SessionName,
+		Value:    sessionCookieValue(backend.id, createdAt, sp.idleTimeout > 0),
+		Path:     cookiePath,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	}
+	if sp.CookieLifetimeType == "Permanent" {
+		cookie.MaxAge = cookieMaxAge(sp, createdAt)
+	}
+	if v := cookie.String(); v != "" {
+		h.Add("Set-Cookie", v)
+	}
+}
+
 // pickBackend selects a backend from the route using weighted random selection.
 // Backends with weight 0 are never selected. Returns nil if no backend is
 // available (empty slice or all weights are 0).
@@ -394,8 +425,10 @@ func pickBackend(route *Route) *Backend {
 }
 
 // matchRoute finds the best matching route: exact hostname match via the
-// precomputed index, then longest PathPrefix. Returns nil if no route matches.
-func matchRoute(cfg *Config, host, path string) *Route {
+// precomputed index, protocol match, then longest PathPrefix. gRPC requests
+// only match routes with Protocol "grpc"; non-gRPC requests only match routes
+// without a protocol set. Returns nil if no route matches.
+func matchRoute(cfg *Config, host, path string, grpc bool) *Route {
 	// Strip port from host if present.
 	if i := strings.LastIndex(host, ":"); i != -1 {
 		host = host[:i]
@@ -405,6 +438,9 @@ func matchRoute(cfg *Config, host, path string) *Route {
 	var best *Route
 	bestLen := -1
 	for _, r := range routes {
+		if grpc != (r.Protocol == ProtocolGRPC) {
+			continue
+		}
 		prefix := r.PathPrefix
 		if prefix == "" {
 			prefix = "/"

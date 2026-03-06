@@ -24,6 +24,7 @@
 IMAGE="${IMAGE:-cloudflare-gateway-controller:dev}"
 CREDENTIALS_FILE="${CREDENTIALS_FILE:-./api.token}"
 CFGWCTL="${CFGWCTL:-./bin/cfgwctl}"
+PATH="$(pwd)/bin:$PATH"
 CHART_DIR="charts/cloudflare-gateway-controller"
 RELEASE_NAME="cloudflare-gateway-controller"
 CONTROLLER_NS="cfgw-system"

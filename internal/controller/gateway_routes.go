@@ -31,7 +31,7 @@ type gatewayValidationError struct {
 	cond metav1.Condition
 }
 
-// routeConditions holds the pre-computed condition values for an HTTPRoute's
+// routeConditions holds the pre-computed condition values for a route's
 // status.parents entry (ResolvedRefs, DNS, Ready).
 type routeConditions struct {
 	resolvedRefsStatus                  metav1.ConditionStatus
@@ -86,7 +86,7 @@ func validateGateway(gw *gatewayv1.Gateway) *gatewayValidationError {
 
 	if l.Hostname != nil {
 		return rejectedCond(gatewayv1.GatewayReasonListenersNotValid,
-			"spec.listeners[0].hostname is not supported; use HTTPRoute hostnames instead")
+			"spec.listeners[0].hostname is not supported; use route hostnames instead")
 	}
 
 	if l.AllowedRoutes != nil && len(l.AllowedRoutes.Kinds) > 0 {
@@ -95,8 +95,8 @@ func validateGateway(gw *gatewayv1.Gateway) *gatewayValidationError {
 			if k.Group != nil {
 				group = *k.Group
 			}
-			if group != gatewayv1.Group(gatewayv1.GroupName) || string(k.Kind) != apiv1.KindHTTPRoute {
-				msg := fmt.Sprintf("Only HTTPRoute kind is supported in spec.listeners[0].allowedRoutes.kinds, got %s/%s", group, k.Kind)
+			if group != gatewayv1.Group(gatewayv1.GroupName) || (string(k.Kind) != apiv1.KindHTTPRoute && string(k.Kind) != apiv1.KindGRPCRoute) {
+				msg := fmt.Sprintf("Only HTTPRoute and GRPCRoute kinds are supported in spec.listeners[0].allowedRoutes.kinds, got %s/%s", group, k.Kind)
 				return rejectedCond(gatewayv1.GatewayReasonListenersNotValid, msg)
 			}
 		}
@@ -210,49 +210,47 @@ func validateParameters(params *apiv1.CloudflareGatewayParameters) *gatewayValid
 	return nil
 }
 
-// listGatewayRoutes filters non-deleting HTTPRoutes from the pre-fetched list that
+// listGatewayRoutes filters non-deleting routes from the pre-fetched list that
 // reference the given Gateway via spec.parentRefs. Cross-namespace routes are only
 // included if the Gateway's listener allowedRoutes configuration permits the route's
 // namespace. Denied routes are returned separately so the caller can report them.
 // Routes that appear in allRoutes but do not have a matching parentRef (e.g. stale
 // status.parents entries from a previous parentRef) are returned as stale.
-func listGatewayRoutes(ctx context.Context, r client.Client, allRoutes *gatewayv1.HTTPRouteList, gw *gatewayv1.Gateway) (allowed, denied, stale []*gatewayv1.HTTPRoute, err error) {
-	for i := range allRoutes.Items {
-		hr := &allRoutes.Items[i]
-
-		if !hr.DeletionTimestamp.IsZero() {
+func listGatewayRoutes(ctx context.Context, r client.Client, allRoutes []routeObject, gw *gatewayv1.Gateway) (allowed, denied, stale []routeObject, err error) {
+	for _, route := range allRoutes {
+		if !route.obj().GetDeletionTimestamp().IsZero() {
 			continue
 		}
 
 		// Check if the route actually has a parentRef to this Gateway.
 		hasParentRef := false
-		for _, ref := range hr.Spec.ParentRefs {
-			if parentRefMatches(ref, gw, hr.Namespace) {
+		for _, ref := range route.parentRefs() {
+			if parentRefMatches(ref, gw, route.obj().GetNamespace()) {
 				hasParentRef = true
 				break
 			}
 		}
 		if !hasParentRef {
 			// Route appeared in the index via a stale status.parents entry.
-			stale = append(stale, hr)
+			stale = append(stale, route)
 			continue
 		}
 
-		ok, checkErr := routeNamespaceAllowed(ctx, r, gw, hr.Namespace)
+		ok, checkErr := routeNamespaceAllowed(ctx, r, gw, route.obj().GetNamespace())
 		if checkErr != nil {
-			return nil, nil, nil, fmt.Errorf("checking allowedRoutes for HTTPRoute %s/%s: %w", hr.Namespace, hr.Name, checkErr)
+			return nil, nil, nil, fmt.Errorf("checking allowedRoutes for %s %s/%s: %w", route.routeKind(), route.obj().GetNamespace(), route.obj().GetName(), checkErr)
 		}
 		if !ok {
-			denied = append(denied, hr)
+			denied = append(denied, route)
 			continue
 		}
-		allowed = append(allowed, hr)
+		allowed = append(allowed, route)
 	}
-	slices.SortFunc(allowed, func(a, b *gatewayv1.HTTPRoute) int {
-		return strings.Compare(a.Namespace+"/"+a.Name, b.Namespace+"/"+b.Name)
+	slices.SortFunc(allowed, func(a, b routeObject) int {
+		return strings.Compare(a.obj().GetNamespace()+"/"+a.obj().GetName(), b.obj().GetNamespace()+"/"+b.obj().GetName())
 	})
-	slices.SortFunc(denied, func(a, b *gatewayv1.HTTPRoute) int {
-		return strings.Compare(a.Namespace+"/"+a.Name, b.Namespace+"/"+b.Name)
+	slices.SortFunc(denied, func(a, b routeObject) int {
+		return strings.Compare(a.obj().GetNamespace()+"/"+a.obj().GetName(), b.obj().GetNamespace()+"/"+b.obj().GetName())
 	})
 	return allowed, denied, stale, nil
 }
@@ -304,6 +302,10 @@ func buildListenerStatuses(gw *gatewayv1.Gateway, attachedRoutes map[gatewayv1.S
 				{
 					Group: new(gatewayv1.Group(gatewayv1.GroupVersion.Group)),
 					Kind:  apiv1.KindHTTPRoute,
+				},
+				{
+					Group: new(gatewayv1.Group(gatewayv1.GroupVersion.Group)),
+					Kind:  apiv1.KindGRPCRoute,
 				},
 			},
 			AttachedRoutes: attachedRoutes[l.Name],
@@ -401,17 +403,18 @@ func addressesChanged(existing, desired []gatewayv1.GatewayStatusAddress) bool {
 }
 
 // filterNoMatchingParentRoutes rejects routes where every parentRef to the
-// Gateway specifies a sectionName that doesn't match any listener, returning
-// the remaining routes and any non-fatal errors from status patches.
-func (r *GatewayReconciler) filterNoMatchingParentRoutes(ctx context.Context, gw *gatewayv1.Gateway, routes []*gatewayv1.HTTPRoute) ([]*gatewayv1.HTTPRoute, []string) {
-	var matched []*gatewayv1.HTTPRoute
+// Gateway specifies a sectionName that doesn't match any listener (or the
+// listener doesn't allow the route's kind), returning the remaining routes
+// and any non-fatal errors from status patches.
+func (r *GatewayReconciler) filterNoMatchingParentRoutes(ctx context.Context, gw *gatewayv1.Gateway, routes []routeObject) ([]routeObject, []string) {
+	var matched []routeObject
 	var errs []string
 	for _, route := range routes {
 		if !hasMatchingListener(gw, route) {
 			msg := fmt.Sprintf("No listener matches the sectionName(s) in parentRefs for Gateway %s/%s", gw.Namespace, gw.Name)
 			if err := r.rejectRouteStatus(ctx, gw, route,
 				string(gatewayv1.RouteReasonNoMatchingParent), msg); err != nil {
-				errs = append(errs, fmt.Sprintf("failed to update no-matching-parent HTTPRoute %s/%s status: %v", route.Namespace, route.Name, err))
+				errs = append(errs, fmt.Sprintf("failed to update no-matching-parent %s %s status: %v", route.routeKind(), route.key(), err))
 			}
 			continue
 		}
@@ -421,19 +424,24 @@ func (r *GatewayReconciler) filterNoMatchingParentRoutes(ctx context.Context, gw
 }
 
 // hasMatchingListener reports whether at least one parentRef targeting the
-// given Gateway has a valid sectionName (nil or matching an actual listener).
-// Routes where every parentRef specifies a non-existent sectionName should be
-// rejected with RouteReasonNoMatchingParent.
-func hasMatchingListener(gw *gatewayv1.Gateway, route *gatewayv1.HTTPRoute) bool {
-	for _, ref := range route.Spec.ParentRefs {
-		if !parentRefMatches(ref, gw, route.Namespace) {
+// given Gateway has a valid sectionName (nil or matching an actual listener)
+// and the listener allows the route's kind. Routes where no parentRef matches
+// should be rejected with RouteReasonNoMatchingParent.
+func hasMatchingListener(gw *gatewayv1.Gateway, route routeObject) bool {
+	for _, ref := range route.parentRefs() {
+		if !parentRefMatches(ref, gw, route.obj().GetNamespace()) {
 			continue
 		}
 		if ref.SectionName == nil {
-			return true
+			for _, l := range gw.Spec.Listeners {
+				if listenerAllowsKind(l, route.routeKind()) {
+					return true
+				}
+			}
+			continue
 		}
 		for _, l := range gw.Spec.Listeners {
-			if l.Name == *ref.SectionName {
+			if l.Name == *ref.SectionName && listenerAllowsKind(l, route.routeKind()) {
 				return true
 			}
 		}
@@ -441,27 +449,28 @@ func hasMatchingListener(gw *gatewayv1.Gateway, route *gatewayv1.HTTPRoute) bool
 	return false
 }
 
-// countAttachedRoutes counts the number of allowed HTTPRoutes attached to each
-// listener of the given Gateway. Routes without a sectionName count toward all listeners.
-func countAttachedRoutes(routes []*gatewayv1.HTTPRoute, gw *gatewayv1.Gateway) map[gatewayv1.SectionName]int32 {
+// countAttachedRoutes counts the number of allowed routes attached to each
+// listener of the given Gateway. Routes without a sectionName count toward
+// listeners that allow their kind.
+func countAttachedRoutes(routes []routeObject, gw *gatewayv1.Gateway) map[gatewayv1.SectionName]int32 {
 	counts := make(map[gatewayv1.SectionName]int32)
-	for _, hr := range routes {
-		for _, ref := range hr.Spec.ParentRefs {
-			if !parentRefMatches(ref, gw, hr.Namespace) {
+	for _, route := range routes {
+		for _, ref := range route.parentRefs() {
+			if !parentRefMatches(ref, gw, route.obj().GetNamespace()) {
 				continue
 			}
 			if ref.SectionName != nil {
-				// Only count if the sectionName matches an actual listener.
 				for _, l := range gw.Spec.Listeners {
-					if l.Name == *ref.SectionName {
+					if l.Name == *ref.SectionName && listenerAllowsKind(l, route.routeKind()) {
 						counts[*ref.SectionName]++
 						break
 					}
 				}
 			} else {
-				// Attach to all listeners.
 				for _, l := range gw.Spec.Listeners {
-					counts[l.Name]++
+					if listenerAllowsKind(l, route.routeKind()) {
+						counts[l.Name]++
+					}
 				}
 			}
 		}
@@ -507,38 +516,54 @@ func findRouteParentStatus(statuses []gatewayv1.RouteParentStatus, gw *gatewayv1
 }
 
 // removeRouteStatuses removes this Gateway's entry from status.parents on all
-// HTTPRoutes that reference it. This is called during Gateway finalization.
+// routes (HTTPRoute and GRPCRoute) that reference it. Called during finalization.
 func (r *GatewayReconciler) removeRouteStatuses(ctx context.Context, gw *gatewayv1.Gateway) error {
-	var routes gatewayv1.HTTPRouteList
-	if err := r.List(ctx, &routes, client.MatchingFields{
-		indexHTTPRouteParentGateway: gw.Namespace + "/" + gw.Name,
+	gwKey := gw.Namespace + "/" + gw.Name
+
+	var httpRoutes gatewayv1.HTTPRouteList
+	if err := r.List(ctx, &httpRoutes, client.MatchingFields{
+		indexHTTPRouteParentGateway: gwKey,
 	}); err != nil {
-		return fmt.Errorf("listing HTTPRoutes for gateway %s/%s: %w", gw.Namespace, gw.Name, err)
+		return fmt.Errorf("listing HTTPRoutes for gateway %s: %w", gwKey, err)
 	}
-	for i := range routes.Items {
-		if err := r.removeRouteStatus(ctx, gw, &routes.Items[i]); err != nil {
+	for i := range httpRoutes.Items {
+		if err := r.removeRouteStatus(ctx, gw, &httpRouteObject{route: &httpRoutes.Items[i]}); err != nil {
 			return err
 		}
 	}
+
+	var grpcRoutes gatewayv1.GRPCRouteList
+	if err := r.List(ctx, &grpcRoutes, client.MatchingFields{
+		indexGRPCRouteParentGateway: gwKey,
+	}); err != nil {
+		return fmt.Errorf("listing GRPCRoutes for gateway %s: %w", gwKey, err)
+	}
+	for i := range grpcRoutes.Items {
+		if err := r.removeRouteStatus(ctx, gw, &grpcRouteObject{route: &grpcRoutes.Items[i]}); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
 // removeRouteStatus removes this Gateway's entry from status.parents on a
-// single HTTPRoute. This is used for stale routes (parentRef removed) and
+// single route. This is used for stale routes (parentRef removed) and
 // during Gateway finalization.
-func (r *GatewayReconciler) removeRouteStatus(ctx context.Context, gw *gatewayv1.Gateway, route *gatewayv1.HTTPRoute) error {
-	routeKey := client.ObjectKeyFromObject(route)
+func (r *GatewayReconciler) removeRouteStatus(ctx context.Context, gw *gatewayv1.Gateway, route routeObject) error {
+	routeKey := route.key()
 	patched := false
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		if err := r.Get(ctx, routeKey, route); err != nil {
+		if err := r.Get(ctx, routeKey, route.obj()); err != nil {
 			return client.IgnoreNotFound(err)
 		}
-		if findRouteParentStatus(route.Status.Parents, gw) == nil {
+		if findRouteParentStatus(*route.routeParents(), gw) == nil {
 			return nil
 		}
-		patch := client.MergeFromWithOptions(route.DeepCopy(), client.MergeFromWithOptimisticLock{})
-		filtered := make([]gatewayv1.RouteParentStatus, 0, len(route.Status.Parents))
-		for _, s := range route.Status.Parents {
+		patch := client.MergeFromWithOptions(route.deepCopy(), client.MergeFromWithOptimisticLock{})
+		parents := route.routeParents()
+		filtered := make([]gatewayv1.RouteParentStatus, 0, len(*parents))
+		for _, s := range *parents {
 			if s.ControllerName == apiv1.ControllerName &&
 				string(s.ParentRef.Name) == gw.Name &&
 				s.ParentRef.Namespace != nil && string(*s.ParentRef.Namespace) == gw.Namespace {
@@ -546,53 +571,54 @@ func (r *GatewayReconciler) removeRouteStatus(ctx context.Context, gw *gatewayv1
 			}
 			filtered = append(filtered, s)
 		}
-		route.Status.Parents = filtered
+		*parents = filtered
 		patched = true
-		if err := r.Status().Patch(ctx, route, patch); err != nil {
-			return fmt.Errorf("removing status entry from HTTPRoute %s/%s: %w", route.Namespace, route.Name, err)
+		if err := r.Status().Patch(ctx, route.obj(), patch); err != nil {
+			return fmt.Errorf("removing status entry from %s %s: %w", route.routeKind(), routeKey, err)
 		}
 		return nil
 	})
 	if patched {
-		log.FromContext(ctx).V(1).Info("Removed status entry from HTTPRoute", "httproute", routeKey)
-		r.Eventf(route, gw, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded,
+		log.FromContext(ctx).V(1).Info("Removed status entry from route", "kind", route.routeKind(), "route", routeKey)
+		r.Eventf(route.obj(), gw, corev1.EventTypeNormal, apiv1.ReasonReconciliationSucceeded,
 			apiv1.EventActionReconcile, "Removed status entry for Gateway %s/%s", gw.Namespace, gw.Name)
 	}
 	return err
 }
 
 // updateDeniedRouteStatus sets Accepted=False/NotAllowedByListeners on the
-// status.parents entry for this Gateway on a denied HTTPRoute (cross-namespace
+// status.parents entry for this Gateway on a denied route (cross-namespace
 // route not permitted by the Gateway's listener allowedRoutes configuration).
 // Any stale conditions from a previous reconciliation (e.g. DNS) are removed.
-func (r *GatewayReconciler) updateDeniedRouteStatus(ctx context.Context, gw *gatewayv1.Gateway, route *gatewayv1.HTTPRoute) error {
+func (r *GatewayReconciler) updateDeniedRouteStatus(ctx context.Context, gw *gatewayv1.Gateway, route routeObject) error {
 	acceptedType := string(gatewayv1.RouteConditionAccepted)
 	acceptedStatus := metav1.ConditionFalse
 	acceptedReason := string(gatewayv1.RouteReasonNotAllowedByListeners)
-	acceptedMsg := fmt.Sprintf("Route namespace %q not allowed by any listener on Gateway %s/%s", route.Namespace, gw.Namespace, gw.Name)
+	acceptedMsg := fmt.Sprintf("Route namespace %q not allowed by any listener on Gateway %s/%s", route.obj().GetNamespace(), gw.Namespace, gw.Name)
 
-	routeKey := client.ObjectKeyFromObject(route)
+	routeKey := route.key()
 	patched := false
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		if err := r.Get(ctx, routeKey, route); err != nil {
+		if err := r.Get(ctx, routeKey, route.obj()); err != nil {
 			return client.IgnoreNotFound(err)
 		}
 
-		existing := findRouteParentStatus(route.Status.Parents, gw)
+		existing := findRouteParentStatus(*route.routeParents(), gw)
 
 		// Skip if the entry already has exactly the right condition.
 		if existing != nil &&
 			len(existing.Conditions) == 1 &&
 			!conditions.Changed(existing.Conditions, acceptedType, acceptedStatus,
-				acceptedReason, acceptedMsg, route.Generation) {
+				acceptedReason, acceptedMsg, route.generation()) {
 			return nil
 		}
 
-		patch := client.MergeFromWithOptions(route.DeepCopy(), client.MergeFromWithOptimisticLock{})
+		patch := client.MergeFromWithOptions(route.deepCopy(), client.MergeFromWithOptimisticLock{})
 		now := metav1.Now()
 
+		parents := route.routeParents()
 		if existing == nil {
-			route.Status.Parents = append(route.Status.Parents, gatewayv1.RouteParentStatus{
+			*parents = append(*parents, gatewayv1.RouteParentStatus{
 				ParentRef: gatewayv1.ParentReference{
 					Group:     new(gatewayv1.Group(gatewayv1.GroupName)),
 					Kind:      new(gatewayv1.Kind(apiv1.KindGateway)),
@@ -601,7 +627,7 @@ func (r *GatewayReconciler) updateDeniedRouteStatus(ctx context.Context, gw *gat
 				},
 				ControllerName: apiv1.ControllerName,
 			})
-			existing = &route.Status.Parents[len(route.Status.Parents)-1]
+			existing = &(*parents)[len(*parents)-1]
 		}
 
 		// Replace all conditions with just Accepted=False/NotAllowedByListeners,
@@ -611,7 +637,7 @@ func (r *GatewayReconciler) updateDeniedRouteStatus(ctx context.Context, gw *gat
 			{
 				Type:               acceptedType,
 				Status:             acceptedStatus,
-				ObservedGeneration: route.Generation,
+				ObservedGeneration: route.generation(),
 				LastTransitionTime: now,
 				Reason:             acceptedReason,
 				Message:            acceptedMsg,
@@ -619,11 +645,11 @@ func (r *GatewayReconciler) updateDeniedRouteStatus(ctx context.Context, gw *gat
 		})
 
 		patched = true
-		return r.Status().Patch(ctx, route, patch)
+		return r.Status().Patch(ctx, route.obj(), patch)
 	})
 	if patched {
-		log.FromContext(ctx).V(1).Info("Patched denied HTTPRoute status", "httproute", routeKey)
-		r.Eventf(route, gw, corev1.EventTypeWarning, acceptedReason,
+		log.FromContext(ctx).V(1).Info("Patched denied route status", "kind", route.routeKind(), "route", routeKey)
+		r.Eventf(route.obj(), gw, corev1.EventTypeWarning, acceptedReason,
 			apiv1.EventActionReconcile, acceptedMsg)
 	}
 	return err
@@ -694,7 +720,7 @@ func validateHTTPRoute(route *gatewayv1.HTTPRoute) []string {
 
 // filterConflictingRoutes reads the existing route ConfigMap, detects conflicts,
 // rejects conflicting routes, and returns the filtered list of non-conflicting routes.
-func (r *GatewayReconciler) filterConflictingRoutes(ctx context.Context, gw *gatewayv1.Gateway, validRoutes []*gatewayv1.HTTPRoute) ([]*gatewayv1.HTTPRoute, []string, error) {
+func (r *GatewayReconciler) filterConflictingRoutes(ctx context.Context, gw *gatewayv1.Gateway, validRoutes []routeObject) ([]routeObject, []string, error) {
 	existingRouteConfig, err := r.getExistingRouteConfig(ctx, gw)
 	if err != nil {
 		return nil, nil, err
@@ -703,15 +729,14 @@ func (r *GatewayReconciler) filterConflictingRoutes(ctx context.Context, gw *gat
 	if len(conflicting) == 0 {
 		return validRoutes, nil, nil
 	}
-	var filtered []*gatewayv1.HTTPRoute
+	var filtered []routeObject
 	var errs []string
 	for _, route := range validRoutes {
-		key := types.NamespacedName{Namespace: route.Namespace, Name: route.Name}
-		if issues, ok := conflicting[key]; ok {
-			msg := "Conflicting hostname/path (already claimed by an earlier HTTPRoute):\n- " + strings.Join(issues, "\n- ")
+		if issues, ok := conflicting[route.key()]; ok {
+			msg := "Conflicting hostname/path (already claimed by an earlier route):\n- " + strings.Join(issues, "\n- ")
 			if err := r.rejectRouteStatus(ctx, gw, route,
 				string(gatewayv1.RouteReasonUnsupportedValue), msg); err != nil {
-				errs = append(errs, fmt.Sprintf("failed to update conflicting HTTPRoute %s/%s status: %v", route.Namespace, route.Name, err))
+				errs = append(errs, fmt.Sprintf("failed to update conflicting %s %s status: %v", route.routeKind(), route.key(), err))
 			}
 			continue
 		}
@@ -720,13 +745,16 @@ func (r *GatewayReconciler) filterConflictingRoutes(ctx context.Context, gw *gat
 	return filtered, errs, nil
 }
 
-// hostnamePathKey is a (hostname, pathPrefix) pair used to detect conflicting routes.
+// hostnamePathKey is a (hostname, pathPrefix, protocol) tuple used to detect
+// conflicting routes. HTTP and gRPC routes on the same hostname don't conflict
+// because the proxy routes them separately based on Content-Type.
 type hostnamePathKey struct {
 	hostname string
 	path     string
+	protocol string
 }
 
-// findConflictingRoutes detects HTTPRoutes that claim the same (hostname, pathPrefix)
+// findConflictingRoutes detects routes that claim the same (hostname, pathPrefix)
 // pair. When two routes produce identical routing keys, only one can actually receive
 // traffic — the other is silently ignored. This returns a map of conflicting routes
 // (route key -> list of conflicting hostname+path descriptions) so the caller can
@@ -736,7 +764,7 @@ type hostnamePathKey struct {
 // Owner field pre-claim their (hostname, pathPrefix) keys, protecting existing traffic
 // from rogue/malicious tenants. Among routes with the same priority, the first one
 // encountered in the input order claims the key.
-func findConflictingRoutes(existingConfig *proxy.Config, routes []*gatewayv1.HTTPRoute) map[types.NamespacedName][]string {
+func findConflictingRoutes(existingConfig *proxy.Config, routes []routeObject) map[types.NamespacedName][]string {
 	type owner struct {
 		namespace string
 		name      string
@@ -753,7 +781,7 @@ func findConflictingRoutes(existingConfig *proxy.Config, routes []*gatewayv1.HTT
 			if len(parts) != 2 {
 				continue
 			}
-			key := hostnamePathKey{hostname: r.Hostname, path: r.PathPrefix}
+			key := hostnamePathKey{hostname: r.Hostname, path: r.PathPrefix, protocol: r.Protocol}
 			claimed[key] = owner{namespace: parts[0], name: parts[1]}
 		}
 	}
@@ -762,23 +790,19 @@ func findConflictingRoutes(existingConfig *proxy.Config, routes []*gatewayv1.HTT
 	// different route, flag as conflict; otherwise claim it.
 	conflicts := make(map[types.NamespacedName][]string)
 	for _, route := range routes {
-		routeKey := types.NamespacedName{Namespace: route.Namespace, Name: route.Name}
-		for _, rule := range route.Spec.Rules {
-			path := pathFromMatches(rule.Matches)
-			for _, hostname := range route.Spec.Hostnames {
-				key := hostnamePathKey{hostname: string(hostname), path: path}
-				if first, ok := claimed[key]; ok {
-					if first.namespace != route.Namespace || first.name != route.Name {
-						desc := string(hostname)
-						if path != "" {
-							desc += path
-						}
-						conflicts[routeKey] = append(conflicts[routeKey],
-							fmt.Sprintf("%s (claimed by %s/%s)", desc, first.namespace, first.name))
+		routeKey := route.key()
+		for _, hpk := range route.hostnamePathKeys() {
+			if first, ok := claimed[hpk]; ok {
+				if first.namespace != routeKey.Namespace || first.name != routeKey.Name {
+					desc := hpk.hostname
+					if hpk.path != "" {
+						desc += hpk.path
 					}
-				} else {
-					claimed[key] = owner{namespace: route.Namespace, name: route.Name}
+					conflicts[routeKey] = append(conflicts[routeKey],
+						fmt.Sprintf("%s (claimed by %s/%s)", desc, first.namespace, first.name))
 				}
+			} else {
+				claimed[hpk] = owner{namespace: routeKey.Namespace, name: routeKey.Name}
 			}
 		}
 	}
@@ -786,35 +810,36 @@ func findConflictingRoutes(existingConfig *proxy.Config, routes []*gatewayv1.HTT
 }
 
 // rejectRouteStatus sets Accepted=False on the status.parents entry for this
-// Gateway on an HTTPRoute. Any stale conditions from a previous
-// reconciliation are removed.
-func (r *GatewayReconciler) rejectRouteStatus(ctx context.Context, gw *gatewayv1.Gateway, route *gatewayv1.HTTPRoute, reason, msg string) error {
+// Gateway on a route. Any stale conditions from a previous reconciliation
+// are removed.
+func (r *GatewayReconciler) rejectRouteStatus(ctx context.Context, gw *gatewayv1.Gateway, route routeObject, reason, msg string) error {
 	acceptedType := string(gatewayv1.RouteConditionAccepted)
 	acceptedStatus := metav1.ConditionFalse
 	acceptedReason := reason
 	acceptedMsg := msg
 
-	routeKey := client.ObjectKeyFromObject(route)
+	routeKey := route.key()
 	patched := false
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		if err := r.Get(ctx, routeKey, route); err != nil {
+		if err := r.Get(ctx, routeKey, route.obj()); err != nil {
 			return client.IgnoreNotFound(err)
 		}
 
-		existing := findRouteParentStatus(route.Status.Parents, gw)
+		existing := findRouteParentStatus(*route.routeParents(), gw)
 
 		if existing != nil &&
 			len(existing.Conditions) == 1 &&
 			!conditions.Changed(existing.Conditions, acceptedType, acceptedStatus,
-				acceptedReason, acceptedMsg, route.Generation) {
+				acceptedReason, acceptedMsg, route.generation()) {
 			return nil
 		}
 
-		patch := client.MergeFromWithOptions(route.DeepCopy(), client.MergeFromWithOptimisticLock{})
+		patch := client.MergeFromWithOptions(route.deepCopy(), client.MergeFromWithOptimisticLock{})
 		now := metav1.Now()
 
+		parents := route.routeParents()
 		if existing == nil {
-			route.Status.Parents = append(route.Status.Parents, gatewayv1.RouteParentStatus{
+			*parents = append(*parents, gatewayv1.RouteParentStatus{
 				ParentRef: gatewayv1.ParentReference{
 					Group:     new(gatewayv1.Group(gatewayv1.GroupName)),
 					Kind:      new(gatewayv1.Kind(apiv1.KindGateway)),
@@ -823,14 +848,14 @@ func (r *GatewayReconciler) rejectRouteStatus(ctx context.Context, gw *gatewayv1
 				},
 				ControllerName: apiv1.ControllerName,
 			})
-			existing = &route.Status.Parents[len(route.Status.Parents)-1]
+			existing = &(*parents)[len(*parents)-1]
 		}
 
 		existing.Conditions = conditions.Set(existing.Conditions, []metav1.Condition{
 			{
 				Type:               acceptedType,
 				Status:             acceptedStatus,
-				ObservedGeneration: route.Generation,
+				ObservedGeneration: route.generation(),
 				LastTransitionTime: now,
 				Reason:             acceptedReason,
 				Message:            acceptedMsg,
@@ -838,75 +863,77 @@ func (r *GatewayReconciler) rejectRouteStatus(ctx context.Context, gw *gatewayv1
 		})
 
 		patched = true
-		return r.Status().Patch(ctx, route, patch)
+		return r.Status().Patch(ctx, route.obj(), patch)
 	})
 	if patched {
-		log.FromContext(ctx).V(1).Info("Patched invalid HTTPRoute status", "httproute", routeKey)
-		r.Eventf(route, gw, corev1.EventTypeWarning, acceptedReason,
+		log.FromContext(ctx).V(1).Info("Patched invalid route status", "kind", route.routeKind(), "route", routeKey)
+		r.Eventf(route.obj(), gw, corev1.EventTypeWarning, acceptedReason,
 			apiv1.EventActionReconcile, acceptedMsg)
 	}
 	return err
 }
 
-// updateRouteStatuses iterates over allowed HTTPRoutes and delegates to
+// updateRouteStatuses iterates over allowed routes and delegates to
 // updateRouteStatus for each one, collecting non-fatal errors.
-func (r *GatewayReconciler) updateRouteStatuses(ctx context.Context, gw *gatewayv1.Gateway, routes []*gatewayv1.HTTPRoute, routesWithDeniedRefs map[types.NamespacedName][]string, dns dnsPolicy, dnsErr *string, readyStatus metav1.ConditionStatus, readyReason, readyMsg string) []string {
+func (r *GatewayReconciler) updateRouteStatuses(ctx context.Context, gw *gatewayv1.Gateway, routes []routeObject, routesWithDeniedRefs map[types.NamespacedName][]string, dns dnsPolicy, dnsErr *string, readyStatus metav1.ConditionStatus, readyReason, readyMsg string) []string {
 	var errs []string
 	for _, route := range routes {
-		deniedRefs := routesWithDeniedRefs[types.NamespacedName{Namespace: route.Namespace, Name: route.Name}]
+		deniedRefs := routesWithDeniedRefs[route.key()]
 		if err := r.updateRouteStatus(ctx, gw, route, deniedRefs, dns, dnsErr, readyStatus, readyReason, readyMsg); err != nil {
-			errs = append(errs, fmt.Sprintf("failed to update HTTPRoute %s/%s status: %v", route.Namespace, route.Name, err))
+			errs = append(errs, fmt.Sprintf("failed to update %s %s status: %v", route.routeKind(), route.key(), err))
 		}
 	}
 	return errs
 }
 
 // updateRouteStatus updates the status.parents entry for this Gateway on the
-// given HTTPRoute using merge-patch. Condition values are pre-computed by
+// given route using merge-patch. Condition values are pre-computed by
 // buildRouteConditions; this method handles the RetryOnConflict + patch logic.
 // If the entry already exists with up-to-date conditions, no patch is issued.
-func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1.Gateway, route *gatewayv1.HTTPRoute, deniedRefs []string, dns dnsPolicy, dnsErr *string, readyStatus metav1.ConditionStatus, readyReason, readyMsg string) error {
+func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1.Gateway, route routeObject, deniedRefs []string, dns dnsPolicy, dnsErr *string, readyStatus metav1.ConditionStatus, readyReason, readyMsg string) error {
 	acceptedType := string(gatewayv1.RouteConditionAccepted)
 	resolvedRefsType := string(gatewayv1.RouteConditionResolvedRefs)
+	acceptedMsg := route.routeKind() + " is accepted"
 	rc := buildRouteConditions(route, deniedRefs, dns, dnsErr, readyStatus, readyReason, readyMsg)
 
-	routeKey := client.ObjectKeyFromObject(route)
+	routeKey := route.key()
 	patched := false
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		if err := r.Get(ctx, routeKey, route); err != nil {
+		if err := r.Get(ctx, routeKey, route.obj()); err != nil {
 			// NotFound must NOT be ignored: the route was deleted mid-reconciliation
 			// and the controller needs a fresh Reconcile() to clean up DNS records
 			// and tunnel ingress rules associated with this route.
 			return err
 		}
 
-		existing := findRouteParentStatus(route.Status.Parents, gw)
+		existing := findRouteParentStatus(*route.routeParents(), gw)
 
 		// Check if update is needed.
 		if existing != nil {
 			changed := conditions.Changed(existing.Conditions, acceptedType, metav1.ConditionTrue,
-				string(gatewayv1.RouteReasonAccepted), "HTTPRoute is accepted", route.Generation) ||
+				string(gatewayv1.RouteReasonAccepted), acceptedMsg, route.generation()) ||
 				conditions.Changed(existing.Conditions, resolvedRefsType, rc.resolvedRefsStatus,
-					rc.resolvedRefsReason, rc.resolvedRefsMsg, route.Generation)
+					rc.resolvedRefsReason, rc.resolvedRefsMsg, route.generation())
 			if rc.dnsEnabled {
 				changed = changed || conditions.Changed(existing.Conditions, apiv1.ConditionDNSRecordsApplied,
-					rc.dnsStatus, rc.dnsReason, rc.dnsMessage, route.Generation)
+					rc.dnsStatus, rc.dnsReason, rc.dnsMessage, route.generation())
 			} else {
 				// DNS was disabled — check if we need to remove a stale condition.
 				changed = changed || conditions.Find(existing.Conditions, apiv1.ConditionDNSRecordsApplied) != nil
 			}
 			changed = changed || conditions.Changed(existing.Conditions, apiv1.ConditionReady,
-				rc.readyStatus, rc.readyReason, rc.readyMsg, route.Generation)
+				rc.readyStatus, rc.readyReason, rc.readyMsg, route.generation())
 			if !changed {
 				return nil
 			}
 		}
 
-		patch := client.MergeFromWithOptions(route.DeepCopy(), client.MergeFromWithOptimisticLock{})
+		patch := client.MergeFromWithOptions(route.deepCopy(), client.MergeFromWithOptimisticLock{})
 		now := metav1.Now()
 
+		parents := route.routeParents()
 		if existing == nil {
-			route.Status.Parents = append(route.Status.Parents, gatewayv1.RouteParentStatus{
+			*parents = append(*parents, gatewayv1.RouteParentStatus{
 				ParentRef: gatewayv1.ParentReference{
 					Group:     new(gatewayv1.Group(gatewayv1.GroupName)),
 					Kind:      new(gatewayv1.Kind(apiv1.KindGateway)),
@@ -915,24 +942,24 @@ func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1
 				},
 				ControllerName: apiv1.ControllerName,
 			})
-			existing = &route.Status.Parents[len(route.Status.Parents)-1]
+			existing = &(*parents)[len(*parents)-1]
 		}
 
 		existing.Conditions = conditions.Upsert(existing.Conditions, metav1.Condition{
 			Type: acceptedType, Status: metav1.ConditionTrue,
-			ObservedGeneration: route.Generation, LastTransitionTime: now,
-			Reason: string(gatewayv1.RouteReasonAccepted), Message: "HTTPRoute is accepted",
+			ObservedGeneration: route.generation(), LastTransitionTime: now,
+			Reason: string(gatewayv1.RouteReasonAccepted), Message: acceptedMsg,
 		})
 		existing.Conditions = conditions.Upsert(existing.Conditions, metav1.Condition{
 			Type: resolvedRefsType, Status: rc.resolvedRefsStatus,
-			ObservedGeneration: route.Generation, LastTransitionTime: now,
+			ObservedGeneration: route.generation(), LastTransitionTime: now,
 			Reason: rc.resolvedRefsReason, Message: rc.resolvedRefsMsg,
 		})
 
 		if rc.dnsEnabled {
 			existing.Conditions = conditions.Upsert(existing.Conditions, metav1.Condition{
 				Type: apiv1.ConditionDNSRecordsApplied, Status: rc.dnsStatus,
-				ObservedGeneration: route.Generation, LastTransitionTime: now,
+				ObservedGeneration: route.generation(), LastTransitionTime: now,
 				Reason: rc.dnsReason, Message: rc.dnsMessage,
 			})
 		} else {
@@ -941,30 +968,30 @@ func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1
 
 		existing.Conditions = conditions.Upsert(existing.Conditions, metav1.Condition{
 			Type: apiv1.ConditionReady, Status: rc.readyStatus,
-			ObservedGeneration: route.Generation, LastTransitionTime: now,
+			ObservedGeneration: route.generation(), LastTransitionTime: now,
 			Reason: rc.readyReason, Message: rc.readyMsg,
 		})
 
 		patched = true
-		return r.Status().Patch(ctx, route, patch)
+		return r.Status().Patch(ctx, route.obj(), patch)
 	})
 	if patched {
-		log.FromContext(ctx).V(1).Info("Patched HTTPRoute status", "httproute", routeKey)
+		log.FromContext(ctx).V(1).Info("Patched route status", "kind", route.routeKind(), "route", routeKey)
 		eventType := corev1.EventTypeNormal
 		if rc.readyStatus != metav1.ConditionTrue {
 			eventType = corev1.EventTypeWarning
 		}
-		r.Eventf(route, gw, eventType, rc.readyReason,
+		r.Eventf(route.obj(), gw, eventType, rc.readyReason,
 			apiv1.EventActionReconcile, "Ready=%s: %s", rc.readyStatus, rc.readyMsg)
 	}
 	return err
 }
 
-// buildRouteConditions computes the desired condition values for an HTTPRoute's
+// buildRouteConditions computes the desired condition values for a route's
 // status.parents entry: ResolvedRefs, DNS (if enabled), and Ready. The Ready
 // condition starts from the Gateway's readiness and is downgraded when DNS errors
 // exist.
-func buildRouteConditions(route *gatewayv1.HTTPRoute, deniedRefs []string, dns dnsPolicy, dnsErr *string, readyStatus metav1.ConditionStatus, readyReason, readyMsg string) routeConditions {
+func buildRouteConditions(route routeObject, deniedRefs []string, dns dnsPolicy, dnsErr *string, readyStatus metav1.ConditionStatus, readyReason, readyMsg string) routeConditions {
 	rc := routeConditions{
 		resolvedRefsStatus: metav1.ConditionTrue,
 		resolvedRefsReason: string(gatewayv1.RouteReasonResolvedRefs),
@@ -1010,22 +1037,23 @@ func buildRouteConditions(route *gatewayv1.HTTPRoute, deniedRefs []string, dns d
 // routeDNSMessage builds a per-route DNS condition message listing the
 // hostnames that were applied and those that were skipped (not in any
 // configured zone).
-func routeDNSMessage(route *gatewayv1.HTTPRoute, dns dnsPolicy) string {
+func routeDNSMessage(route routeObject, dns dnsPolicy) string {
+	hostnames := route.hostnames()
 	// When all zones are managed, every hostname is applied.
 	if dns.allZones() {
 		var msg strings.Builder
 		msg.WriteString("Applied hostnames:")
-		for _, h := range route.Spec.Hostnames {
+		for _, h := range hostnames {
 			fmt.Fprintf(&msg, "\n- %s", string(h))
 		}
-		if len(route.Spec.Hostnames) == 0 {
+		if len(hostnames) == 0 {
 			msg.WriteString("\n(none)")
 		}
 		return msg.String()
 	}
 
 	var applied, skipped []string
-	for _, h := range route.Spec.Hostnames {
+	for _, h := range hostnames {
 		hostname := string(h)
 		matched := false
 		for _, zoneName := range dns.zones {

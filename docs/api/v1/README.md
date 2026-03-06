@@ -14,8 +14,11 @@ annotations, and conditions.
 - [Gateway](Gateway.md) — Manages a Cloudflare tunnel and its associated
   Kubernetes resources. Supports reconciliation control, on-demand
   reconciliation, and on-demand token rotation via annotations.
-- [HTTPRoute](HTTPRoute.md) — Routes traffic to backend Services by hostname
+- [HTTPRoute](HTTPRoute.md) — Routes HTTP traffic to backend Services by hostname
   and path. Supports traffic splitting, session persistence, and DNS CNAME
+  management.
+- [GRPCRoute](GRPCRoute.md) — Routes gRPC traffic to backend Services by
+  hostname. Supports traffic splitting, session persistence, and DNS CNAME
   management.
 
 ## Custom resources

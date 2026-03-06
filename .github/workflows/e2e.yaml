@@ -107,6 +107,7 @@ jobs:
           - test_reconcile_gateway
           - test_rotate_gateway_token
           - test_health_url
+          - test_podinfo
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -123,6 +124,10 @@ jobs:
           container=$(docker create controller:e2e)
           docker cp "$container":/cfgwctl ./bin/cfgwctl
           docker rm "$container"
+
+      - name: Install podcli
+        if: matrix.test == 'test_podinfo'
+        run: GOBIN=$(pwd)/bin go install github.com/stefanprodan/podinfo/cmd/podcli@master
 
       - name: Write credentials
         env:

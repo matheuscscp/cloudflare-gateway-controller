@@ -456,6 +456,7 @@ func TestGatewayClassReconciler_SupportedFeatures(t *testing.T) {
 		expected := []gatewayv1.SupportedFeature{
 			{Name: gatewayv1.FeatureName(features.SupportGateway)},
 			{Name: gatewayv1.FeatureName(features.SupportGatewayInfrastructurePropagation)},
+			{Name: gatewayv1.FeatureName(features.SupportGRPCRoute)},
 			{Name: gatewayv1.FeatureName(features.SupportHTTPRoute)},
 			{Name: gatewayv1.FeatureName(features.SupportReferenceGrant)},
 		}

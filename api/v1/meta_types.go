@@ -41,6 +41,7 @@ const (
 	KindGatewayClass                = "GatewayClass"
 	KindGateway                     = "Gateway"
 	KindHTTPRoute                   = "HTTPRoute"
+	KindGRPCRoute                   = "GRPCRoute"
 	KindReferenceGrant              = "ReferenceGrant"
 	KindNamespace                   = "Namespace"
 	KindSecret                      = "Secret"

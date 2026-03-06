@@ -54,11 +54,11 @@ func secretReferenceGranted(ctx context.Context, r client.Reader, gatewayNamespa
 	return false, nil
 }
 
-// backendReferenceGranted checks whether an HTTPRoute in routeNamespace is allowed
-// to reference a Service in serviceNamespace. Returns true if both namespaces are
-// the same or if a ReferenceGrant in the Service's namespace permits the
-// cross-namespace reference.
-func backendReferenceGranted(ctx context.Context, r client.Reader, routeNamespace, serviceNamespace, serviceName string) (bool, error) {
+// backendReferenceGranted checks whether a route of the given kind in routeNamespace
+// is allowed to reference a Service in serviceNamespace. Returns true if both
+// namespaces are the same or if a ReferenceGrant in the Service's namespace permits
+// the cross-namespace reference.
+func backendReferenceGranted(ctx context.Context, r client.Reader, routeKind, routeNamespace, serviceNamespace, serviceName string) (bool, error) {
 	if routeNamespace == serviceNamespace {
 		return true, nil
 	}
@@ -73,7 +73,7 @@ func backendReferenceGranted(ctx context.Context, r client.Reader, routeNamespac
 		fromMatch := false
 		for _, from := range grant.Spec.From {
 			if from.Group == gatewayv1beta1.Group(gatewayv1.GroupName) &&
-				from.Kind == gatewayv1beta1.Kind(apiv1.KindHTTPRoute) &&
+				from.Kind == gatewayv1beta1.Kind(routeKind) &&
 				string(from.Namespace) == routeNamespace {
 				fromMatch = true
 				break

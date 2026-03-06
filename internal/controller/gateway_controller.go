@@ -106,6 +106,8 @@ type tunnelState struct {
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=referencegrants,verbs=get;list;watch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;update
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes/status,verbs=update;patch
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=grpcroutes,verbs=get;list;watch;update
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=grpcroutes/status,verbs=update;patch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;get;list;watch;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
@@ -184,10 +186,11 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 }
 
 // reconcile orchestrates the main reconciliation loop for a Gateway:
-// ensure GatewayClass finalizer, validate, list HTTPRoutes, read credentials,
-// create Cloudflare client, filter and validate routes, ensure tunnel and
-// associated Secret/Deployment, clean up stale resources, reconcile tunnel
-// ingress and DNS, check readiness, update HTTPRoute and Gateway statuses.
+// ensure GatewayClass finalizer, validate, list routes (HTTPRoute + GRPCRoute),
+// read credentials, create Cloudflare client, filter and validate routes,
+// ensure tunnel and associated Secret/Deployment, clean up stale resources,
+// reconcile tunnel ingress and DNS, check readiness, update route and Gateway
+// statuses.
 func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway, gc *gatewayv1.GatewayClass) (ctrl.Result, error) {
 	// Ensure GatewayClass finalizer
 	if err := r.ensureGatewayClassFinalizer(ctx, gc, gw); err != nil {
@@ -199,13 +202,30 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		return r.reconcileError(ctx, gw, err.err, err.cond)
 	}
 
-	// List all HTTPRoutes referencing this Gateway once, then reuse the list
-	// for attached route counts, ingress rules, DNS, and status updates.
-	var allRoutes gatewayv1.HTTPRouteList
-	if err := r.List(ctx, &allRoutes, client.MatchingFields{
-		indexHTTPRouteParentGateway: gw.Namespace + "/" + gw.Name,
+	// List all routes (HTTPRoute + GRPCRoute) referencing this Gateway once,
+	// then reuse the list for attached route counts, ingress rules, DNS, and
+	// status updates.
+	gwKey := gw.Namespace + "/" + gw.Name
+	var allRoutes []routeObject
+
+	var httpRoutes gatewayv1.HTTPRouteList
+	if err := r.List(ctx, &httpRoutes, client.MatchingFields{
+		indexHTTPRouteParentGateway: gwKey,
 	}); err != nil {
 		return r.reconcileError(ctx, gw, fmt.Errorf("listing HTTPRoutes: %w", err))
+	}
+	for i := range httpRoutes.Items {
+		allRoutes = append(allRoutes, &httpRouteObject{route: &httpRoutes.Items[i]})
+	}
+
+	var grpcRoutes gatewayv1.GRPCRouteList
+	if err := r.List(ctx, &grpcRoutes, client.MatchingFields{
+		indexGRPCRouteParentGateway: gwKey,
+	}); err != nil {
+		return r.reconcileError(ctx, gw, fmt.Errorf("listing GRPCRoutes: %w", err))
+	}
+	for i := range grpcRoutes.Items {
+		allRoutes = append(allRoutes, &grpcRouteObject{route: &grpcRoutes.Items[i]})
 	}
 
 	// Resolve CloudflareGatewayParameters if referenced.
@@ -248,22 +268,22 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	var changes []string
 	var errs []string
 
-	// Filter HTTPRoutes by parentRef and allowedRoutes.
-	gatewayRoutes, deniedRoutes, staleRoutes, err := listGatewayRoutes(ctx, r.Client, &allRoutes, gw)
+	// Filter routes by parentRef and allowedRoutes.
+	gatewayRoutes, deniedRoutes, staleRoutes, err := listGatewayRoutes(ctx, r.Client, allRoutes, gw)
 	if err != nil {
 		return r.reconcileError(ctx, gw, err)
 	}
 	// Remove stale status.parents entries for routes whose parentRef was removed.
 	for _, route := range staleRoutes {
 		if err := r.removeRouteStatus(ctx, gw, route); err != nil {
-			errs = append(errs, fmt.Sprintf("failed to remove stale HTTPRoute %s/%s status: %v", route.Namespace, route.Name, err))
+			errs = append(errs, fmt.Sprintf("failed to remove stale %s %s status: %v", route.routeKind(), route.key(), err))
 		}
 	}
 	// Set Accepted=False/NotAllowedByListeners on denied routes (cross-namespace
 	// route not permitted by the Gateway's listener allowedRoutes).
 	for _, route := range deniedRoutes {
 		if err := r.updateDeniedRouteStatus(ctx, gw, route); err != nil {
-			errs = append(errs, fmt.Sprintf("failed to update denied HTTPRoute %s/%s status: %v", route.Namespace, route.Name, err))
+			errs = append(errs, fmt.Sprintf("failed to update denied %s %s status: %v", route.routeKind(), route.key(), err))
 		}
 	}
 	// Reject routes where every parentRef to this Gateway specifies a
@@ -271,13 +291,13 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	matchedRoutes, noMatchErrs := r.filterNoMatchingParentRoutes(ctx, gw, gatewayRoutes)
 	errs = append(errs, noMatchErrs...)
 	// Set Accepted=False/UnsupportedValue on routes that use unsupported features.
-	var validRoutes []*gatewayv1.HTTPRoute
+	var validRoutes []routeObject
 	for _, route := range matchedRoutes {
-		if issues := validateHTTPRoute(route); len(issues) > 0 {
+		if issues := route.validate(); len(issues) > 0 {
 			msg := "Unsupported features:\n- " + strings.Join(issues, "\n- ")
 			if err := r.rejectRouteStatus(ctx, gw, route,
 				string(gatewayv1.RouteReasonUnsupportedValue), msg); err != nil {
-				errs = append(errs, fmt.Sprintf("failed to update invalid HTTPRoute %s/%s status: %v", route.Namespace, route.Name, err))
+				errs = append(errs, fmt.Sprintf("failed to update invalid %s %s status: %v", route.routeKind(), route.key(), err))
 			}
 			continue
 		}
@@ -380,15 +400,21 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	// Extract health URL hostname for DNS inclusion.
 	extraHostnames := extraHealthHostnames(params)
 
+	// Extract hostnames from all valid routes for DNS reconciliation.
+	var routeHostnames []gatewayv1.Hostname
+	for _, route := range validRoutes {
+		routeHostnames = append(routeHostnames, route.hostnames()...)
+	}
+
 	// Reconcile DNS, handling zone changes.
-	dnsResult := r.reconcileDNSWithZoneChange(ctx, tc, tunnel.id, validRoutes, dns, extraHostnames)
+	dnsResult := r.reconcileDNSWithZoneChange(ctx, tc, tunnel.id, routeHostnames, dns, extraHostnames)
 	changes = append(changes, dnsResult.changes...)
 	errs = append(errs, dnsResult.errs...)
 
 	// Check readiness of all tunnel Deployments.
 	readiness := r.checkAllDeploymentsReadiness(ctx, gw, replicas)
 
-	// Update HTTPRoute status.parents for allowed routes (after DNS and
+	// Update route status.parents for allowed routes (after DNS and
 	// Deployment checks so we can report DNS status and Gateway readiness).
 	errs = append(errs, r.updateRouteStatuses(ctx, gw, validRoutes, routeDeniedRefs, dns, dnsResult.dnsErr,
 		readiness.readyStatus, readiness.readyReason, readiness.readyMsg)...)
@@ -443,11 +469,11 @@ type dnsResult struct {
 // diffs against the desired set, so no previous-zone tracking is needed.
 func (r *GatewayReconciler) reconcileDNSWithZoneChange(
 	ctx context.Context, tc cloudflare.Client,
-	tunnelID string, validRoutes []*gatewayv1.HTTPRoute,
+	tunnelID string, routeHostnames []gatewayv1.Hostname,
 	dns dnsPolicy, extraHostnames []string,
 ) dnsResult {
 	var res dnsResult
-	dnsChanges, dnsErr := r.reconcileDNS(ctx, tc, tunnelID, dns, validRoutes, extraHostnames)
+	dnsChanges, dnsErr := r.reconcileDNS(ctx, tc, tunnelID, dns, routeHostnames, extraHostnames)
 	res.changes = append(res.changes, dnsChanges...)
 	res.dnsErr = dnsErr
 	if dnsErr != nil {
@@ -799,11 +825,11 @@ func (r *GatewayReconciler) finalize(ctx context.Context, gw *gatewayv1.Gateway,
 		}
 	}
 
-	// Remove this Gateway's entry from status.parents on all referencing HTTPRoutes.
+	// Remove this Gateway's entry from status.parents on all referencing routes.
 	if err := r.removeRouteStatuses(ctx, gw); err != nil {
-		return r.finalizeError(ctx, gw, changes, fmt.Errorf("removing HTTPRoute status entries: %w", err))
+		return r.finalizeError(ctx, gw, changes, fmt.Errorf("removing route status entries: %w", err))
 	}
-	l.V(1).Info("Removed HTTPRoute status entries")
+	l.V(1).Info("Removed route status entries")
 
 	// Remove this Gateway's finalizer from all GatewayClasses.
 	if err := r.removeGatewayClassFinalizer(ctx, gw); err != nil {
