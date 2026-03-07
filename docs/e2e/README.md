@@ -439,43 +439,53 @@ reconciliation and the error path when the Gateway is suspended.
 ## test_rotate_gateway_token
 
 Tests the `cfgwctl rotate gateway token` CLI command: rotating the tunnel token
-while traffic is flowing, verifying zero downtime, and the error path when the
+across 3 replicas while traffic is flowing, verifying zero downtime, validating
+the rolling update order (one Deployment at a time), and the error path when the
 Gateway is suspended.
 
 **Resources created:**
 - 1-replica `Deployment` running `cfgwctl test serve` (selector `app=rot-test`)
 - `Service` `rot-backend` (port 80 → targetPort 8080)
-- `CloudflareGatewayParameters` `rot-params`
+- `CloudflareGatewayParameters` `rot-params` with 3 tunnel replicas (r1, r2, r3)
 - `Gateway` referencing `rot-params`
 - `HTTPRoute` with one hostname (on `TEST_TRAFFIC_ZONE_NAME`)
 
 **Cloudflare resources:** 1 tunnel, 1 DNS CNAME record.
 
 **Pass criteria:**
-- All requests during the 1-minute load test return 2xx (zero failures).
+- All requests during the load test return 2xx (100% success rate).
+- The `cfgwctl rotate gateway token --watch` rolling update report validates
+  that Deployments were updated one at a time, each fully rolled out before the
+  next was updated.
+- Gateway events in the watch output match the expected sequence
+  (rotation-requested, Programmed=True Ready=Unknown, Programmed=True Ready=True).
 - Token changed on Cloudflare API after rotation.
 - In-cluster tunnel token Secret matches the new Cloudflare API token.
-- Tunnel pod was replaced via rolling restart (new pod name after rotation).
+- All 3 tunnel pods were replaced via rolling restart (new pod names after rotation).
 
 **Steps:**
 
 1. Deploy test server and `Service`; wait for rollout.
-2. Create `CloudflareGatewayParameters`.
+2. Create `CloudflareGatewayParameters` with 3 tunnel replicas.
 3. Create `Gateway` referencing the parameters; wait for Programmed.
 4. Create `HTTPRoute`; wait for HTTPS endpoint reachable.
-5. Record tunnel ID, Cloudflare API token, pod name, and restart count.
-6. Start background load generator (`cfgwctl test load --duration 1m`).
+5. Record tunnel ID, Cloudflare API token, and pod names.
+6. Start background load generator (`cfgwctl test load --duration 10m`).
 7. Wait 10 seconds for traffic to stabilize.
-8. Run `cfgwctl rotate gateway token`; verify output contains
-   "Requested token rotation" and "Token rotation completed".
-9. Wait for load generator to finish; verify zero failures.
-10. Verify Cloudflare API token changed.
-11. Verify in-cluster tunnel token Secret matches the new Cloudflare API token.
-12. Verify tunnel pod was replaced via rolling restart (new pod name).
-13. Suspend the Gateway via `cfgwctl suspend gateway`.
-14. Run `cfgwctl rotate gateway token` on the suspended Gateway; verify it fails
+8. Run `cfgwctl rotate gateway token --watch`; verify exit code 0, which means
+   the rolling update timeline was validated (one-at-a-time order) and all
+   Deployments completed their rollout.
+9. Verify Gateway events in the watch output: rotation-requested,
+   Programmed=True Ready=Unknown, Programmed=True Ready=True.
+10. Verify Gateway is Ready=True and lastTokenRotatedAt changed.
+11. Stop load generator (SIGTERM); verify 100% success rate.
+12. Verify Cloudflare API token changed.
+13. Verify in-cluster tunnel token Secret matches the new Cloudflare API token.
+14. Verify all 3 tunnel Deployment rollouts completed and pods were replaced.
+15. Suspend the Gateway via `cfgwctl suspend gateway`.
+16. Run `cfgwctl rotate gateway token` on the suspended Gateway; verify it fails
     with an error mentioning "suspended".
-15. Remove annotation, delete `HTTPRoute`, `Gateway`, `CGP`, `Deployment`, and `Service`.
+17. Remove annotation, delete `HTTPRoute`, `Gateway`, `CGP`, `Deployment`, and `Service`.
 
 ## test_podinfo
 

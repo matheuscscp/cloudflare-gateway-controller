@@ -207,6 +207,9 @@ cfgwctl reconcile gateway my-gateway
 
 # Rotate the tunnel token on-demand
 cfgwctl rotate gateway token my-gateway
+
+# Watch an ongoing token rotation
+cfgwctl watch gateway token my-gateway
 ```
 
 See the [CLI documentation](docs/cli/README.md) for all available commands.

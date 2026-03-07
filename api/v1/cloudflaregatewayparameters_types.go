@@ -112,6 +112,25 @@ type TokenRotationConfig struct {
 //
 // +kubebuilder:validation:XValidation:rule="!has(self.replicas) || self.replicas.all(r, self.replicas.exists_one(s, s.name == r.name))",message="replica names must be unique"
 type TunnelConfig struct {
+	// MinReadySeconds is the minimum number of seconds a newly created tunnel
+	// pod must be Ready before the Deployment controller considers it Available
+	// and terminates the old pod during a rolling update.
+	//
+	// Defaults to 600 (10 minutes) when absent. This matches the Cloudflare
+	// recommendation for rotating tunnel tokens without service disruption:
+	// https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/remote-tunnel-permissions/#rotate-a-token-without-service-disruption
+	//
+	// The controller sets progressDeadlineSeconds to minReadySeconds + 60,
+	// so Kubernetes will report ProgressDeadlineExceeded if the new pod
+	// does not become Ready within that window.
+	//
+	// In practice, lower values work well. The project's own e2e test
+	// performs a rolling update across 3 Deployments with minReadySeconds=30
+	// and zero traffic disruption.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	MinReadySeconds *int32 `json:"minReadySeconds,omitempty"`
+
 	// Token configures tunnel token management.
 	// +optional
 	Token *TokenConfig `json:"token,omitempty"`
@@ -222,6 +241,9 @@ type ReplicaConfig struct {
 	// +optional
 	Affinity *corev1.Affinity `json:"affinity,omitempty"`
 }
+
+// DefaultMinReadySeconds is the default MinReadySeconds for tunnel Deployments.
+const DefaultMinReadySeconds int32 = 600
 
 // +kubebuilder:object:root=true
 

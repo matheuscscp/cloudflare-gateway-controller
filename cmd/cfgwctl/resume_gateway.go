@@ -18,6 +18,7 @@ import (
 
 func newResumeGatewayCmd() *cobra.Command {
 	var namespace string
+	var wait bool
 	var timeout time.Duration
 
 	cmd := &cobra.Command{
@@ -35,8 +36,10 @@ func newResumeGatewayCmd() *cobra.Command {
 
 			// Snapshot the current status field BEFORE setting the annotation.
 			key := types.NamespacedName{Name: name, Namespace: ns}
-			oldValue := snapshotCGSField(ctx, c, name, ns,
-				func(cgs *apiv1.CloudflareGatewayStatus) string { return cgs.Status.LastHandledReconcileAt })
+			oldValue, err := snapshotLastHandledReconcileAt(ctx, c, name, ns)
+			if err != nil {
+				return err
+			}
 
 			var skipped bool
 			if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -65,9 +68,10 @@ func newResumeGatewayCmd() *cobra.Command {
 			}
 			fmt.Printf("Resumed reconciliation for Gateway %s/%s\n", ns, name)
 
-			if err := waitForReconciliation(ctx, c, name, ns,
-				func(cgs *apiv1.CloudflareGatewayStatus) string { return cgs.Status.LastHandledReconcileAt },
-				oldValue, timeout); err != nil {
+			if !wait {
+				return nil
+			}
+			if err := waitForReconciliation(ctx, c, name, ns, oldValue, timeout); err != nil {
 				return err
 			}
 			fmt.Println("Reconciliation completed")
@@ -76,6 +80,7 @@ func newResumeGatewayCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", "namespace of the Gateway (defaults to kubeconfig context namespace)")
+	cmd.Flags().BoolVar(&wait, "wait", true, "wait for reconciliation to complete")
 	cmd.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "timeout waiting for reconciliation")
 
 	return cmd

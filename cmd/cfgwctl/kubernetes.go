@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -26,9 +28,24 @@ const (
 	pollInterval    = 2 * time.Second
 )
 
+// kubeClients holds the various Kubernetes clients used by CLI commands.
+type kubeClients struct {
+	Client    client.Client
+	Namespace string
+	Config    *rest.Config
+}
+
 // buildKubeClient creates a controller-runtime client from kubeconfig.
 // If flagNamespace is empty, it uses the namespace from the kubeconfig context.
 func buildKubeClient(flagNamespace string) (client.Client, string, error) {
+	kc, err := buildKubeClients(flagNamespace)
+	if err != nil {
+		return nil, "", err
+	}
+	return kc.Client, kc.Namespace, nil
+}
+
+func buildKubeClients(flagNamespace string) (*kubeClients, error) {
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	configOverrides := &clientcmd.ConfigOverrides{}
 	if flagNamespace != "" {
@@ -38,12 +55,12 @@ func buildKubeClient(flagNamespace string) (client.Client, string, error) {
 
 	cfg, err := kubeConfig.ClientConfig()
 	if err != nil {
-		return nil, "", fmt.Errorf("loading kubeconfig: %w", err)
+		return nil, fmt.Errorf("loading kubeconfig: %w", err)
 	}
 
 	ns, _, err := kubeConfig.Namespace()
 	if err != nil {
-		return nil, "", fmt.Errorf("determining namespace: %w", err)
+		return nil, fmt.Errorf("determining namespace: %w", err)
 	}
 
 	s := runtime.NewScheme()
@@ -53,33 +70,37 @@ func buildKubeClient(flagNamespace string) (client.Client, string, error) {
 
 	c, err := client.New(cfg, client.Options{Scheme: s})
 	if err != nil {
-		return nil, "", fmt.Errorf("creating kubernetes client: %w", err)
+		return nil, fmt.Errorf("creating kubernetes client: %w", err)
 	}
 
-	return c, ns, nil
+	return &kubeClients{Client: c, Namespace: ns, Config: cfg}, nil
 }
 
-// snapshotCGSField fetches the CGS and returns the current value of a status
-// field. This value is used as the "before" snapshot for wait logic. If the
-// CGS does not exist yet, returns "" (any future value will differ).
-func snapshotCGSField(ctx context.Context, c client.Client, name, namespace string, getter func(*apiv1.CloudflareGatewayStatus) string) string {
+// snapshotLastHandledReconcileAt fetches the CGS and returns the current
+// LastHandledReconcileAt value. This is used as the "before" snapshot for
+// wait logic. If the CGS does not exist yet, returns "" (any future value
+// will differ).
+func snapshotLastHandledReconcileAt(ctx context.Context, c client.Client, name, namespace string) (string, error) {
 	var cgs apiv1.CloudflareGatewayStatus
 	if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, &cgs); err != nil {
-		return ""
+		if apierrors.IsNotFound(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("getting CloudflareGatewayStatus: %w", err)
 	}
-	return getter(&cgs)
+	return cgs.Status.LastHandledReconcileAt, nil
 }
 
-// waitForReconciliation polls the CGS until the status field returned by
-// getter differs from oldValue (meaning the controller has handled a
-// reconciliation since we snapshotted), then checks the Ready condition.
+// waitForReconciliation polls the CGS until LastHandledReconcileAt differs
+// from oldValue (meaning the controller has handled a reconciliation since
+// we snapshotted), then checks the Ready condition.
 //
 // This follows the Flux CLI pattern:
 //  1. Any change from the snapshot means some reconciliation completed.
 //  2. After detecting the change, check Ready condition for health.
 //  3. If Ready=False with a terminal reason, return the error immediately.
 //  4. If Ready is not yet True (e.g. Progressing), keep polling.
-func waitForReconciliation(ctx context.Context, c client.Client, name, namespace string, getter func(*apiv1.CloudflareGatewayStatus) string, oldValue string, timeout time.Duration) error {
+func waitForReconciliation(ctx context.Context, c client.Client, name, namespace, oldValue string, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -97,7 +118,7 @@ func waitForReconciliation(ctx context.Context, c client.Client, name, namespace
 			}
 
 			// Step 1: Wait for the status field to change from the snapshot.
-			if getter(&cgs) == oldValue {
+			if cgs.Status.LastHandledReconcileAt == oldValue {
 				continue
 			}
 

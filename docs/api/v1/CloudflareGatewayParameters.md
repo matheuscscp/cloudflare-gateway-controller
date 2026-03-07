@@ -116,6 +116,28 @@ hostnames in the attached [HTTPRoutes](HTTPRoute.md).
 
 The `.spec.tunnel` field is optional and configures Cloudflare tunnel settings.
 
+#### MinReadySeconds
+
+The `.spec.tunnel.minReadySeconds` field controls the minimum number of seconds
+a newly created tunnel pod must be Ready before the Deployment controller
+considers it Available and terminates the old pod during a rolling update.
+
+```yaml
+spec:
+  tunnel:
+    minReadySeconds: 30
+```
+
+Defaults to `600` (10 minutes) when absent. This matches the Cloudflare
+recommendation for rotating tunnel tokens without service disruption. The
+controller sets `progressDeadlineSeconds` to `minReadySeconds + 60`, so
+Kubernetes will report `ProgressDeadlineExceeded` if the new pod does not
+become Ready within that window.
+
+In practice, lower values work well. The project's own e2e test performs a
+rolling update across 3 Deployments with `minReadySeconds=30` and zero
+traffic disruption.
+
 #### Token rotation
 
 The `.spec.tunnel.token` field configures tunnel token management.

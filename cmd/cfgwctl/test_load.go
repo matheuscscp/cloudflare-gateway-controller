@@ -9,13 +9,15 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/cobra"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -37,38 +39,16 @@ func newTestLoadCmd() *cobra.Command {
 		tolerance      float64
 		hostname       string
 		minSuccessRate float64
-		promPushFlag   bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "load",
 		Short: "Generate HTTP load and optionally check pod distribution",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-
-			// Prometheus histogram for latency instrumentation.
-			// Buckets are tuned for millisecond-scale HTTP latency through
-			// Cloudflare tunnels: fine resolution from 5ms–500ms where most
-			// requests land, with coverage up to 10s for outliers.
-			loadStart := time.Now()
-			registry := prometheus.NewRegistry()
-			latencyHist := prometheus.NewHistogramVec(prometheus.HistogramOpts{
-				Name: "cfgw_e2e_load_request_duration_seconds",
-				Help: "HTTP request latency during e2e load test",
-				Buckets: []float64{
-					0.005, 0.01, 0.025, 0.05,
-					0.1, 0.15, 0.25, 0.5,
-					1, 2.5, 5, 10,
-				},
-			}, []string{"status"})
-			registry.MustRegister(latencyHist)
-			if promPushFlag {
-				defer func() {
-					if err := promPush(registry, loadStart); err != nil {
-						fmt.Printf("Warning: failed to push metrics to Prometheus: %v\n", err)
-					}
-				}()
-			}
+			// Handle SIGINT/SIGTERM: cancel context so in-flight
+			// workers stop and we print results before exiting.
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
 
 			// Phase 1: Generate load.
 			var (
@@ -81,12 +61,9 @@ func newTestLoadCmd() *cobra.Command {
 
 			sendOne := func() {
 				total.Add(1)
-				start := time.Now()
 				resp, err := http.Get(url)
-				elapsed := time.Since(start).Seconds()
 				if err != nil {
 					other.Add(1)
-					latencyHist.WithLabelValues("other").Observe(elapsed)
 					return
 				}
 				if hostname != "" && resp.StatusCode >= 200 && resp.StatusCode < 300 {
@@ -103,13 +80,10 @@ func newTestLoadCmd() *cobra.Command {
 				switch {
 				case resp.StatusCode >= 200 && resp.StatusCode < 300:
 					ok2xx.Add(1)
-					latencyHist.WithLabelValues("2xx").Observe(elapsed)
 				case resp.StatusCode >= 500:
 					err5xx.Add(1)
-					latencyHist.WithLabelValues("5xx").Observe(elapsed)
 				default:
 					other.Add(1)
-					latencyHist.WithLabelValues("other").Observe(elapsed)
 				}
 			}
 
@@ -160,10 +134,9 @@ func newTestLoadCmd() *cobra.Command {
 			}
 
 			successRate := float64(ok2xx.Load()) / float64(totalSent)
-			fmt.Printf("  success rate: %.5f%% (min: %.5f%%)\n", successRate*100, minSuccessRate*100)
 			if successRate < minSuccessRate {
-				return fmt.Errorf("success rate %.5f%% below minimum %.5f%% (5xx: %d, other: %d, 2xx: %d/%d)",
-					successRate*100, minSuccessRate*100, err5xx.Load(), other.Load(), ok2xx.Load(), totalSent)
+				return fmt.Errorf("success rate %.5f%% below minimum %.5f%% (%d/%d, 5xx: %d, other: %d)",
+					successRate*100, minSuccessRate*100, ok2xx.Load(), totalSent, err5xx.Load(), other.Load())
 			}
 
 			if hostname != "" && hostErrs.Load() > 0 {
@@ -194,8 +167,8 @@ func newTestLoadCmd() *cobra.Command {
 	cmd.Flags().Float64Var(&tolerance, "tolerance", 0.15,
 		"max deviation from expected share (0.15 = ±15%) for --backend checks")
 	cmd.Flags().StringVar(&hostname, "hostname", "", "expected Host header value in responses (optional)")
-	cmd.Flags().Float64Var(&minSuccessRate, "min-success-rate", 1.0, "minimum required success rate (e.g. 0.99999 for 5 nines)")
-	cmd.Flags().BoolVar(&promPushFlag, "prom-push", false, "push latency metrics to a Prometheus remote-write endpoint (configured via PROM_PUSH_* env vars)")
+	cmd.Flags().Float64Var(&minSuccessRate, "min-success-rate", 1.0,
+		"minimum success rate threshold (0.99999 = 99.999%%, default 1.0 = 100%%)")
 	cobra.CheckErr(cmd.MarkFlagRequired("url"))
 
 	return cmd

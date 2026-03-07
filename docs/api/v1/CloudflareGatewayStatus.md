@@ -49,6 +49,7 @@ status:
   lastHandledReconcileAt: "2026-01-15T10:05:00.000000000Z"
   lastHandledTokenRotateAt: "2026-01-15T10:10:00.000000000Z"
   lastTokenRotatedAt: "2026-01-15T10:10:01Z"
+  currentTokenHash: "a1b2c3d4e5f6"
   tunnel:
     name: gateway-abc123
     id: "f47ac10b-58cc-4372-a567-0e02b2c3d479"
@@ -97,7 +98,7 @@ The CGS mirrors the same conditions as the parent
 [Gateway](Gateway.md#conditions):
 
 - `Accepted`: Whether the Gateway passed validation.
-- `Programmed`: Whether the tunnel Deployment is available.
+- `Programmed`: Whether the tunnel can serve traffic.
 - `DNSManagement`: Whether DNS CNAME record management is enabled.
 - `Ready`: Overall reconciliation state (custom kstatus condition).
 
@@ -139,9 +140,16 @@ completed.
 
 The `.status.lastHandledTokenRotateAt` field records the value of the
 `rotateTokenRequestedAt` annotation at the time the last on-demand token
-rotation request was handled.
+rotation was fully completed (all Deployments rolled out with the new token
+and the Gateway is Ready). This field is intentionally not updated until the
+rolling update finishes, so the CLI can detect ongoing rotations.
 
 The `.status.lastTokenRotatedAt` field records the RFC 3339 timestamp of the
 last successful token rotation (either automatic or on-demand). The controller
 uses this to schedule the next automatic rotation based on the configured
 interval.
+
+The `.status.currentTokenHash` field contains the truncated SHA-256 hex digest
+of the current tunnel token, as seen by the controller during reconciliation.
+This is used by the CLI to detect which Deployments have already been updated
+during a rolling token rotation.

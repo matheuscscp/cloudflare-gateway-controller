@@ -143,6 +143,26 @@ spec:
                     required:
                     - enabled
                     type: object
+                  minReadySeconds:
+                    description: |-
+                      MinReadySeconds is the minimum number of seconds a newly created tunnel
+                      pod must be Ready before the Deployment controller considers it Available
+                      and terminates the old pod during a rolling update.
+
+                      Defaults to 600 (10 minutes) when absent. This matches the Cloudflare
+                      recommendation for rotating tunnel tokens without service disruption:
+                      https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/remote-tunnel-permissions/#rotate-a-token-without-service-disruption
+
+                      The controller sets progressDeadlineSeconds to minReadySeconds + 60,
+                      so Kubernetes will report ProgressDeadlineExceeded if the new pod
+                      does not become Ready within that window.
+
+                      In practice, lower values work well. The project's own e2e test
+                      performs a rolling update across 3 Deployments with minReadySeconds=30
+                      and zero traffic disruption.
+                    format: int32
+                    minimum: 0
+                    type: integer
                   patches:
                     description: |-
                       Patches are RFC 6902 JSON Patch operations applied to the
@@ -1365,6 +1385,11 @@ spec:
                   - type
                   type: object
                 type: array
+              currentTokenHash:
+                description: |-
+                  CurrentTokenHash is the truncated SHA-256 hex digest of the current
+                  tunnel token, as seen by the controller during reconciliation.
+                type: string
               inventory:
                 description: Inventory lists all Kubernetes objects managed by this
                   Gateway.

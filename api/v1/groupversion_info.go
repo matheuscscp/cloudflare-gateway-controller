@@ -20,8 +20,18 @@ const (
 	ShortControllerName = "cloudflare-gateway-controller"
 )
 
-// Group is the API group for this project.
-const Group = ShortControllerName + ".io"
+// Groups.
+const (
+	// Group is the API group for this project.
+	Group = ShortControllerName + ".io"
+
+	// GroupGateways is the API group of the project scoped to Gateways.
+	GroupGateways = "gateways." + Group
+
+	// GroupCore is the Kubernetes core API group name used in Gateway API
+	// references (e.g. parametersRef.group).
+	GroupCore = "core"
+)
 
 var (
 	// GroupVersion is the group version used to register these objects.

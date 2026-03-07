@@ -28,15 +28,6 @@ PATH="$(pwd)/bin:$PATH"
 CHART_DIR="charts/cloudflare-gateway-controller"
 RELEASE_NAME="cloudflare-gateway-controller"
 CONTROLLER_NS="cfgw-system"
-if [ -z "${PROM_PUSH_TOKEN:-}" ] && [ -f ./grafana.token ]; then
-    PROM_PUSH_TOKEN=$(cat ./grafana.token)
-    export PROM_PUSH_TOKEN
-fi
-if [ -n "${GITHUB_RUN_ID:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ]; then
-    PROM_PUSH_RUN_URL=$(gh run view "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
-        --json jobs --jq ".jobs[] | select(.name | test(\"${TEST:-}\")) | .url" 2>/dev/null || true)
-    export PROM_PUSH_RUN_URL
-fi
 
 # Derived values.
 IMAGE_REPO="${IMAGE%:*}"
@@ -211,22 +202,15 @@ start_controller_log_stream() {
 
 # install_controller loads the image and installs/upgrades the controller.
 # If REUSE_CONTROLLER=1 and the controller is Running, skip.
-# If RELOAD_CONTROLLER=1, reload image and restart.
+# If RELOAD_CONTROLLER=1, reload image and helm upgrade (picks up code + chart changes).
 # Any extra arguments are forwarded to helm upgrade --install.
 install_controller() {
-    if [ "${REUSE_CONTROLLER:-}" = "1" ]; then
+    if [ "${REUSE_CONTROLLER:-}" = "1" ] && [ "${RELOAD_CONTROLLER:-}" != "1" ]; then
         local status
         status=$(kubectl get pods -n "$CONTROLLER_NS" -l app.kubernetes.io/name="$RELEASE_NAME" \
             -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
         if [ "$status" = "Running" ]; then
             log "Reusing existing controller (Running)"
-            if [ "${RELOAD_CONTROLLER:-}" = "1" ]; then
-                log "Reloading controller image..."
-                kind load docker-image "$IMAGE" --name "$KIND_CLUSTER_NAME"
-                kubectl rollout restart deployment/"$RELEASE_NAME" -n "$CONTROLLER_NS"
-                kubectl rollout status deployment/"$RELEASE_NAME" -n "$CONTROLLER_NS" --timeout=120s
-                log "Controller reloaded"
-            fi
             return
         fi
     fi
@@ -245,6 +229,12 @@ install_controller() {
         --set 'podArgs[0]=--log-level=debug' \
         "$@" \
         --wait --timeout 120s
+
+    # When reloading, force a pod restart to pick up the new image even if
+    # the Helm spec didn't change (same tag, different binary).
+    if [ "${RELOAD_CONTROLLER:-}" = "1" ]; then
+        kubectl rollout restart deployment/"$RELEASE_NAME" -n "$CONTROLLER_NS"
+    fi
 
     log "Waiting for controller deployment to be ready..."
     kubectl rollout status deployment/"$RELEASE_NAME" -n "$CONTROLLER_NS" --timeout=120s

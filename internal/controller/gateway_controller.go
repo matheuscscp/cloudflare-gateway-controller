@@ -408,7 +408,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	errs = append(errs, dnsResult.errs...)
 
 	// Check readiness of all tunnel Deployments.
-	readiness := r.checkAllDeploymentsReadiness(ctx, gw, replicas)
+	readiness := r.checkAllDeploymentsReadiness(ctx, gw, replicas, tokenResult.tokenHash)
 
 	// Update route status.parents for allowed routes (after DNS and
 	// Deployment checks so we can report DNS status and Gateway readiness).
@@ -419,7 +419,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	// and mirrored conditions). Done before the Gateway status patch so CGS
 	// reflects the latest state even if the status patch fails.
 	// Copy annotation values to CGS status and update rotation timestamps.
-	if updatedCGS, err := r.reconcileCGS(ctx, gw, cgs, params, tunnel, replicas, tokenResult); err != nil {
+	if updatedCGS, err := r.reconcileCGS(ctx, gw, cgs, params, tunnel, replicas, tokenResult, readiness); err != nil {
 		errs = append(errs, fmt.Sprintf("failed to reconcile CloudflareGatewayStatus: %v", err))
 	} else {
 		cgs = updatedCGS
@@ -730,7 +730,6 @@ func (r *GatewayReconciler) reconcileError(ctx context.Context, gw *gatewayv1.Ga
 	if cgs, _ := r.getCGS(ctx, gw); cgs != nil {
 		cgsPatch := client.MergeFrom(cgs.DeepCopy())
 		cgs.Status.LastHandledReconcileAt = gw.Annotations[apiv1.AnnotationReconcileRequestedAt]
-		cgs.Status.LastHandledTokenRotateAt = gw.Annotations[apiv1.AnnotationRotateTokenRequestedAt]
 		for _, c := range desiredConds {
 			cgs.Status.Conditions = conditions.Upsert(cgs.Status.Conditions, c)
 		}

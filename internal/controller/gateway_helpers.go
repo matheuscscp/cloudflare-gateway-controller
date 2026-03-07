@@ -230,6 +230,7 @@ func (r *GatewayReconciler) reconcileCGS(
 	tunnel tunnelState,
 	replicas []apiv1.ReplicaConfig,
 	tokenResult *tokenRotationResult,
+	readiness gatewayReadiness,
 ) (*apiv1.CloudflareGatewayStatus, error) {
 	resourceName := apiv1.GatewayResourceName(gw)
 
@@ -268,7 +269,15 @@ func (r *GatewayReconciler) reconcileCGS(
 
 	// Copy annotation values to status on every reconcile.
 	desired.LastHandledReconcileAt = gw.Annotations[apiv1.AnnotationReconcileRequestedAt]
-	desired.LastHandledTokenRotateAt = gw.Annotations[apiv1.AnnotationRotateTokenRequestedAt]
+
+	// Only mark the token rotation as handled when the Gateway is fully ready
+	// (all deployments rolled out with the new token). This lets the CLI detect
+	// ongoing rotations by comparing the annotation with this status field.
+	if readiness.readyStatus == metav1.ConditionTrue {
+		desired.LastHandledTokenRotateAt = gw.Annotations[apiv1.AnnotationRotateTokenRequestedAt]
+	} else if cgs != nil {
+		desired.LastHandledTokenRotateAt = cgs.Status.LastHandledTokenRotateAt
+	}
 
 	// Preserve existing LastTokenRotatedAt and update if rotation occurred.
 	if cgs != nil {
@@ -276,6 +285,13 @@ func (r *GatewayReconciler) reconcileCGS(
 	}
 	if tokenResult != nil && tokenResult.lastRotatedAt != "" {
 		desired.LastTokenRotatedAt = tokenResult.lastRotatedAt
+	}
+
+	// Current token hash.
+	if tokenResult != nil {
+		desired.CurrentTokenHash = tokenResult.tokenHash
+	} else if cgs != nil {
+		desired.CurrentTokenHash = cgs.Status.CurrentTokenHash
 	}
 
 	if cgs == nil || !cgs.DeletionTimestamp.IsZero() {
