@@ -1,0 +1,94 @@
+{
+  "title": "E2E Load Test - Token Rotation",
+  "uid": "cfgw-e2e-load",
+  "timezone": "utc",
+  "refresh": "",
+  "time": { "from": "now-3h", "to": "now" },
+  "panels": [
+    {
+      "title": "Latency by Status (p50 / p90 / p99)",
+      "type": "timeseries",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "points", "pointSize": 8 },
+          "links": [
+            {
+              "title": "Open CI Run",
+              "url": "${__field.labels.run_url}",
+              "targetBlank": true
+            }
+          ]
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum by (le, status, run_url) (cfgw_e2e_load_request_duration_seconds_bucket))",
+          "legendFormat": "p50 {{status}} {{run_url}}",
+          "interval": "5m"
+        },
+        {
+          "expr": "histogram_quantile(0.9, sum by (le, status, run_url) (cfgw_e2e_load_request_duration_seconds_bucket))",
+          "legendFormat": "p90 {{status}} {{run_url}}",
+          "interval": "5m"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, status, run_url) (cfgw_e2e_load_request_duration_seconds_bucket))",
+          "legendFormat": "p99 {{status}} {{run_url}}",
+          "interval": "5m"
+        }
+      ]
+    },
+    {
+      "title": "Request Count by Status",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "points", "pointSize": 8 },
+          "links": [
+            {
+              "title": "Open CI Run",
+              "url": "${__field.labels.run_url}",
+              "targetBlank": true
+            }
+          ]
+        }
+      },
+      "targets": [
+        {
+          "expr": "cfgw_e2e_load_request_duration_seconds_count",
+          "legendFormat": "{{status}} {{run_url}}",
+          "interval": "5m"
+        }
+      ]
+    },
+    {
+      "title": "Average Latency by Status",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "points", "pointSize": 8 },
+          "links": [
+            {
+              "title": "Open CI Run",
+              "url": "${__field.labels.run_url}",
+              "targetBlank": true
+            }
+          ]
+        }
+      },
+      "targets": [
+        {
+          "expr": "cfgw_e2e_load_request_duration_seconds_sum / cfgw_e2e_load_request_duration_seconds_count",
+          "legendFormat": "avg {{status}} {{run_url}}",
+          "interval": "5m"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39
+}

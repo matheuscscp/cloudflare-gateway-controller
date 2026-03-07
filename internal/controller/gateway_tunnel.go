@@ -145,7 +145,7 @@ func (r *GatewayReconciler) maybeRotateToken(
 		if rot.Enabled != nil {
 			rotationEnabled = *rot.Enabled
 		}
-		if rot.Interval.Duration > 0 {
+		if rot.Interval != nil && rot.Interval.Duration > 0 {
 			rotationInterval = rot.Interval.Duration
 		}
 	}
@@ -646,22 +646,19 @@ func (r *GatewayReconciler) buildTunnelDeploymentApply(gw *gatewayv1.Gateway, pa
 		"--" + proxy.FlagNamespace, gw.Namespace,
 		"--" + proxy.FlagConfigMapName, apiv1.GatewayResourceName(gw),
 	}
-	if params != nil && params.Spec.Tunnel != nil && params.Spec.Tunnel.Health != nil && params.Spec.Tunnel.Health.URL != "" {
-		tunnelArgs = append(tunnelArgs, "--"+proxy.FlagHealthURL, params.Spec.Tunnel.Health.URL)
-	}
-	hasHealthURL := params != nil && params.Spec.Tunnel != nil && params.Spec.Tunnel.Health != nil && params.Spec.Tunnel.Health.URL != ""
 	tunnelContainer := accorev1.Container().
 		WithName("tunnel").
 		WithImage(r.TunnelImage).
 		WithArgs(tunnelArgs...).
-		WithEnv(accorev1.EnvVar().
-			WithName(cloudflare.TunnelTokenSecretKey).
-			WithValueFrom(accorev1.EnvVarSource().
-				WithSecretKeyRef(accorev1.SecretKeySelector().
-					WithName(apiv1.GatewayResourceName(gw)).
-					WithKey(cloudflare.TunnelTokenSecretKey),
+		WithEnv(
+			accorev1.EnvVar().
+				WithName(cloudflare.TunnelTokenSecretKey).
+				WithValueFrom(accorev1.EnvVarSource().
+					WithSecretKeyRef(accorev1.SecretKeySelector().
+						WithName(apiv1.GatewayResourceName(gw)).
+						WithKey(cloudflare.TunnelTokenSecretKey),
+					),
 				),
-			),
 		).
 		WithPorts(accorev1.ContainerPort().
 			WithName(portName).
@@ -669,32 +666,26 @@ func (r *GatewayReconciler) buildTunnelDeploymentApply(gw *gatewayv1.Gateway, pa
 			WithProtocol(corev1.ProtocolTCP),
 		).
 		WithResources(resolveResources(tunnelResources)).
-		WithLivenessProbe(accorev1.Probe().
+		WithStartupProbe(accorev1.Probe().
 			WithHTTPGet(accorev1.HTTPGetAction().
-				WithPath("/healthz").
-				WithPort(intstr.FromString(portName)),
-			),
-		).
-		WithReadinessProbe(accorev1.Probe().
-			WithHTTPGet(accorev1.HTTPGetAction().
-				WithPath("/readyz").
-				WithPort(intstr.FromString(portName)),
-			),
-		)
-	if hasHealthURL {
-		// When a health URL is configured, the /healthz liveness probe
-		// goes through Cloudflare (tunnel + DNS), which takes time to
-		// become reachable during startup. A startup probe gives the pod
-		// time to initialize before the liveness probe starts.
-		tunnelContainer = tunnelContainer.WithStartupProbe(accorev1.Probe().
-			WithHTTPGet(accorev1.HTTPGetAction().
-				WithPath("/healthz").
+				WithPath(proxy.HealthPath).
 				WithPort(intstr.FromString(portName)),
 			).
 			WithPeriodSeconds(2).
 			WithFailureThreshold(60),
+		).
+		WithReadinessProbe(accorev1.Probe().
+			WithHTTPGet(accorev1.HTTPGetAction().
+				WithPath(proxy.HealthPath).
+				WithPort(intstr.FromString(portName)),
+			),
+		).
+		WithLivenessProbe(accorev1.Probe().
+			WithHTTPGet(accorev1.HTTPGetAction().
+				WithPath(proxy.HealthPath).
+				WithPort(intstr.FromString(portName)),
+			),
 		)
-	}
 
 	deploy := acappsv1.Deployment(deploymentName, gw.Namespace).
 		WithLabels(deployLabels).

@@ -29,14 +29,13 @@ func (d dnsPolicy) allZones() bool { return d.enabled && len(d.zones) == 0 }
 
 // reconcileDNS reconciles DNS CNAME records for the Gateway. It lists all
 // records pointing to the tunnel across all account zones, computes the
-// desired set from route hostnames + configured zones + extra hostnames, and
-// diffs: creating missing records and deleting stale ones. When dns is
-// disabled, all records are deleted.
+// desired set from route hostnames + configured zones, and diffs: creating
+// missing records and deleting stale ones. When dns is disabled, all records
+// are deleted.
 func (r *GatewayReconciler) reconcileDNS(
 	ctx context.Context, tc cloudflare.Client,
 	tunnelID string, dns dnsPolicy,
 	routeHostnames []gatewayv1.Hostname,
-	extraHostnames []string,
 ) ([]string, *string) {
 	l := log.FromContext(ctx)
 	tunnelTarget := cloudflare.TunnelTarget(tunnelID)
@@ -93,14 +92,6 @@ func (r *GatewayReconciler) reconcileDNS(
 			}
 			desired[hostname] = zoneID
 		}
-		for _, hostname := range extraHostnames {
-			zoneID, err := tc.FindZoneIDByHostname(ctx, hostname)
-			if err != nil {
-				l.V(1).Info("Skipping extra hostname: zone lookup failed", "hostname", hostname, "error", err)
-				continue
-			}
-			desired[hostname] = zoneID
-		}
 	} else {
 		// Specific-zones mode: resolve each configured zone name to a zone ID
 		// and filter hostnames.
@@ -114,13 +105,6 @@ func (r *GatewayReconciler) reconcileDNS(
 		}
 		for _, h := range routeHostnames {
 			hostname := string(h)
-			for _, zoneName := range dns.zones {
-				if hostnameInZone(hostname, zoneName) {
-					desired[hostname] = zoneMap[zoneName]
-				}
-			}
-		}
-		for _, hostname := range extraHostnames {
 			for _, zoneName := range dns.zones {
 				if hostnameInZone(hostname, zoneName) {
 					desired[hostname] = zoneMap[zoneName]

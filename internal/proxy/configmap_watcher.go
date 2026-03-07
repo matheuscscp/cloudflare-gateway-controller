@@ -13,6 +13,9 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
+// RouteConfigMapKey is the key used to store the route config in the ConfigMap.
+const RouteConfigMapKey = "config.yaml"
+
 // ConfigMapWatcher watches a single ConfigMap via a Kubernetes informer and atomically
 // updates the Proxy's routing table on add/update events.
 type ConfigMapWatcher struct {
