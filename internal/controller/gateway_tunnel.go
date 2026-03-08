@@ -331,13 +331,18 @@ func isProgressDeadlineExceeded(deploy *appsv1.Deployment) bool {
 }
 
 // checkAllDeploymentsReadiness fetches all tunnel Deployments for the
-// replicas and inspects their status to determine the Gateway's
-// Programmed and Ready state. All Deployments must have the expected
-// tokenHash and be fully rolled out for Ready=True.
+// replicas and inspects their status to determine the Gateway's Ready
+// state. All Deployments must have the expected tokenHash and be fully
+// rolled out for Ready=True.
+//
+// Programmed is always True here because reaching this point means all
+// configuration has been generated (tunnel created, Deployments applied,
+// ConfigMap applied). Per the Gateway API spec, Programmed indicates
+// whether configuration has been generated for the data plane, not
+// whether the data plane is operationally healthy.
 func (r *GatewayReconciler) checkAllDeploymentsReadiness(ctx context.Context, gw *gatewayv1.Gateway, replicas []apiv1.ReplicaConfig, tokenHash string) gatewayReadiness {
 	l := log.FromContext(ctx)
 	allRolledOut := true
-	anyAvailable := false
 	anyDeadlineExceeded := false
 	var notReadyNames []string
 
@@ -345,7 +350,6 @@ func (r *GatewayReconciler) checkAllDeploymentsReadiness(ctx context.Context, gw
 		deploymentName := apiv1.GatewayReplicaName(gw, replicas[i].Name)
 		var deploy appsv1.Deployment
 		deployRolledOut := false
-		deployAvailable := false
 		deployDeadlineExceeded := false
 		if err := r.Get(ctx, client.ObjectKey{
 			Namespace: gw.Namespace,
@@ -353,7 +357,6 @@ func (r *GatewayReconciler) checkAllDeploymentsReadiness(ctx context.Context, gw
 		}, &deploy); err == nil {
 			currentHash := deploy.Spec.Template.Annotations[apiv1.AnnotationTokenHash]
 			deployRolledOut = currentHash == tokenHash && isDeploymentRolledOut(&deploy)
-			deployAvailable = deploy.Status.ReadyReplicas > 0
 			deployDeadlineExceeded = isProgressDeadlineExceeded(&deploy)
 		} else {
 			l.V(1).Info("Failed to get Deployment, treating as unavailable", "deployment", deploymentName, "error", err)
@@ -365,41 +368,26 @@ func (r *GatewayReconciler) checkAllDeploymentsReadiness(ctx context.Context, gw
 			allRolledOut = false
 			notReadyNames = append(notReadyNames, deploymentName)
 		}
-		if deployAvailable {
-			anyAvailable = true
-		}
 	}
 
 	readiness := gatewayReadiness{
+		programmedStatus: metav1.ConditionTrue,
+		programmedReason: string(gatewayv1.GatewayReasonProgrammed),
+		programmedMsg:    "Gateway is programmed",
 		readyStatus:      metav1.ConditionUnknown,
 		readyReason:      apiv1.ReasonProgressingWithRetry,
-		programmedStatus: metav1.ConditionFalse,
-		programmedReason: string(gatewayv1.GatewayReasonPending),
-		programmedMsg:    "Waiting for tunnel deployment to become ready",
 	}
 	if anyDeadlineExceeded {
 		readiness.readyStatus = metav1.ConditionFalse
 		readiness.readyReason = apiv1.ReasonReconciliationFailed
 		readiness.readyMsg = fmt.Sprintf("tunnel deployment(s) exceeded progress deadline: %s", strings.Join(notReadyNames, ", "))
 	} else if allRolledOut {
-		readiness.programmedStatus = metav1.ConditionTrue
-		readiness.programmedReason = string(gatewayv1.GatewayReasonProgrammed)
-		readiness.programmedMsg = "Gateway is programmed"
 		readiness.readyStatus = metav1.ConditionTrue
 		readiness.readyReason = apiv1.ReasonReconciliationSucceeded
 		readiness.readyMsg = "Gateway is ready"
 	} else {
 		readiness.readyReason = apiv1.ReasonProgressing
 		readiness.readyMsg = fmt.Sprintf("Waiting for tunnel deployment(s) to become ready: %s", strings.Join(notReadyNames, ", "))
-	}
-	// During rolling updates (e.g. token rotation), each Deployment keeps at
-	// least one available replica thanks to maxUnavailable=0. As long as any
-	// Deployment has an available replica, the tunnel can serve traffic, so the
-	// Gateway stays Programmed even though the rollout is in progress.
-	if anyAvailable && !anyDeadlineExceeded {
-		readiness.programmedStatus = metav1.ConditionTrue
-		readiness.programmedReason = string(gatewayv1.GatewayReasonProgrammed)
-		readiness.programmedMsg = "Gateway is programmed"
 	}
 	return readiness
 }

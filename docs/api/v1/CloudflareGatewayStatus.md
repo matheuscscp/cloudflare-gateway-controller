@@ -32,7 +32,7 @@ status:
     - type: Programmed
       status: "True"
       reason: Programmed
-      message: Deployment is available
+      message: Gateway is programmed
       lastTransitionTime: "2026-01-15T10:01:00Z"
     - type: DNSManagement
       status: "True"
@@ -98,7 +98,7 @@ The CGS mirrors the same conditions as the parent
 [Gateway](Gateway.md#conditions):
 
 - `Accepted`: Whether the Gateway passed validation.
-- `Programmed`: Whether the tunnel can serve traffic.
+- `Programmed`: Whether configuration has been generated for the data plane.
 - `DNSManagement`: Whether DNS CNAME record management is enabled.
 - `Ready`: Overall reconciliation state (custom kstatus condition).
 

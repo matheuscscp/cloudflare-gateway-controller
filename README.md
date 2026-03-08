@@ -37,7 +37,7 @@ flowchart LR
         T -->|app.example.com| SA[Service app]
         T -->|api.example.com| SB[Service api]
     end
-    T -->|four HTTP/2 connections| cfe
+    T -->|four HTTP/2 connections per replica| cfe
 ```
 
 The diagram above illustrates the topology for a single Gateway resource. A cluster can

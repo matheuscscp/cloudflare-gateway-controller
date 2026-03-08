@@ -247,26 +247,19 @@ Reasons for rejection:
 
 #### Programmed Gateway
 
-Standard Gateway API condition. The controller reports whether the tunnel
-can serve traffic.
+Standard Gateway API condition. Per the spec, Programmed indicates whether
+configuration has been generated for the underlying data plane — not whether
+the data plane is operationally healthy (that is reported by the custom
+[Ready](#ready-gateway) condition).
 
-During rolling updates (e.g. token rotation), the Gateway stays Programmed
-as long as any Deployment has a ready replica and none have exceeded their
-progress deadline — traffic continues to flow through the available replicas
-while others are being updated.
-
-When at least one Deployment has a ready replica (and no deadline exceeded):
+The controller sets Programmed=True once the tunnel exists on Cloudflare and
+all Kubernetes resources (Deployments, Secrets, ConfigMaps) have been applied.
+This condition stays True during rolling updates and even when pods are not
+yet ready, because the configuration has been generated.
 
 - `type: Programmed`
 - `status: "True"`
 - `reason: Programmed`
-
-When no Deployment has a ready replica, or a Deployment has exceeded its
-progress deadline:
-
-- `type: Programmed`
-- `status: "False"`
-- `reason: Pending`
 
 #### DNS Management
 

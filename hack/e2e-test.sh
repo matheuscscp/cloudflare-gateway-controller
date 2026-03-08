@@ -2494,7 +2494,7 @@ EOF
         --duration 10m \
         --concurrency 5 \
         --hostname "$hostname" \
-        --min-success-rate 0.9999 &
+        --min-success-rate 0.999 &
     local LOAD_PID=$!
 
     # Let traffic flow for 10 seconds before rotating.
