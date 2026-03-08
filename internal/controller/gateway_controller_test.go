@@ -1552,8 +1552,9 @@ func TestGatewayReconciler_DeploymentProgressDeadlineExceeded(t *testing.T) {
 		g.Expect(testClient.Update(testCtx, &latest)).To(Succeed())
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
-	// Assert: Ready=False/ReconciliationFailed, Programmed=False (deadline exceeded
-	// takes priority over available in the controller logic).
+	// Assert: Ready=False/ReconciliationFailed, but Programmed stays True
+	// because configuration was generated (per Gateway API spec, Programmed
+	// indicates configuration generation, not operational health).
 	g.Eventually(func(g Gomega) {
 		var result gatewayv1.Gateway
 		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
@@ -1566,7 +1567,7 @@ func TestGatewayReconciler_DeploymentProgressDeadlineExceeded(t *testing.T) {
 
 		programmed := conditions.Find(result.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
 		g.Expect(programmed).NotTo(BeNil())
-		g.Expect(programmed.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(programmed.Status).To(Equal(metav1.ConditionTrue))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
