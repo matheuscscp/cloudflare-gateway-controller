@@ -19,12 +19,6 @@ func SetClusterName(name string) { cfClusterName = name }
 // ClusterName returns the configured cluster name.
 func ClusterName() string { return cfClusterName }
 
-const (
-	// GroupCore is the Kubernetes core API group name used in Gateway API
-	// references (e.g. parametersRef.group).
-	GroupCore = "core"
-)
-
 // APIVersion constants.
 const (
 	APIVersionCore        = "v1"
@@ -93,12 +87,12 @@ const (
 
 	// AnnotationRotateTokenRequestedAt is set by the CLI to trigger an
 	// on-demand tunnel token rotation. The value is an RFC3339Nano timestamp.
-	AnnotationRotateTokenRequestedAt = Group + "/rotateTokenRequestedAt"
+	AnnotationRotateTokenRequestedAt = GroupGateways + "/rotateTokenRequestedAt"
 
 	// AnnotationTokenHash is set on the tunnel pod template to trigger a
 	// rolling restart when the tunnel token changes. The value is the
 	// SHA-256 hex digest of the token.
-	AnnotationTokenHash = Group + "/tokenHash"
+	AnnotationTokenHash = GroupGateways + "/tokenHash"
 )
 
 // Labels.

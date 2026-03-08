@@ -2412,7 +2412,7 @@ EOF
         || fail "rot-test deployment did not become ready"
     pass "rot-test deployment ready"
 
-    log "Creating CloudflareGatewayParameters 'rot-params'..."
+    log "Creating CloudflareGatewayParameters 'rot-params' with 3 replicas..."
     kubectl apply -f - <<EOF
 apiVersion: cloudflare-gateway-controller.io/v1
 kind: CloudflareGatewayParameters
@@ -2422,6 +2422,12 @@ metadata:
 spec:
   secretRef:
     name: cloudflare-creds
+  tunnel:
+    minReadySeconds: 30
+    replicas:
+    - name: r1
+    - name: r2
+    - name: r3
 EOF
 
     log "Creating Gateway 'rot-gw'..."
@@ -2481,39 +2487,66 @@ EOF
     pod_names_before=$(kubectl get pods -n "$TEST_NS" -l app.kubernetes.io/instance=rot-gw \
         -o jsonpath='{.items[*].metadata.name}')
 
-    # Start background load generator (runs for 1 minute).
+    # Start background load generator (runs until signaled to stop).
     log "Starting background load generator..."
     "$CFGWCTL" test load \
         --url "https://$hostname/" \
-        --duration 1m \
+        --duration 10m \
         --concurrency 5 \
-        --namespace "$TEST_NS" \
-        --label-selector app=rot-test \
-        --max-cv 0.5 \
-        --min-success-rate 0.999 \
         --hostname "$hostname" \
-        --prom-push &
+        --min-success-rate 0.9999 &
     local LOAD_PID=$!
 
     # Let traffic flow for 10 seconds before rotating.
     log "Waiting 10s for traffic to stabilize..."
     sleep 10
 
-    # Path 1: Happy path — rotate token.
-    log "Rotating token for Gateway 'rot-gw'..."
-    local output
-    output=$("$CFGWCTL" rotate gateway token rot-gw -n "$TEST_NS" 2>&1)
-    echo "$output"
-    echo "$output" | grep -q "Requested token rotation" \
-        || fail "expected 'Requested token rotation' in output"
-    echo "$output" | grep -q "Token rotation completed" \
-        || fail "expected 'Token rotation completed' in output"
-    pass "rotate: happy path"
+    # Record lastTokenRotatedAt before rotation.
+    local last_rotated_before
+    last_rotated_before=$(kubectl get cloudflaregatewaystatuses rot-gw -n "$TEST_NS" \
+        -o jsonpath='{.status.lastTokenRotatedAt}' 2>/dev/null || true)
 
-    # Wait for load generator to finish.
-    log "Waiting for background load generator to finish..."
+    # Path 1: Happy path — rotate token with --watch.
+    # minReadySeconds=30 in CGP makes this complete in ~2 minutes.
+    log "Rotating token for Gateway 'rot-gw'..."
+    local rotate_output_file
+    rotate_output_file=$(mktemp)
+    "$CFGWCTL" rotate gateway token rot-gw -n "$TEST_NS" \
+        --watch --timeout 10m 2>&1 | tee "$rotate_output_file" \
+        || fail "rotate command failed"
+    pass "rotate: happy path with rolling update timeline validated"
+
+    # Validate exactly 3 Gateway events in the watch output.
+    local gw_event_count
+    gw_event_count=$(grep -c 'Gateway/' "$rotate_output_file")
+    [ "$gw_event_count" -eq 3 ] \
+        || fail "expected 3 Gateway events in rotate output, got $gw_event_count"
+    grep -q 'Gateway/.*rotation-requested' "$rotate_output_file" \
+        || fail "missing 'rotation-requested' Gateway event"
+    grep -q 'Gateway/.*conditions-changed Programmed=True Ready=Unknown' "$rotate_output_file" \
+        || fail "missing 'conditions-changed Programmed=True Ready=Unknown' Gateway event"
+    grep -q 'Gateway/.*conditions-changed Programmed=True Ready=True' "$rotate_output_file" \
+        || fail "missing 'conditions-changed Programmed=True Ready=True' Gateway event"
+    pass "rotate: Gateway events match expected sequence"
+    rm -f "$rotate_output_file"
+
+    # The rotate command watches Deployments until fully rolled out.
+    # Verify the Gateway is Ready and that lastTokenRotatedAt changed.
+    kubectl wait gateway/rot-gw -n "$TEST_NS" \
+        --for=condition=Ready --timeout=0 \
+        || fail "rot-gw not Ready=True after rotate command returned"
+    local last_rotated_after
+    last_rotated_after=$(kubectl get cloudflaregatewaystatuses rot-gw -n "$TEST_NS" \
+        -o jsonpath='{.status.lastTokenRotatedAt}')
+    [ "$last_rotated_before" != "$last_rotated_after" ] \
+        || fail "lastTokenRotatedAt did not change after rotation"
+    pass "rotate: Gateway is Ready=True and lastTokenRotatedAt updated"
+
+    # Stop load generator gracefully (SIGTERM triggers results printing).
+    log "Stopping load generator..."
+    kill "$LOAD_PID" 2>/dev/null || true
     wait "$LOAD_PID" || fail "load test failed during token rotation"
-    pass "rotate: no traffic disruption during rotation"
+    pass "rotate: no traffic disruption during rotation (100% 2xx)"
 
     # Verify token changed on Cloudflare API.
     local token_after
@@ -2529,16 +2562,22 @@ EOF
         || fail "in-cluster token does not match Cloudflare API token"
     pass "rotate: in-cluster Secret matches Cloudflare API token"
 
-    # Verify tunnel pod was replaced via rolling restart (zero-downtime
-    # verified by the load generator above).
-    log "Waiting for tunnel Deployment rollout to complete..."
-    kubectl rollout status deployment/gateway-rot-gw-primary -n "$TEST_NS" --timeout=120s \
-        || fail "tunnel Deployment rollout did not complete"
+    # Verify all tunnel Deployments completed rollout (belt-and-suspenders).
+    # We check ReadyReplicas instead of using `kubectl rollout status` because
+    # minReadySeconds=600 means AvailableReplicas stays 0 for 10 minutes.
+    log "Verifying all tunnel Deployment rollouts completed..."
+    for replica in r1 r2 r3; do
+        local ready
+        ready=$(kubectl get deployment gateway-rot-gw-${replica} -n "$TEST_NS" \
+            -o jsonpath='{.status.readyReplicas}')
+        [ "${ready:-0}" -ge 1 ] \
+            || fail "tunnel Deployment gateway-rot-gw-${replica} rollout not complete after rotate returned (readyReplicas=${ready:-0})"
+    done
     local pod_names_after
     pod_names_after=$(kubectl get pods -n "$TEST_NS" -l app.kubernetes.io/instance=rot-gw \
         -o jsonpath='{.items[*].metadata.name}')
-    [ "$pod_names_before" != "$pod_names_after" ] || fail "tunnel pod was not replaced after token rotation"
-    pass "rotate: tunnel pod replaced via rolling restart"
+    [ "$pod_names_before" != "$pod_names_after" ] || fail "tunnel pods were not replaced after token rotation"
+    pass "rotate: all tunnel pods replaced via rolling restart"
 
     # Path 2: Error when suspended.
     log "Suspending Gateway 'rot-gw'..."

@@ -17,6 +17,7 @@ import (
 	"github.com/fluxcd/pkg/ssa"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -160,8 +161,19 @@ func (r *GatewayReconciler) maybeRotateToken(
 	}
 
 	// On-demand rotation: annotation differs from last handled value.
+	// Also verify the rotation hasn't already been performed by checking
+	// whether LastTokenRotatedAt is newer than the request — this covers
+	// the window between token rotation and full rollout completion, during
+	// which LastHandledTokenRotateAt is intentionally not yet updated.
 	requestedAt := gw.Annotations[apiv1.AnnotationRotateTokenRequestedAt]
 	onDemand := requestedAt != "" && requestedAt != lastHandledRotateAt
+	if onDemand && lastTokenRotatedAt != "" {
+		tRequested, err1 := time.Parse(time.RFC3339Nano, requestedAt)
+		tRotated, err2 := time.Parse(time.RFC3339, lastTokenRotatedAt)
+		if err1 == nil && err2 == nil && !tRotated.Before(tRequested) {
+			onDemand = false
+		}
+	}
 
 	// Scheduled rotation: time since last rotation exceeds interval (only when enabled).
 	scheduled := false
@@ -196,67 +208,165 @@ func (r *GatewayReconciler) maybeRotateToken(
 	return true, nil
 }
 
-// applyTunnelDeployments builds and applies a tunnel Deployment for each
-// replica via Server-Side Apply. The tokenHash is set as a pod template
-// annotation to trigger a rolling restart when the tunnel token changes.
+// applyTunnelDeployments builds and applies tunnel Deployments via
+// Server-Side Apply one at a time, using a rolling update strategy.
+//
+// Deployments are processed in order. If a Deployment is currently
+// rolling out (from any previous change — token rotation, resource
+// update, patch, etc.), reconciliation stops and waits for the Owns
+// watch to re-trigger when the Deployment status changes. Once rolled
+// out, the desired state is applied; if the apply produces a change,
+// reconciliation stops again so the rollout completes before the next
+// Deployment is touched.
+//
 // Returns change messages.
 func (r *GatewayReconciler) applyTunnelDeployments(ctx context.Context, gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters, replicas []apiv1.ReplicaConfig, tokenHash string) ([]string, error) {
 	l := log.FromContext(ctx)
 	var changes []string
+
 	for i := range replicas {
 		deploymentName := apiv1.GatewayReplicaName(gw, replicas[i].Name)
-		deployObj, err := r.buildTunnelDeployment(gw, params, &replicas[i], tokenHash)
+
+		// If this Deployment exists and is still rolling out, wait.
+		// If it hit ProgressDeadlineExceeded, try to apply — a spec
+		// change (e.g. fixed image) will start a new rollout. If the
+		// apply is a no-op, the failure is terminal: skip it so one
+		// broken replica doesn't block the rest of the rollout.
+		var deploy appsv1.Deployment
+		exists := false
+		err := r.Get(ctx, client.ObjectKey{Namespace: gw.Namespace, Name: deploymentName}, &deploy)
+		if err != nil && !apierrors.IsNotFound(err) {
+			return changes, fmt.Errorf("getting tunnel Deployment %q: %w", deploymentName, err)
+		}
+		if err == nil {
+			exists = true
+			if !isDeploymentRolledOut(&deploy) {
+				if isProgressDeadlineExceeded(&deploy) {
+					change, err := r.applyOneDeployment(ctx, gw, params, &replicas[i], tokenHash)
+					if err != nil {
+						return changes, err
+					}
+					if change != "" {
+						changes = append(changes, change)
+						return changes, nil
+					}
+					l.Info("Deployment exceeded progress deadline with no pending changes, skipping", "deployment", deploymentName)
+					continue
+				}
+				l.V(1).Info("Waiting for Deployment to finish rolling out", "deployment", deploymentName)
+				return changes, nil
+			}
+		}
+
+		// Apply the desired state.
+		change, err := r.applyOneDeployment(ctx, gw, params, &replicas[i], tokenHash)
 		if err != nil {
-			return nil, fmt.Errorf("building tunnel deployment %q: %w", deploymentName, err)
+			return changes, err
 		}
-		ssaEntry, err := r.ResourceManager.Apply(ctx, deployObj, ssaApplyOptions)
-		if err != nil {
-			return nil, fmt.Errorf("applying tunnel deployment %q: %w", deploymentName, err)
+		if change != "" {
+			changes = append(changes, change)
+			// New Deployments don't have running pods, so continue
+			// to the next without waiting. For existing Deployments,
+			// stop and let the next reconcile verify the rollout
+			// completed before updating the next Deployment.
+			if exists {
+				return changes, nil
+			}
 		}
-		if string(ssaEntry.Action) != string(ssa.UnchangedAction) {
-			changes = append(changes, fmt.Sprintf("tunnel Deployment %s %s", deploymentName, ssaEntry.Action))
-		}
-		l.V(1).Info("Reconciled tunnel Deployment", "deployment", deploymentName, "action", ssaEntry.Action)
 	}
+
 	return changes, nil
+}
+
+// applyOneDeployment builds and applies a single tunnel Deployment via
+// Server-Side Apply. Returns a change message if the Deployment was
+// created or updated, or "" if unchanged.
+func (r *GatewayReconciler) applyOneDeployment(ctx context.Context, gw *gatewayv1.Gateway, params *apiv1.CloudflareGatewayParameters, replica *apiv1.ReplicaConfig, tokenHash string) (string, error) {
+	l := log.FromContext(ctx)
+	deploymentName := apiv1.GatewayReplicaName(gw, replica.Name)
+	deployObj, err := r.buildTunnelDeployment(gw, params, replica, tokenHash)
+	if err != nil {
+		return "", fmt.Errorf("building tunnel deployment %q: %w", deploymentName, err)
+	}
+	ssaEntry, err := r.ResourceManager.Apply(ctx, deployObj, ssaApplyOptions)
+	if err != nil {
+		return "", fmt.Errorf("applying tunnel deployment %q: %w", deploymentName, err)
+	}
+	l.V(1).Info("Reconciled tunnel Deployment", "deployment", deploymentName, "action", ssaEntry.Action)
+	if string(ssaEntry.Action) != string(ssa.UnchangedAction) {
+		return fmt.Sprintf("tunnel Deployment %s %s", deploymentName, ssaEntry.Action), nil
+	}
+	return "", nil
+}
+
+// isDeploymentRolledOut returns true if the Deployment has completed its
+// rollout: the controller has observed the latest spec, all replicas are
+// updated, old replicas have been terminated, and the required number is
+// ready. We intentionally check ReadyReplicas instead of AvailableReplicas
+// so that minReadySeconds (which delays availability) does not block the
+// Gateway from becoming Programmed or the rolling update from proceeding.
+// minReadySeconds only prevents the Kubernetes Deployment controller from
+// terminating the old pod too early — our controller doesn't need to wait
+// for that.
+func isDeploymentRolledOut(deploy *appsv1.Deployment) bool {
+	if deploy.Status.ObservedGeneration < deploy.Generation {
+		return false
+	}
+	desired := int32(1)
+	if deploy.Spec.Replicas != nil {
+		desired = *deploy.Spec.Replicas
+	}
+	return deploy.Status.UpdatedReplicas >= desired &&
+		deploy.Status.Replicas <= deploy.Status.UpdatedReplicas &&
+		deploy.Status.ReadyReplicas >= deploy.Status.UpdatedReplicas
+}
+
+func isProgressDeadlineExceeded(deploy *appsv1.Deployment) bool {
+	for _, c := range deploy.Status.Conditions {
+		if c.Type == appsv1.DeploymentProgressing && c.Status == "False" {
+			return true
+		}
+	}
+	return false
 }
 
 // checkAllDeploymentsReadiness fetches all tunnel Deployments for the
 // replicas and inspects their status to determine the Gateway's
-// Programmed and Ready state. All Deployments must be available for the
-// Gateway to be considered Programmed.
-func (r *GatewayReconciler) checkAllDeploymentsReadiness(ctx context.Context, gw *gatewayv1.Gateway, replicas []apiv1.ReplicaConfig) gatewayReadiness {
+// Programmed and Ready state. All Deployments must have the expected
+// tokenHash and be fully rolled out for Ready=True.
+func (r *GatewayReconciler) checkAllDeploymentsReadiness(ctx context.Context, gw *gatewayv1.Gateway, replicas []apiv1.ReplicaConfig, tokenHash string) gatewayReadiness {
 	l := log.FromContext(ctx)
-	allAvailable := true
+	allRolledOut := true
+	anyAvailable := false
 	anyDeadlineExceeded := false
 	var notReadyNames []string
 
 	for i := range replicas {
 		deploymentName := apiv1.GatewayReplicaName(gw, replicas[i].Name)
 		var deploy appsv1.Deployment
+		deployRolledOut := false
 		deployAvailable := false
 		deployDeadlineExceeded := false
 		if err := r.Get(ctx, client.ObjectKey{
 			Namespace: gw.Namespace,
 			Name:      deploymentName,
 		}, &deploy); err == nil {
-			for _, c := range deploy.Status.Conditions {
-				switch {
-				case c.Type == appsv1.DeploymentAvailable && c.Status == "True":
-					deployAvailable = true
-				case c.Type == appsv1.DeploymentProgressing && c.Status == "False":
-					deployDeadlineExceeded = true
-				}
-			}
+			currentHash := deploy.Spec.Template.Annotations[apiv1.AnnotationTokenHash]
+			deployRolledOut = currentHash == tokenHash && isDeploymentRolledOut(&deploy)
+			deployAvailable = deploy.Status.ReadyReplicas > 0
+			deployDeadlineExceeded = isProgressDeadlineExceeded(&deploy)
 		} else {
 			l.V(1).Info("Failed to get Deployment, treating as unavailable", "deployment", deploymentName, "error", err)
 		}
 		if deployDeadlineExceeded {
 			anyDeadlineExceeded = true
 			notReadyNames = append(notReadyNames, deploymentName)
-		} else if !deployAvailable {
-			allAvailable = false
+		} else if !deployRolledOut {
+			allRolledOut = false
 			notReadyNames = append(notReadyNames, deploymentName)
+		}
+		if deployAvailable {
+			anyAvailable = true
 		}
 	}
 
@@ -271,7 +381,7 @@ func (r *GatewayReconciler) checkAllDeploymentsReadiness(ctx context.Context, gw
 		readiness.readyStatus = metav1.ConditionFalse
 		readiness.readyReason = apiv1.ReasonReconciliationFailed
 		readiness.readyMsg = fmt.Sprintf("tunnel deployment(s) exceeded progress deadline: %s", strings.Join(notReadyNames, ", "))
-	} else if allAvailable {
+	} else if allRolledOut {
 		readiness.programmedStatus = metav1.ConditionTrue
 		readiness.programmedReason = string(gatewayv1.GatewayReasonProgrammed)
 		readiness.programmedMsg = "Gateway is programmed"
@@ -281,6 +391,15 @@ func (r *GatewayReconciler) checkAllDeploymentsReadiness(ctx context.Context, gw
 	} else {
 		readiness.readyReason = apiv1.ReasonProgressing
 		readiness.readyMsg = fmt.Sprintf("Waiting for tunnel deployment(s) to become ready: %s", strings.Join(notReadyNames, ", "))
+	}
+	// During rolling updates (e.g. token rotation), each Deployment keeps at
+	// least one available replica thanks to maxUnavailable=0. As long as any
+	// Deployment has an available replica, the tunnel can serve traffic, so the
+	// Gateway stays Programmed even though the rollout is in progress.
+	if anyAvailable && !anyDeadlineExceeded {
+		readiness.programmedStatus = metav1.ConditionTrue
+		readiness.programmedReason = string(gatewayv1.GatewayReasonProgrammed)
+		readiness.programmedMsg = "Gateway is programmed"
 	}
 	return readiness
 }
@@ -700,6 +819,8 @@ func (r *GatewayReconciler) buildTunnelDeploymentApply(gw *gatewayv1.Gateway, pa
 		).
 		WithSpec(acappsv1.DeploymentSpec().
 			WithReplicas(1).
+			WithMinReadySeconds(minReadySeconds(params)).
+			WithProgressDeadlineSeconds(progressDeadlineSeconds(params)).
 			WithStrategy(acappsv1.DeploymentStrategy().
 				WithType(appsv1.RollingUpdateDeploymentStrategyType).
 				WithRollingUpdate(acappsv1.RollingUpdateDeployment().
@@ -721,6 +842,17 @@ func (r *GatewayReconciler) buildTunnelDeploymentApply(gw *gatewayv1.Gateway, pa
 		)
 
 	return deploy
+}
+
+func minReadySeconds(params *apiv1.CloudflareGatewayParameters) int32 {
+	if params != nil && params.Spec.Tunnel != nil && params.Spec.Tunnel.MinReadySeconds != nil {
+		return *params.Spec.Tunnel.MinReadySeconds
+	}
+	return apiv1.DefaultMinReadySeconds
+}
+
+func progressDeadlineSeconds(params *apiv1.CloudflareGatewayParameters) int32 {
+	return minReadySeconds(params) + 60
 }
 
 // reconcileTunnelRBAC creates/updates the ServiceAccount, Role, and RoleBinding

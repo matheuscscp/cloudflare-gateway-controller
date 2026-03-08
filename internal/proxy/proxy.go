@@ -5,7 +5,6 @@ package proxy
 
 import (
 	"context"
-	cryptorand "crypto/rand"
 	"crypto/tls"
 	"fmt"
 	"log"
@@ -29,13 +28,6 @@ const (
 	// loaded yet. The health check uses this to distinguish an internal 503 from a
 	// proxied one.
 	HeaderConfigNotLoaded = "X-Proxy-Config-Not-Loaded"
-
-	// HeaderHealthProbe is sent by the background health probe loop and
-	// intercepted by the proxy. When present on an incoming request, the
-	// proxy responds 200 OK with this header set to its own healthID
-	// (instead of forwarding to a backend). The probe loop compares the
-	// response value to verify the request was routed to this pod.
-	HeaderHealthProbe = "X-Health-Probe"
 )
 
 const (
@@ -50,15 +42,6 @@ const (
 	// HealthPath is the HTTP path used by all probes (startup, liveness,
 	// readiness). The tunnel serves a single handler at this path.
 	HealthPath = "/healthz"
-)
-
-const (
-	// healthProbeInterval is how often the background loop sends a probe.
-	healthProbeInterval = 2 * time.Second
-
-	// healthProbeTimeout is how long since the last successful probe
-	// before the pod is considered unhealthy.
-	healthProbeTimeout = 60 * time.Second
 )
 
 // noKeepAliveTransport is a shared http.Transport with keep-alives disabled.
@@ -79,21 +62,6 @@ var h2cTransport http.RoundTripper = &http2.Transport{
 type Proxy struct {
 	config atomic.Pointer[Config]
 
-	// healthID is a unique identifier for this proxy instance, generated
-	// at startup. The background health probe loop sends it in the
-	// X-Health-Probe request header; the proxy echoes its own healthID
-	// back. The probe loop compares them to verify the request was
-	// routed to this specific pod through Cloudflare.
-	healthID string
-
-	// healthClient is used by the background health probe loop.
-	healthClient *http.Client
-
-	// lastHealthHit stores the time of the last successful health probe
-	// (i.e. a request that came back to this pod). The pod is considered
-	// healthy when the timestamp is recent enough.
-	lastHealthHit atomic.Pointer[time.Time]
-
 	// errorLog is used by httputil.ReverseProxy for proxy error messages.
 	// When nil, the default log package logger is used.
 	errorLog *log.Logger
@@ -101,50 +69,19 @@ type Proxy struct {
 
 // NewProxy creates a Proxy with the given logger.
 func NewProxy(zlog *zerolog.Logger) *Proxy {
-	p := &Proxy{
-		healthID:     generateHealthID(),
-		healthClient: &http.Client{Timeout: 2 * time.Second},
+	return &Proxy{
+		errorLog: log.New(zlog, "", 0),
 	}
-	if zlog != nil {
-		p.errorLog = log.New(zlog, "", 0)
-	}
-	return p
 }
 
-// isHealthy reports whether the proxy has a config loaded and the last
-// successful health probe is recent enough (or no routes exist to probe).
-func (p *Proxy) isHealthy() bool {
-	if p.config.Load() == nil {
-		return false
-	}
-	last := p.lastHealthHit.Load()
-	return last != nil && time.Since(*last) < healthProbeTimeout
-}
-
-// generateHealthID returns a random 32-byte value in hex format.
-func generateHealthID() string {
-	var buf [32]byte
-	if _, err := cryptorand.Read(buf[:]); err != nil {
-		panic(fmt.Sprintf("crypto/rand: %v", err))
-	}
-	return fmt.Sprintf("%x", buf)
-}
-
-// StartHealthServer starts the health probe and Prometheus metrics server
-// on addr. The cloudflaredHealth handler is called after ProbeHealth passes
-// to check cloudflared's own connection state. The server is shut down
-// when ctx is cancelled.
-//
-// A background goroutine continuously probes the tunnel by picking a
-// hostname from the route config, sending an HTTPS request through
-// Cloudflare with the X-Health-Probe header, and verifying the response
-// came back to this pod.
+// StartHealthServer starts the health and Prometheus metrics server on addr.
+// The cloudflaredHealth handler is called after the proxy health check passes
+// to check cloudflared's own connection state. The server is shut down when
+// ctx is cancelled.
 func (p *Proxy) StartHealthServer(ctx context.Context, addr string, cloudflaredHealth http.Handler) {
-	go p.healthProbeLoop(ctx)
-
 	mux := http.NewServeMux()
 	mux.HandleFunc(HealthPath, func(w http.ResponseWriter, r *http.Request) {
-		if !p.isHealthy() {
+		if p.config.Load() == nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
@@ -166,49 +103,6 @@ func (p *Proxy) StartHealthServer(ctx context.Context, addr string, cloudflaredH
 			p.errorLog.Fatalf("health server error: %v", err)
 		}
 	}()
-}
-
-// healthProbeLoop continuously probes the tunnel to verify this pod's
-// connection is routing traffic. It picks a hostname from the route config,
-// sends one HTTPS request through Cloudflare with the X-Health-Probe
-// header every healthProbeInterval, and updates lastHealthHit on success.
-// When no routes are configured, it touches the timestamp directly.
-func (p *Proxy) healthProbeLoop(ctx context.Context) {
-	for {
-		cfg := p.config.Load()
-		if cfg == nil || len(cfg.Routes) == 0 {
-			if cfg != nil {
-				p.lastHealthHit.Store(new(time.Now()))
-			}
-		} else {
-			p.probeOnce(ctx, cfg.Routes[0].Hostname)
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(healthProbeInterval):
-		}
-	}
-}
-
-// probeOnce sends a single health probe request through Cloudflare and
-// updates lastHealthHit if the response came back to this pod.
-func (p *Proxy) probeOnce(ctx context.Context, hostname string) {
-	req, err := http.NewRequestWithContext(ctx, "GET", "https://"+hostname+"/", nil)
-	if err != nil {
-		return
-	}
-	req.Header.Set(HeaderHealthProbe, p.healthID)
-	resp, err := p.healthClient.Do(req)
-	if err != nil {
-		return
-	}
-	respID := resp.Header.Get(HeaderHealthProbe)
-	_ = resp.Body.Close()
-	if resp.StatusCode == http.StatusOK && respID == p.healthID {
-		p.lastHealthHit.Store(new(time.Now()))
-	}
 }
 
 // SetConfig atomically replaces the routing table.
@@ -266,12 +160,6 @@ var (
 // hostname (exact) then longest PathPrefix, picks a weighted backend, and
 // forwards the request via httputil.ReverseProxy.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get(HeaderHealthProbe) != "" {
-		w.Header().Set(HeaderHealthProbe, p.healthID)
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-
 	route, backend, sessionHit, sessionCreatedAt, err := p.resolveBackend(r)
 	if err != nil {
 		switch err {
@@ -314,14 +202,6 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // framing with body flushing for streaming RPCs). It resolves the backend using
 // the same routing logic as ServeHTTP and rewrites the request URL.
 func (p *Proxy) RoundTrip(r *http.Request) (*http.Response, error) {
-	if r.Header.Get(HeaderHealthProbe) != "" {
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Body:       http.NoBody,
-			Header:     http.Header{HeaderHealthProbe: {p.healthID}},
-		}, nil
-	}
-
 	route, backend, sessionHit, sessionCreatedAt, err := p.resolveBackend(r)
 	if err != nil {
 		return nil, err

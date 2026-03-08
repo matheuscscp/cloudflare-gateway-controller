@@ -245,7 +245,7 @@ func TestMain(m *testing.M) {
 				if deploy.Spec.Replicas != nil {
 					desired = *deploy.Spec.Replicas
 				}
-				if deploy.Status.ReadyReplicas == desired {
+				if deploy.Status.ReadyReplicas == desired && deploy.Status.ObservedGeneration == deploy.Generation {
 					continue
 				}
 				deploy.Status.Replicas = desired

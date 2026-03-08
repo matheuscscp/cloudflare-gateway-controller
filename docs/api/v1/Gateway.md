@@ -117,11 +117,12 @@ manually.
 
 ### On-demand token rotation
 
-The `cloudflare-gateway-controller.io/rotateTokenRequestedAt` annotation
-triggers an on-demand tunnel token rotation when its value changes. The
-controller records the handled value in the
+The `gateways.cloudflare-gateway-controller.io/rotateTokenRequestedAt`
+annotation triggers an on-demand tunnel token rotation when its value changes.
+The controller records the handled value in the
 [CloudflareGatewayStatus](CloudflareGatewayStatus.md)
-`.status.lastHandledTokenRotateAt` field and only acts on new values.
+`.status.lastHandledTokenRotateAt` field once the rotation is fully complete
+(all Deployments rolled out with the new token).
 
 This annotation is managed by `cfgwctl rotate gateway token` — do not set it
 manually.
@@ -247,15 +248,21 @@ Reasons for rejection:
 #### Programmed Gateway
 
 Standard Gateway API condition. The controller reports whether the tunnel
-Deployment is available.
+can serve traffic.
 
-When the Deployment is ready:
+During rolling updates (e.g. token rotation), the Gateway stays Programmed
+as long as any Deployment has a ready replica and none have exceeded their
+progress deadline — traffic continues to flow through the available replicas
+while others are being updated.
+
+When at least one Deployment has a ready replica (and no deadline exceeded):
 
 - `type: Programmed`
 - `status: "True"`
 - `reason: Programmed`
 
-When the Deployment is not yet ready:
+When no Deployment has a ready replica, or a Deployment has exceeded its
+progress deadline:
 
 - `type: Programmed`
 - `status: "False"`
@@ -297,7 +304,8 @@ Custom condition, not part of the Gateway API spec.
 [kstatus](https://github.com/kubernetes-sigs/cli-utils/blob/master/pkg/kstatus/README.md)-compatible
 condition that summarizes the overall reconciliation state.
 
-When all Cloudflare resources are reconciled and the Deployment is available:
+When all Cloudflare resources are reconciled and all tunnel Deployments are
+fully rolled out with the expected token hash:
 
 - `type: Ready`
 - `status: "True"`
@@ -310,7 +318,7 @@ deadline, unrecoverable API error):
 - `status: "False"`
 - `reason: ReconciliationFailed`
 
-When waiting for the Deployment to become ready (not an error):
+When waiting for Deployment(s) to become ready (e.g. during a rolling update):
 
 - `type: Ready`
 - `status: "Unknown"`

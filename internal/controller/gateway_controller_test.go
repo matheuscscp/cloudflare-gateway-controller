@@ -3482,6 +3482,66 @@ func TestGatewayReconciler_CustomContainerResources(t *testing.T) {
 	g.Expect(resources.Limits.Memory().String()).To(Equal("512Mi"))
 }
 
+func TestGatewayReconciler_MinReadySeconds(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-min-ready", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	minReady := int32(30)
+	params := createTestParameters(g, "test-gw-min-ready-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		Tunnel: &apiv1.TunnelConfig{
+			MinReadySeconds: &minReady,
+		},
+	})
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-min-ready",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "https",
+					Protocol: gatewayv1.HTTPSProtocolType,
+					Port:     443,
+				},
+			},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayProgrammed(g, gw)
+
+	// Verify Deployment uses the configured minReadySeconds and derived progressDeadlineSeconds.
+	var deploy appsv1.Deployment
+	deployKey := client.ObjectKey{Name: "gateway-" + gw.Name + "-primary", Namespace: gw.Namespace}
+	g.Expect(testClient.Get(testCtx, deployKey, &deploy)).To(Succeed())
+	g.Expect(deploy.Spec.MinReadySeconds).To(Equal(int32(30)))
+	g.Expect(*deploy.Spec.ProgressDeadlineSeconds).To(Equal(int32(90))) // minReadySeconds + 60
+}
+
 func TestGatewayReconciler_DuplicateZonesRejected(t *testing.T) {
 	g := NewWithT(t)
 

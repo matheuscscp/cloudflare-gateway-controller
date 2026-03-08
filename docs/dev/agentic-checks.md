@@ -14,13 +14,13 @@ good state, meeting all the necessary requirements and quality standards.
 - **CLI docs**: The CLI docs at `docs/cli/README.md` are always up-to-date,
   correctly describing all the available commands and their usage. The `test`
   subcommand and its subcommands should not be documented and should just
-  mention that they are subject to breaking changes and there are no backwards
+  mention that they are subject to breaking changes, there are no backwards
   compatibility guarantees for them.
 - **E2E docs**: The E2E docs at `docs/e2e/README.md` are always up-to-date,
   correctly describing and reflecting all the E2E test cases and their
   expected outcomes.
-- **Test CLI**: The `test` subcommand of the CLI never implements more
-  commands than necessary for the tasks in this project that rely on it,
+- **Test CLI**: Every command of the CLI in the `test` subcommand tree is
+  necessary for at least one of the tasks in this project that rely on it,
   such as the E2E tests and the Cloudflare resource cleanup script.
 - **Coverage Target**: The coverage target is as close to 100% as possible
   for the packages listed in the `make test` output, except the `api/v1`
@@ -29,6 +29,10 @@ good state, meeting all the necessary requirements and quality standards.
   agent should look at the uncovered lines and determine if they can bring
   the coverage up. No need to touch `preflight.go` or `preflight_test.go`.
   VPA unit tests are not needed, we already have an E2E test for VPA.
+  When iterating on the tests, remember to use `GO_TEST_ARGS` with the
+  `make test` command to only run the tests that you are currently working
+  on, to save time.
+- **`make`**: The `make` command runs successfully without any errors.
 - **Good Controller Requirements**: The controller always meets the
   requirements outlined in the good controller guide at `docs/dev/`.
 

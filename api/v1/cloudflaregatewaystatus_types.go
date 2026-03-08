@@ -57,6 +57,11 @@ type CloudflareGatewayStatusDetail struct {
 	// (either scheduled or on-demand).
 	// +optional
 	LastTokenRotatedAt string `json:"lastTokenRotatedAt,omitempty"`
+
+	// CurrentTokenHash is the truncated SHA-256 hex digest of the current
+	// tunnel token, as seen by the controller during reconciliation.
+	// +optional
+	CurrentTokenHash string `json:"currentTokenHash,omitempty"`
 }
 
 // TunnelStatus records the state of the Cloudflare tunnel managed for
