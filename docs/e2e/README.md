@@ -477,7 +477,7 @@ Gateway is suspended.
    Deployments completed their rollout.
 9. Verify Gateway events in the watch output: rotation-requested,
    Programmed=True Ready=Unknown, Programmed=True Ready=True.
-10. Verify Gateway is Ready=True and lastTokenRotatedAt changed.
+10. Verify Gateway is Ready=True and lastRotatedAt changed.
 11. Stop load generator (SIGTERM); verify 100% success rate.
 12. Verify Cloudflare API token changed.
 13. Verify in-cluster tunnel token Secret matches the new Cloudflare API token.
@@ -486,6 +486,37 @@ Gateway is suspended.
 16. Run `cfgwctl rotate gateway token` on the suspended Gateway; verify it fails
     with an error mentioning "suspended".
 17. Remove annotation, delete `HTTPRoute`, `Gateway`, `CGP`, `Deployment`, and `Service`.
+
+## test_watch_gateway_token
+
+Tests the `cfgwctl watch gateway token` CLI command by setting a cron-based
+token rotation schedule that fires ~2 minutes after the test starts, then
+polling with the watch command until it catches the scheduled rotation
+in progress and watches it to completion.
+
+**Resources created:**
+- `CloudflareGatewayParameters` `watch-params` with 3 tunnel replicas (r1, r2, r3)
+  and a dynamically computed cron schedule (fires ~2 minutes from test start, UTC)
+- `Gateway` referencing `watch-params`
+
+**Cloudflare resources:** 1 tunnel.
+
+**Pass criteria:**
+- The `cfgwctl watch gateway token` command catches the scheduled rotation and
+  watches it to completion (exit code 0).
+
+**Steps:**
+
+1. Compute a cron expression for ~2 minutes from now in UTC.
+2. Create `CloudflareGatewayParameters` with 3 replicas and the cron schedule.
+3. Create `Gateway`; wait for Programmed.
+4. Wait for Gateway to become Ready (first rotation completes, all deployments
+   roll out).
+5. Run `cfgwctl watch gateway token` in a retry loop (up to 60 attempts, 5s
+   apart). The command exits immediately with "No ongoing token rotation" when
+   all deployments are up to date — retry until the cron triggers and the
+   command catches the in-progress rotation.
+6. Delete `Gateway` and `CloudflareGatewayParameters`.
 
 ## test_podinfo
 

@@ -47,12 +47,15 @@ status:
       message: Reconciliation succeeded
       lastTransitionTime: "2026-01-15T10:01:00Z"
   lastHandledReconcileAt: "2026-01-15T10:05:00.000000000Z"
-  lastHandledTokenRotateAt: "2026-01-15T10:10:00.000000000Z"
-  lastTokenRotatedAt: "2026-01-15T10:10:01Z"
-  currentTokenHash: "a1b2c3d4e5f6"
   tunnel:
     name: gateway-abc123
     id: "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+    token:
+      hash: "a1b2c3d4e5f6"
+      rotation:
+        lastHandledRotateAt: "2026-01-15T10:10:00.000000000Z"
+        lastRotatedAt: "2026-01-15T10:10:01Z"
+        nextRotation: "2026-01-22T18:00:00-08:00"
   inventory:
     - apiVersion: apps/v1
       kind: Deployment
@@ -114,6 +117,7 @@ The tunnel entry has the following fields:
 
 - `name`: Cloudflare tunnel name.
 - `id`: Cloudflare tunnel UUID.
+- `token`: Token state (see [Token tracking](#token-tracking)).
 
 ### Inventory
 
@@ -136,20 +140,24 @@ The `.status.lastHandledReconcileAt` field records the value of the
 was handled. The CLI uses this to detect when a requested reconciliation has
 completed.
 
-### Token rotation tracking
+### Token tracking
 
-The `.status.lastHandledTokenRotateAt` field records the value of the
-`rotateTokenRequestedAt` annotation at the time the last on-demand token
-rotation was fully completed (all Deployments rolled out with the new token
-and the Gateway is Ready). This field is intentionally not updated until the
-rolling update finishes, so the CLI can detect ongoing rotations.
+The `.status.tunnel.token` field groups the tunnel token state:
 
-The `.status.lastTokenRotatedAt` field records the RFC 3339 timestamp of the
-last successful token rotation (either automatic or on-demand). The controller
-uses this to schedule the next automatic rotation based on the configured
-interval.
+- `.status.tunnel.token.hash`: SHA-256 hex digest of the current tunnel token, as
+  seen by the controller during reconciliation. Used by the CLI to detect which
+  Deployments have already been updated during a rolling token rotation.
 
-The `.status.currentTokenHash` field contains the truncated SHA-256 hex digest
-of the current tunnel token, as seen by the controller during reconciliation.
-This is used by the CLI to detect which Deployments have already been updated
-during a rolling token rotation.
+The `.status.tunnel.token.rotation` field groups the token rotation state:
+
+- `.status.tunnel.token.rotation.lastHandledRotateAt`: The value of the
+  `rotateTokenRequestedAt` annotation at the time the last on-demand token
+  rotation was fully completed (all Deployments rolled out with the new token
+  and the Gateway is Ready). This field is intentionally not updated until the
+  rolling update finishes, so the CLI can detect ongoing rotations.
+- `.status.tunnel.token.rotation.lastRotatedAt`: RFC 3339 timestamp of the last
+  successful token rotation (either automatic or on-demand). The controller uses
+  this to determine whether the most recent cron trigger has already been handled.
+- `.status.tunnel.token.rotation.nextRotation`: Next scheduled time for automatic
+  token rotation, based on the configured cron schedule. Nil when rotation is
+  disabled.

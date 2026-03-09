@@ -47,21 +47,6 @@ type CloudflareGatewayStatusDetail struct {
 	// at the time the last reconciliation was handled.
 	// +optional
 	LastHandledReconcileAt string `json:"lastHandledReconcileAt,omitempty"`
-
-	// LastHandledTokenRotateAt is the value of the rotateTokenRequestedAt annotation
-	// at the time the last token rotation request was handled.
-	// +optional
-	LastHandledTokenRotateAt string `json:"lastHandledTokenRotateAt,omitempty"`
-
-	// LastTokenRotatedAt is the timestamp of the last successful token rotation
-	// (either scheduled or on-demand).
-	// +optional
-	LastTokenRotatedAt string `json:"lastTokenRotatedAt,omitempty"`
-
-	// CurrentTokenHash is the truncated SHA-256 hex digest of the current
-	// tunnel token, as seen by the controller during reconciliation.
-	// +optional
-	CurrentTokenHash string `json:"currentTokenHash,omitempty"`
 }
 
 // TunnelStatus records the state of the Cloudflare tunnel managed for
@@ -72,6 +57,41 @@ type TunnelStatus struct {
 
 	// ID is the Cloudflare tunnel UUID.
 	ID string `json:"id"`
+
+	// Token holds the tunnel token rotation state.
+	// +optional
+	Token *TokenStatus `json:"token,omitempty"`
+}
+
+// TokenStatus records the tunnel token state for a Gateway.
+type TokenStatus struct {
+	// Hash is the SHA-256 hex digest of the current tunnel token,
+	// as seen by the controller during reconciliation.
+	// +optional
+	Hash string `json:"hash,omitempty"`
+
+	// Rotation holds the token rotation state.
+	// +optional
+	Rotation *TokenRotationStatus `json:"rotation,omitempty"`
+}
+
+// TokenRotationStatus records the tunnel token rotation state for a Gateway.
+type TokenRotationStatus struct {
+	// LastHandledRotateAt is the value of the rotateTokenRequestedAt annotation
+	// at the time the last token rotation request was handled.
+	// +optional
+	LastHandledRotateAt string `json:"lastHandledRotateAt,omitempty"`
+
+	// LastRotatedAt is the timestamp of the last successful token rotation
+	// (either scheduled or on-demand).
+	// +optional
+	LastRotatedAt string `json:"lastRotatedAt,omitempty"`
+
+	// NextRotation is the next scheduled time for automatic token
+	// rotation, based on the configured cron schedule. Nil when rotation
+	// is disabled.
+	// +optional
+	NextRotation *metav1.Time `json:"nextRotation,omitempty"`
 }
 
 // ResourceRef identifies a Kubernetes object managed by a Gateway.

@@ -46,8 +46,14 @@ func newWatchGatewayTokenCmd() *cobra.Command {
 				return fmt.Errorf("getting CloudflareGatewayStatus: %w", err)
 			}
 
+			var currentHash string
+			if cgs.Status.Tunnel != nil && cgs.Status.Tunnel.Token != nil {
+				currentHash = cgs.Status.Tunnel.Token.Hash
+			}
+
 			numDeployments := 0
 			var pendingNames []string
+			var oldHash string
 			for _, ref := range cgs.Status.Inventory {
 				if ref.APIVersion != apiv1.APIVersionApps || ref.Kind != apiv1.KindDeployment {
 					continue
@@ -61,8 +67,11 @@ func newWatchGatewayTokenCmd() *cobra.Command {
 					return fmt.Errorf("getting Deployment %s: %w", ref.Name, err)
 				}
 				h := deploy.Spec.Template.Annotations[apiv1.AnnotationTokenHash]
-				if h != cgs.Status.CurrentTokenHash {
+				if h != currentHash {
 					pendingNames = append(pendingNames, ref.Name)
+					if oldHash == "" {
+						oldHash = h
+					}
 				}
 			}
 
@@ -101,7 +110,7 @@ func newWatchGatewayTokenCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 
-			err = watchRotation(ctx, clientset, dynClient, ns, name, numDeployments, cgs.Status.CurrentTokenHash, nil)
+			err = watchRotation(ctx, clientset, dynClient, ns, name, numDeployments, oldHash, nil)
 			if err != nil {
 				return err
 			}

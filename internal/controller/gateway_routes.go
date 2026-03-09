@@ -23,6 +23,7 @@ import (
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/conditions"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/proxy"
+	"github.com/matheuscscp/cloudflare-gateway-controller/internal/schedule"
 )
 
 // gatewayValidationError holds a terminal error and the condition to set on the Gateway.
@@ -164,6 +165,28 @@ func validateParameters(params *apiv1.CloudflareGatewayParameters) *gatewayValid
 						Message: msg,
 					},
 				}
+			}
+		}
+	}
+
+	// Validate token rotation cron schedule if specified.
+	if params != nil && params.Spec.Tunnel != nil && params.Spec.Tunnel.Token != nil &&
+		params.Spec.Tunnel.Token.Rotation != nil && params.Spec.Tunnel.Token.Rotation.Schedule != nil {
+		sched := params.Spec.Tunnel.Token.Rotation.Schedule
+		tz := sched.TimeZone
+		if tz == "" {
+			tz = "UTC"
+		}
+		if _, err := schedule.Parse(sched.Cron, tz); err != nil {
+			msg := fmt.Sprintf("invalid token rotation schedule: %v", err)
+			return &gatewayValidationError{
+				err: reconcile.TerminalError(fmt.Errorf("%s", msg)),
+				cond: metav1.Condition{
+					Type:    string(gatewayv1.GatewayConditionAccepted),
+					Status:  metav1.ConditionFalse,
+					Reason:  string(gatewayv1.GatewayReasonInvalidParameters),
+					Message: msg,
+				},
 			}
 		}
 	}

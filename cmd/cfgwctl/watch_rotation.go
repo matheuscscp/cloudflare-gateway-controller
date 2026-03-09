@@ -214,6 +214,24 @@ drainLoop:
 		allRolledOut:     len(rolledOut) == n,
 	}
 
+	// When attaching to an ongoing rotation, emit synthetic events for
+	// deployments that already have the new hash (their token-updated
+	// annotation change happened before the informer was set up).
+	if patchFn == nil {
+		for _, d := range deployList {
+			if tokenUpdated[d.Name] {
+				h := d.Spec.Template.Annotations[apiv1.AnnotationTokenHash]
+				w.addEvent(fmt.Sprintf("Deployment/%s", d.Name), "token-updated",
+					fmt.Sprintf("hash=%s", h))
+				if rolledOut[d.Name] {
+					w.addEvent(fmt.Sprintf("Deployment/%s", d.Name), "rolled-out",
+						fmt.Sprintf("updated=%d ready=%d",
+							d.Status.UpdatedReplicas, d.Status.ReadyReplicas))
+				}
+			}
+		}
+	}
+
 	// If already all rolled out (attaching to a completed rotation), check immediately.
 	if w.allRolledOut && w.lastGWReady == "True" {
 		return printReport(w.events, initialHash, n)
@@ -281,13 +299,17 @@ func (w *rotationWatcher) addEvent(source, kind, detail string) {
 	now := time.Now()
 	w.events = append(w.events, rotationEvent{Time: now, Source: source, Kind: kind, Detail: detail})
 
-	// Print the event in real time.
+	// Print the event in real time with truncated hashes for readability.
 	elapsed := ""
 	if len(w.events) > 1 {
 		elapsed = fmt.Sprintf("+%s", formatDuration(now.Sub(w.events[0].Time)))
 	}
-	if detail != "" {
-		fmt.Printf("[%s] %-8s %-42s %s %s\n", now.Format("15:04:05"), elapsed, source, kind, detail)
+	displayDetail := detail
+	if strings.HasPrefix(detail, "hash=") {
+		displayDetail = "hash=" + truncateHash(detail[len("hash="):])
+	}
+	if displayDetail != "" {
+		fmt.Printf("[%s] %-8s %-42s %s %s\n", now.Format("15:04:05"), elapsed, source, kind, displayDetail)
 	} else {
 		fmt.Printf("[%s] %-8s %-42s %s\n", now.Format("15:04:05"), elapsed, source, kind)
 	}
@@ -329,7 +351,7 @@ func (w *rotationWatcher) handleDeployUpdate(deploy *appsv1.Deployment) watchRes
 		w.currentHash[deploy.Name] = newHash
 		if !w.tokenUpdated[deploy.Name] {
 			w.tokenUpdated[deploy.Name] = true
-			w.addEvent(source, "token-updated", fmt.Sprintf("hash=%s", truncateHash(newHash)))
+			w.addEvent(source, "token-updated", fmt.Sprintf("hash=%s", newHash))
 		}
 	}
 
@@ -459,13 +481,6 @@ func isPodReady(pod *corev1.Pod) bool {
 // printReport prints a comprehensive timeline report and validates the
 // rolling update order. Returns an error if validation fails.
 func printReport(events []rotationEvent, initialHash map[string]string, numDeployments int) error {
-	// Determine the initial hash (all the same).
-	var oldHash string
-	for _, h := range initialHash {
-		oldHash = h
-		break
-	}
-
 	// Determine the new hash from events.
 	var newHash string
 	for _, ev := range events {
@@ -475,12 +490,38 @@ func printReport(events []rotationEvent, initialHash map[string]string, numDeplo
 		}
 	}
 
+	// Collect unique old hashes (hashes that differ from the new one).
+	// When attaching to an ongoing rotation triggered mid-rotation,
+	// deployments may have different old hashes.
+	oldHashes := make(map[string]struct{})
+	for _, h := range initialHash {
+		if h != newHash {
+			oldHashes[h] = struct{}{}
+		}
+	}
+	var oldHashDisplay string
+	switch len(oldHashes) {
+	case 0:
+		oldHashDisplay = truncateHash(newHash)
+	case 1:
+		for h := range oldHashes {
+			oldHashDisplay = truncateHash(h)
+		}
+	default:
+		parts := make([]string, 0, len(oldHashes))
+		for h := range oldHashes {
+			parts = append(parts, truncateHash(h))
+		}
+		sort.Strings(parts)
+		oldHashDisplay = strings.Join(parts, ", ")
+	}
+
 	// Print header.
 	fmt.Println()
 	fmt.Println("Token Rotation — Rolling Update Report")
 	fmt.Println("──────────────────────────────────────")
 	fmt.Printf("  Deployments:  %d\n", numDeployments)
-	fmt.Printf("  Old hash:     %s\n", truncateHash(oldHash))
+	fmt.Printf("  Old hash:     %s\n", oldHashDisplay)
 	fmt.Printf("  New hash:     %s\n", truncateHash(newHash))
 
 	// Build per-deployment rolling update timeline.

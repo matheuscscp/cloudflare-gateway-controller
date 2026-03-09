@@ -106,6 +106,7 @@ jobs:
           - test_resume_gateway
           - test_reconcile_gateway
           - test_rotate_gateway_token
+          - test_watch_gateway_token
           - test_podinfo
     steps:
       - name: Checkout

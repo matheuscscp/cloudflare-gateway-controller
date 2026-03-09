@@ -121,7 +121,7 @@ The `gateways.cloudflare-gateway-controller.io/rotateTokenRequestedAt`
 annotation triggers an on-demand tunnel token rotation when its value changes.
 The controller records the handled value in the
 [CloudflareGatewayStatus](CloudflareGatewayStatus.md)
-`.status.lastHandledTokenRotateAt` field once the rotation is fully complete
+`.status.tunnel.token.rotation.lastHandledRotateAt` field once the rotation is fully complete
 (all Deployments rolled out with the new token).
 
 This annotation is managed by `cfgwctl rotate gateway token` — do not set it

@@ -38,6 +38,7 @@ import (
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/proxy"
+	"github.com/matheuscscp/cloudflare-gateway-controller/internal/schedule"
 )
 
 // ensureTunnel creates or looks up the desired tunnel, filling in the
@@ -71,10 +72,10 @@ func (r *GatewayReconciler) ensureTunnel(ctx context.Context, tc cloudflare.Clie
 
 // tokenRotationResult holds the results of token rotation check and execution.
 type tokenRotationResult struct {
-	changes          []string
-	lastRotatedAt    string // set when a rotation was performed
-	rotationInterval time.Duration
-	tokenHash        string // truncated SHA-256 of the tunnel token
+	changes       []string
+	lastRotatedAt string    // set when a rotation was performed
+	nextTrigger   time.Time // next cron trigger time (zero if rotation is disabled)
+	tokenHash     string    // SHA-256 hex digest of the tunnel token
 }
 
 // reconcileTunnelTokenSecret reconciles the tunnel token Secret,
@@ -125,8 +126,18 @@ func (r *GatewayReconciler) reconcileTunnelTokenSecret(
 	return result, nil
 }
 
+// Default cron schedule for token rotation: every Thursday at 6 PM
+// America/Los_Angeles time.
+const (
+	defaultRotationCron     = "0 18 * * 4"
+	defaultRotationTimeZone = "America/Los_Angeles"
+)
+
 // maybeRotateToken checks if token rotation is needed (on-demand or scheduled)
-// and performs it if so.
+// and performs it if so. Scheduled rotation uses a cron schedule: if the token
+// was last rotated before the most recent cron trigger, rotation fires. This is
+// a best-effort approach — rotation happens whenever a reconciliation runs and
+// the cron trigger has passed.
 func (r *GatewayReconciler) maybeRotateToken(
 	ctx context.Context,
 	gw *gatewayv1.Gateway,
@@ -137,54 +148,66 @@ func (r *GatewayReconciler) maybeRotateToken(
 	result *tokenRotationResult,
 ) (bool, error) {
 	// Determine rotation config from parameters.
-	// Default: enabled=true, interval=24h — rotation is on by default even
-	// without a CGP or without any rotation fields set.
+	// Default: enabled=true, schedule=every Thursday 6 PM America/Los_Angeles.
 	rotationEnabled := true
-	rotationInterval := 24 * time.Hour
+	cronSpec := defaultRotationCron
+	cronTimeZone := defaultRotationTimeZone
 	if params != nil && params.Spec.Tunnel != nil && params.Spec.Tunnel.Token != nil && params.Spec.Tunnel.Token.Rotation != nil {
 		rot := params.Spec.Tunnel.Token.Rotation
 		if rot.Enabled != nil {
 			rotationEnabled = *rot.Enabled
 		}
-		if rot.Interval != nil && rot.Interval.Duration > 0 {
-			rotationInterval = rot.Interval.Duration
+		if rot.Schedule != nil {
+			cronSpec = rot.Schedule.Cron
+			cronTimeZone = rot.Schedule.TimeZone
+			if cronTimeZone == "" {
+				cronTimeZone = "UTC"
+			}
 		}
 	}
-	if rotationEnabled {
-		result.rotationInterval = rotationInterval
-	}
 
-	var lastHandledRotateAt, lastTokenRotatedAt string
-	if cgs != nil {
-		lastHandledRotateAt = cgs.Status.LastHandledTokenRotateAt
-		lastTokenRotatedAt = cgs.Status.LastTokenRotatedAt
+	var lastHandledRotateAt, lastRotatedAt string
+	if cgs != nil && cgs.Status.Tunnel != nil && cgs.Status.Tunnel.Token != nil && cgs.Status.Tunnel.Token.Rotation != nil {
+		lastHandledRotateAt = cgs.Status.Tunnel.Token.Rotation.LastHandledRotateAt
+		lastRotatedAt = cgs.Status.Tunnel.Token.Rotation.LastRotatedAt
 	}
 
 	// On-demand rotation: annotation differs from last handled value.
 	// Also verify the rotation hasn't already been performed by checking
-	// whether LastTokenRotatedAt is newer than the request — this covers
+	// whether LastRotatedAt is newer than the request — this covers
 	// the window between token rotation and full rollout completion, during
-	// which LastHandledTokenRotateAt is intentionally not yet updated.
+	// which LastHandledRotateAt is intentionally not yet updated.
 	requestedAt := gw.Annotations[apiv1.AnnotationRotateTokenRequestedAt]
 	onDemand := requestedAt != "" && requestedAt != lastHandledRotateAt
-	if onDemand && lastTokenRotatedAt != "" {
+	if onDemand && lastRotatedAt != "" {
 		tRequested, err1 := time.Parse(time.RFC3339Nano, requestedAt)
-		tRotated, err2 := time.Parse(time.RFC3339, lastTokenRotatedAt)
+		tRotated, err2 := time.Parse(time.RFC3339, lastRotatedAt)
 		if err1 == nil && err2 == nil && !tRotated.Before(tRequested) {
 			onDemand = false
 		}
 	}
 
-	// Scheduled rotation: time since last rotation exceeds interval (only when enabled).
+	// Scheduled rotation: check if the token was last rotated before
+	// the most recent cron trigger (only when enabled).
 	scheduled := false
 	if rotationEnabled {
-		if lastTokenRotatedAt != "" {
-			if t, err := time.Parse(time.RFC3339, lastTokenRotatedAt); err == nil {
-				scheduled = time.Since(t) >= rotationInterval
+		cronSchedule, err := schedule.Parse(cronSpec, cronTimeZone)
+		if err != nil {
+			return false, fmt.Errorf("parsing token rotation cron schedule: %w", err)
+		}
+
+		now := time.Now()
+		prevTrigger, nextTrigger := schedule.GetPrevAndNextTriggers(cronSchedule, now)
+		result.nextTrigger = nextTrigger
+
+		if lastRotatedAt != "" {
+			if t, err := time.Parse(time.RFC3339, lastRotatedAt); err == nil {
+				// Rotate if the last rotation was before the most recent cron trigger.
+				scheduled = t.Before(prevTrigger)
 			}
 		} else {
-			// First rotation: no last rotation recorded.
-			scheduled = true
+			// First reconciliation: seed the baseline for future cron checks.
+			result.lastRotatedAt = time.Now().Format(time.RFC3339)
 		}
 	}
 
