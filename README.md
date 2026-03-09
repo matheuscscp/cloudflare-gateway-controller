@@ -176,8 +176,8 @@ resource tuning. See
 [CloudflareGatewayParameters](docs/api/v1/CloudflareGatewayParameters.md#tunnel-container-configuration)
 for details.
 
-**Token rotation:** The controller automatically rotates tunnel tokens every 24 hours by
-default (configurable via
+**Token rotation:** The controller automatically rotates tunnel tokens on a cron schedule
+(default: every Thursday at 6 PM America/Los_Angeles time, configurable via
 [CloudflareGatewayParameters](docs/api/v1/CloudflareGatewayParameters.md#token-rotation)).
 On-demand rotation is also available via the CLI. Rotation updates the in-cluster Secret
 and performs a rolling restart of the tunnel pods so they pick up the new token.

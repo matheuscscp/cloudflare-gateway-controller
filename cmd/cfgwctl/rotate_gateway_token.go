@@ -100,7 +100,11 @@ func newRotateGatewayTokenCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 
-			err = watchRotation(ctx, clientset, dynClient, ns, name, numDeployments, cgs.Status.CurrentTokenHash, preflightAndPatch)
+			var currentHash string
+			if cgs.Status.Tunnel != nil && cgs.Status.Tunnel.Token != nil {
+				currentHash = cgs.Status.Tunnel.Token.Hash
+			}
+			err = watchRotation(ctx, clientset, dynClient, ns, name, numDeployments, currentHash, preflightAndPatch)
 			if err != nil {
 				if _, ok := errors.AsType[*watchSuspendedError](err); ok {
 					fmt.Printf("\nHint: use 'cfgwctl resume gateway %s -n %s' to resume, then 'cfgwctl watch gateway token %s -n %s' to continue watching.\n", name, ns, name, ns)

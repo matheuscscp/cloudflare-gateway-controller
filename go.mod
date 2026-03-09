@@ -31,6 +31,7 @@ require (
 	github.com/fluxcd/pkg/ssa v0.69.0
 	github.com/onsi/gomega v1.39.1
 	github.com/prometheus/client_golang v1.23.2
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/rs/zerolog v1.34.0
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/net v0.51.0

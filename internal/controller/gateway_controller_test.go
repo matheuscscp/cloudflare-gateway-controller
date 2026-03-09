@@ -4048,7 +4048,7 @@ func TestGatewayReconciler_FinalizeErrorStatusPatchFails(t *testing.T) {
 	g.Expect(result).To(Equal(ctrl.Result{}))
 }
 
-func TestGatewayReconciler_TokenRotation(t *testing.T) {
+func TestGatewayReconciler_TokenRotationSeedsBaseline(t *testing.T) {
 	g := NewWithT(t)
 	resetMockErrors(t)
 
@@ -4059,18 +4059,79 @@ func TestGatewayReconciler_TokenRotation(t *testing.T) {
 	gw := createTestGateway(g, "tok-rot", ns.Name, gc.Name)
 	waitForGatewayProgrammed(g, gw)
 
-	// The default rotation is enabled (interval=24h) even without a CGP.
-	// On first reconciliation, rotation fires because no lastTokenRotatedAt exists yet.
-	g.Eventually(func(g Gomega) {
-		g.Expect(testMock.rotateTunnelSecretCalls).To(BeNumerically(">", 0))
-	}).WithTimeout(30 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+	// The default rotation is enabled even without a CGP.
+	// On first reconciliation, rotation does NOT fire — the controller
+	// only seeds lastRotatedAt so future cron checks have a baseline.
+	g.Expect(testMock.rotateTunnelSecretCalls).To(Equal(0))
 
-	// Verify CGS has lastTokenRotatedAt set.
+	// Verify CGS has token.lastRotatedAt seeded (without actual rotation).
 	g.Eventually(func(g Gomega) {
 		var cgs apiv1.CloudflareGatewayStatus
 		g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &cgs)).To(Succeed())
-		g.Expect(cgs.Status.LastTokenRotatedAt).NotTo(BeEmpty())
+		g.Expect(cgs.Status.Tunnel.Token.Rotation.LastRotatedAt).NotTo(BeEmpty())
 	}).WithTimeout(30 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Clean up.
+	g.Expect(testClient.Delete(testCtx, gw)).To(Succeed())
+	g.Eventually(func(g Gomega) {
+		g.Expect(apierrors.IsNotFound(testClient.Get(testCtx, client.ObjectKeyFromObject(gw), gw))).To(BeTrue())
+	}).WithTimeout(30 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func TestGatewayReconciler_TokenRotationCustomSchedule(t *testing.T) {
+	g := NewWithT(t)
+	resetMockErrors(t)
+
+	ns := createTestNamespace(g)
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, ns.Name+"-gc", ns.Name)
+	waitForGatewayClassReady(g, gc)
+
+	// Create CGP with a custom schedule that fires every minute.
+	createTestParameters(g, ns.Name+"-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		Tunnel: &apiv1.TunnelConfig{
+			Token: &apiv1.TokenConfig{
+				Rotation: &apiv1.TokenRotationConfig{
+					Schedule: &apiv1.TokenRotationSchedule{
+						Cron: "* * * * *",
+					},
+				},
+			},
+		},
+	})
+
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ns.Name + "-gw",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(ns.Name + "-params"),
+			},
+			Listeners: []gatewayv1.Listener{{
+				Name: "https", Protocol: gatewayv1.HTTPSProtocolType, Port: 443,
+			}},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	waitForGatewayProgrammed(g, gw)
+
+	// First reconciliation only seeds lastRotatedAt, no rotation.
+	g.Expect(testMock.rotateTunnelSecretCalls).To(Equal(0))
+
+	// Verify CGS has token.lastRotatedAt seeded.
+	g.Eventually(func(g Gomega) {
+		var cgs apiv1.CloudflareGatewayStatus
+		g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &cgs)).To(Succeed())
+		g.Expect(cgs.Status.Tunnel.Token.Rotation.LastRotatedAt).NotTo(BeEmpty())
+	}).WithTimeout(30 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// With "* * * * *", rotation fires after the next minute boundary.
+	g.Eventually(func(g Gomega) {
+		g.Expect(testMock.rotateTunnelSecretCalls).To(BeNumerically(">", 0))
+	}).WithTimeout(90 * time.Second).WithPolling(1 * time.Second).Should(Succeed())
 
 	// Clean up.
 	g.Expect(testClient.Delete(testCtx, gw)).To(Succeed())
@@ -4137,8 +4198,18 @@ func TestGatewayReconciler_TokenRotationError(t *testing.T) {
 	gc := createTestGatewayClass(g, ns.Name+"-gc", ns.Name)
 	waitForGatewayClassReady(g, gc)
 
-	testMock.rotateTunnelSecretErr = fmt.Errorf("rotation API error")
 	gw := createTestGateway(g, "tok-rot-err", ns.Name, gc.Name)
+	waitForGatewayProgrammed(g, gw)
+
+	// Set rotation error and trigger on-demand rotation via annotation.
+	testMock.rotateTunnelSecretErr = fmt.Errorf("rotation API error")
+	var latest gatewayv1.Gateway
+	g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest)).To(Succeed())
+	if latest.Annotations == nil {
+		latest.Annotations = map[string]string{}
+	}
+	latest.Annotations[apiv1.AnnotationRotateTokenRequestedAt] = time.Now().Format(time.RFC3339Nano)
+	g.Expect(testClient.Update(testCtx, &latest)).To(Succeed())
 
 	// Should see ProgressingWithRetry due to the rotation error.
 	g.Eventually(func(g Gomega) {
@@ -4157,6 +4228,70 @@ func TestGatewayReconciler_TokenRotationError(t *testing.T) {
 	g.Eventually(func(g Gomega) {
 		g.Expect(apierrors.IsNotFound(testClient.Get(testCtx, client.ObjectKeyFromObject(gw), gw))).To(BeTrue())
 	}).WithTimeout(30 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func TestGatewayReconciler_InvalidRotationSchedule(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, ns.Name+"-gc", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	params := createTestParameters(g, ns.Name+"-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		Tunnel: &apiv1.TunnelConfig{
+			Token: &apiv1.TokenConfig{
+				Rotation: &apiv1.TokenRotationConfig{
+					Schedule: &apiv1.TokenRotationSchedule{
+						Cron: "not-a-valid-cron",
+					},
+				},
+			},
+		},
+	})
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ns.Name + "-gw",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
+			Listeners: []gatewayv1.Listener{{
+				Name: "https", Protocol: gatewayv1.HTTPSProtocolType, Port: 443,
+			}},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	// Gateway should be rejected with Accepted=False/InvalidParameters.
+	key := client.ObjectKeyFromObject(gw)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, key, &result)).To(Succeed())
+		accepted := conditions.Find(result.Status.Conditions, string(gatewayv1.GatewayConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.GatewayReasonInvalidParameters)))
+		g.Expect(accepted.Message).To(ContainSubstring("invalid token rotation schedule"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
 func TestGatewayReconciler_StartupProbe(t *testing.T) {

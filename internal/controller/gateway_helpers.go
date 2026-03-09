@@ -270,29 +270,45 @@ func (r *GatewayReconciler) reconcileCGS(
 	// Copy annotation values to status on every reconcile.
 	desired.LastHandledReconcileAt = gw.Annotations[apiv1.AnnotationReconcileRequestedAt]
 
+	// Token status.
+	token := &apiv1.TokenStatus{}
+	var existingToken *apiv1.TokenStatus
+	if cgs != nil && cgs.Status.Tunnel != nil {
+		existingToken = cgs.Status.Tunnel.Token
+	}
+	if tokenResult != nil {
+		token.Hash = tokenResult.tokenHash
+	} else if existingToken != nil {
+		token.Hash = existingToken.Hash
+	}
+
+	// Token rotation status.
+	rotation := &apiv1.TokenRotationStatus{}
+	var existingRotation *apiv1.TokenRotationStatus
+	if existingToken != nil {
+		existingRotation = existingToken.Rotation
+	}
 	// Only mark the token rotation as handled when the Gateway is fully ready
 	// (all deployments rolled out with the new token). This lets the CLI detect
 	// ongoing rotations by comparing the annotation with this status field.
 	if readiness.readyStatus == metav1.ConditionTrue {
-		desired.LastHandledTokenRotateAt = gw.Annotations[apiv1.AnnotationRotateTokenRequestedAt]
-	} else if cgs != nil {
-		desired.LastHandledTokenRotateAt = cgs.Status.LastHandledTokenRotateAt
+		rotation.LastHandledRotateAt = gw.Annotations[apiv1.AnnotationRotateTokenRequestedAt]
+	} else if existingRotation != nil {
+		rotation.LastHandledRotateAt = existingRotation.LastHandledRotateAt
 	}
-
-	// Preserve existing LastTokenRotatedAt and update if rotation occurred.
-	if cgs != nil {
-		desired.LastTokenRotatedAt = cgs.Status.LastTokenRotatedAt
+	// Preserve existing LastRotatedAt and update if rotation occurred.
+	if existingRotation != nil {
+		rotation.LastRotatedAt = existingRotation.LastRotatedAt
 	}
 	if tokenResult != nil && tokenResult.lastRotatedAt != "" {
-		desired.LastTokenRotatedAt = tokenResult.lastRotatedAt
+		rotation.LastRotatedAt = tokenResult.lastRotatedAt
 	}
-
-	// Current token hash.
-	if tokenResult != nil {
-		desired.CurrentTokenHash = tokenResult.tokenHash
-	} else if cgs != nil {
-		desired.CurrentTokenHash = cgs.Status.CurrentTokenHash
+	// Next scheduled token rotation.
+	if tokenResult != nil && !tokenResult.nextTrigger.IsZero() {
+		rotation.NextRotation = &metav1.Time{Time: tokenResult.nextTrigger}
 	}
+	token.Rotation = rotation
+	desired.Tunnel.Token = token
 
 	if cgs == nil || !cgs.DeletionTimestamp.IsZero() {
 		if cgs != nil && controllerutil.ContainsFinalizer(cgs, apiv1.Finalizer) {

@@ -76,18 +76,34 @@ type DNSZoneConfig struct {
 
 // TokenConfig configures tunnel token management.
 //
-// Token rotation is enabled by default (interval: 24h) even when this
-// field is absent from the spec or when the rotation sub-field is absent.
+// Token rotation is enabled by default even when this field is absent
+// from the spec or when the rotation sub-field is absent. The default
+// schedule is every Thursday at 6 PM America/Los_Angeles time.
 // To disable automatic rotation, set rotation.enabled to false explicitly.
 //
 // On-demand rotation can always be triggered via
 // "cfgwctl rotate gateway token", regardless of this configuration.
 type TokenConfig struct {
 	// Rotation configures automatic token rotation. When absent, rotation
-	// is enabled with the default interval (24h). Set rotation.enabled to
-	// false to disable automatic rotation.
+	// is enabled with the default schedule (every Thursday at 6 PM
+	// America/Los_Angeles time). Set rotation.enabled to false to disable
+	// automatic rotation.
 	// +optional
 	Rotation *TokenRotationConfig `json:"rotation,omitempty"`
+}
+
+// TokenRotationSchedule defines a cron-based schedule for token rotation.
+type TokenRotationSchedule struct {
+	// Cron is a cron expression defining when token rotation should occur.
+	// Uses standard 5-field cron syntax (minute, hour, day-of-month, month,
+	// day-of-week). For example, "0 18 * * 4" means every Thursday at 6 PM.
+	// +required
+	Cron string `json:"cron"`
+
+	// TimeZone is the IANA time zone name for the cron schedule.
+	// Defaults to UTC when absent.
+	// +optional
+	TimeZone string `json:"timeZone,omitempty"`
 }
 
 // TokenRotationConfig configures automatic tunnel token rotation.
@@ -102,10 +118,11 @@ type TokenRotationConfig struct {
 	// +optional
 	Enabled *bool `json:"enabled,omitempty"`
 
-	// Interval is the minimum duration between automatic token rotations.
-	// Defaults to 24h when absent or when set to zero or a negative value.
+	// Schedule defines the cron-based schedule for automatic token rotation.
+	// When absent, the default schedule is every Thursday at 6 PM
+	// America/Los_Angeles time ("0 18 * * 4").
 	// +optional
-	Interval *metav1.Duration `json:"interval,omitempty"`
+	Schedule *TokenRotationSchedule `json:"schedule,omitempty"`
 }
 
 // TunnelConfig configures Cloudflare tunnel settings.

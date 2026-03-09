@@ -426,7 +426,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	}
 
 	// Compute requeue interval.
-	requeueAfter, requeueErrs := computeRequeueAfter(gw, cgs, tokenResult)
+	requeueAfter, requeueErrs := computeRequeueAfter(gw, tokenResult)
 	errs = append(errs, requeueErrs...)
 
 	// Patch Gateway status and emit events
@@ -435,19 +435,17 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 
 // computeRequeueAfter computes the requeue interval, taking into account the
 // reconcile interval and the time until the next scheduled token rotation.
-func computeRequeueAfter(gw *gatewayv1.Gateway, cgs *apiv1.CloudflareGatewayStatus, tokenResult *tokenRotationResult) (time.Duration, []string) {
+func computeRequeueAfter(gw *gatewayv1.Gateway, tokenResult *tokenRotationResult) (time.Duration, []string) {
 	var errs []string
 	requeueAfter, err := apiv1.ReconcileInterval(gw.Annotations)
 	if err != nil {
 		errs = append(errs, err.Error())
 		requeueAfter = apiv1.DefaultReconcileInterval
 	}
-	if tokenResult.rotationInterval > 0 && cgs != nil && cgs.Status.LastTokenRotatedAt != "" {
-		if t, err := time.Parse(time.RFC3339, cgs.Status.LastTokenRotatedAt); err == nil {
-			timeUntilNext := max(tokenResult.rotationInterval-time.Since(t), 0)
-			if timeUntilNext < requeueAfter {
-				requeueAfter = timeUntilNext
-			}
+	if !tokenResult.nextTrigger.IsZero() {
+		timeUntilNext := max(time.Until(tokenResult.nextTrigger), 0)
+		if timeUntilNext < requeueAfter {
+			requeueAfter = timeUntilNext
 		}
 	}
 	return requeueAfter, errs

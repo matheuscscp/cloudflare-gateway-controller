@@ -2501,10 +2501,10 @@ EOF
     log "Waiting 10s for traffic to stabilize..."
     sleep 10
 
-    # Record lastTokenRotatedAt before rotation.
+    # Record lastRotatedAt before rotation.
     local last_rotated_before
     last_rotated_before=$(kubectl get cloudflaregatewaystatuses rot-gw -n "$TEST_NS" \
-        -o jsonpath='{.status.lastTokenRotatedAt}' 2>/dev/null || true)
+        -o jsonpath='{.status.tunnel.token.rotation.lastRotatedAt}' 2>/dev/null || true)
 
     # Path 1: Happy path — rotate token with --watch.
     # minReadySeconds=30 in CGP makes this complete in ~2 minutes.
@@ -2531,16 +2531,16 @@ EOF
     rm -f "$rotate_output_file"
 
     # The rotate command watches Deployments until fully rolled out.
-    # Verify the Gateway is Ready and that lastTokenRotatedAt changed.
+    # Verify the Gateway is Ready and that lastRotatedAt changed.
     kubectl wait gateway/rot-gw -n "$TEST_NS" \
         --for=condition=Ready --timeout=0 \
         || fail "rot-gw not Ready=True after rotate command returned"
     local last_rotated_after
     last_rotated_after=$(kubectl get cloudflaregatewaystatuses rot-gw -n "$TEST_NS" \
-        -o jsonpath='{.status.lastTokenRotatedAt}')
+        -o jsonpath='{.status.tunnel.token.rotation.lastRotatedAt}')
     [ "$last_rotated_before" != "$last_rotated_after" ] \
-        || fail "lastTokenRotatedAt did not change after rotation"
-    pass "rotate: Gateway is Ready=True and lastTokenRotatedAt updated"
+        || fail "lastRotatedAt did not change after rotation"
+    pass "rotate: Gateway is Ready=True and lastRotatedAt updated"
 
     # Stop load generator gracefully (SIGTERM triggers results printing).
     log "Stopping load generator..."
@@ -2603,6 +2603,102 @@ EOF
     kubectl delete deployment rot-test -n "$TEST_NS" --ignore-not-found
     kubectl delete service rot-backend -n "$TEST_NS" --ignore-not-found
     kubectl delete cloudflaregatewayparameters rot-params -n "$TEST_NS" --ignore-not-found
+}
+
+test_watch_gateway_token() {
+    # Compute a cron schedule that fires ~2 minutes from now in UTC.
+    # This works both locally and in CI because it uses absolute UTC time.
+    local target_min target_hour cron_spec
+    target_min=$(date -u -d "+2 minutes" +%-M)
+    target_hour=$(date -u -d "+2 minutes" +%-H)
+    cron_spec="$target_min $target_hour * * *"
+    log "Cron schedule: '$cron_spec' (UTC, fires in ~2 minutes)"
+
+    log "Creating CloudflareGatewayParameters 'watch-params' with cron schedule and 3 replicas..."
+    kubectl apply -f - <<EOF
+apiVersion: cloudflare-gateway-controller.io/v1
+kind: CloudflareGatewayParameters
+metadata:
+  name: watch-params
+  namespace: $TEST_NS
+spec:
+  secretRef:
+    name: cloudflare-creds
+  tunnel:
+    minReadySeconds: 30
+    token:
+      rotation:
+        schedule:
+          cron: "$cron_spec"
+          timeZone: UTC
+    replicas:
+    - name: r1
+    - name: r2
+    - name: r3
+EOF
+
+    log "Creating Gateway 'watch-gw'..."
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: watch-gw
+  namespace: $TEST_NS
+spec:
+  gatewayClassName: cloudflare
+  infrastructure:
+    parametersRef:
+      group: cloudflare-gateway-controller.io
+      kind: CloudflareGatewayParameters
+      name: watch-params
+  listeners:
+  - name: https
+    protocol: HTTPS
+    port: 443
+EOF
+
+    retry 60 5 kubectl wait gateway/watch-gw -n "$TEST_NS" \
+        --for=condition=Programmed --timeout=5s \
+        || fail "watch-gw did not become Programmed"
+    pass "watch-gw is Programmed"
+
+    # Wait for first rotation to complete (Gateway becomes Ready with all
+    # 3 deployments rolled out).
+    retry 120 5 kubectl wait gateway/watch-gw -n "$TEST_NS" \
+        --for=condition=Ready --timeout=5s \
+        || fail "watch-gw did not become Ready after first rotation"
+    pass "watch-gw is Ready after first rotation"
+
+    # Run 'watch gateway token' in a retry loop until the scheduled cron
+    # rotation fires and the watch command engages. The watch command exits
+    # immediately with "No ongoing token rotation" when all deployments are
+    # up to date — we retry until it catches the in-progress rotation.
+    log "Waiting for scheduled cron rotation and watching with 'cfgwctl watch gateway token'..."
+    local watch_output_file
+    watch_output_file=$(mktemp)
+    local caught=0
+    for i in $(seq 1 60); do
+        if "$CFGWCTL" watch gateway token watch-gw -n "$TEST_NS" \
+            --timeout 10m 2>&1 | tee "$watch_output_file"; then
+            if grep -q "Token rotation completed" "$watch_output_file"; then
+                caught=1
+                break
+            fi
+        else
+            fail "watch command failed unexpectedly"
+        fi
+        printf "  attempt %d/60: no rotation yet, retrying in 5s...\n" "$i"
+        sleep 5
+    done
+    [ "$caught" -eq 1 ] || fail "scheduled rotation did not trigger within timeout"
+    pass "watch: scheduled cron rotation detected and watched to completion"
+    rm -f "$watch_output_file"
+
+    # Cleanup.
+    kubectl delete gateway watch-gw -n "$TEST_NS"
+    retry 60 3 bash -c "! kubectl get gateway watch-gw -n '$TEST_NS' 2>/dev/null" \
+        || fail "watch-gw still exists"
+    kubectl delete cloudflaregatewayparameters watch-params -n "$TEST_NS" --ignore-not-found
 }
 
 test_podinfo() {
@@ -2715,4 +2811,5 @@ run_tests \
     test_resume_gateway \
     test_reconcile_gateway \
     test_rotate_gateway_token \
+    test_watch_gateway_token \
     test_podinfo

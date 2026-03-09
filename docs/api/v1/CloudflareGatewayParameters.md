@@ -148,19 +148,27 @@ spec:
     token:
       rotation:
         enabled: true
-        interval: 24h
+        schedule:
+          cron: "0 18 * * 4"
+          timeZone: America/Los_Angeles
 ```
 
-When automatic token rotation is enabled, the controller periodically rotates
-the tunnel token via the Cloudflare API, updates the in-cluster Secret, and
-performs a rolling restart of the tunnel pods so they pick up the new token.
+When automatic token rotation is enabled, the controller rotates the tunnel
+token via the Cloudflare API on a cron schedule, updates the in-cluster Secret,
+and performs a rolling restart of the tunnel pods so they pick up the new token.
+
+Rotation is best-effort: the controller checks the schedule during each
+reconciliation and rotates if the token was last rotated before the most recent
+cron trigger.
 
 The token rotation fields are:
 
 - `rotation.enabled` (optional): Whether automatic rotation is active.
   Defaults to `true` when the `rotation` struct is present.
-- `rotation.interval` (optional): Interval between automatic rotations.
-  Defaults to `24h`.
+- `rotation.schedule` (optional): Cron-based schedule for automatic rotation.
+  - `schedule.cron` (required): Standard 5-field cron expression.
+  - `schedule.timeZone` (optional): IANA time zone name. Defaults to `UTC`.
+  - When absent, defaults to every Thursday at 6 PM America/Los_Angeles time.
 
 On-demand rotation can also be triggered via `cfgwctl rotate gateway token`,
 regardless of whether automatic rotation is configured. See the
