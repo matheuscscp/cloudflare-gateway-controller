@@ -892,21 +892,23 @@ func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1
 
 		existing := findRouteParentStatus(*route.routeParents(), gw)
 
-		// Check if update is needed.
+		// Check if update is needed. Build the desired condition count so we
+		// can also detect stale extra conditions that Set() will clean up.
 		if existing != nil {
+			desiredCount := 3 // Accepted, ResolvedRefs, Ready
 			changed := conditions.Changed(existing.Conditions, acceptedType, metav1.ConditionTrue,
 				string(gatewayv1.RouteReasonAccepted), acceptedMsg, route.generation()) ||
 				conditions.Changed(existing.Conditions, resolvedRefsType, rc.resolvedRefsStatus,
 					rc.resolvedRefsReason, rc.resolvedRefsMsg, route.generation())
 			if rc.dnsEnabled {
+				desiredCount = 4 // + DNSRecordsApplied
 				changed = changed || conditions.Changed(existing.Conditions, apiv1.ConditionDNSRecordsApplied,
 					rc.dnsStatus, rc.dnsReason, rc.dnsMessage, route.generation())
-			} else {
-				// DNS was disabled — check if we need to remove a stale condition.
-				changed = changed || conditions.Find(existing.Conditions, apiv1.ConditionDNSRecordsApplied) != nil
 			}
 			changed = changed || conditions.Changed(existing.Conditions, apiv1.ConditionReady,
 				rc.readyStatus, rc.readyReason, rc.readyMsg, route.generation())
+			// Detect stale conditions (e.g. renamed or removed condition types).
+			changed = changed || len(existing.Conditions) != desiredCount
 			if !changed {
 				return nil
 			}
@@ -929,32 +931,31 @@ func (r *GatewayReconciler) updateRouteStatus(ctx context.Context, gw *gatewayv1
 			existing = &(*parents)[len(*parents)-1]
 		}
 
-		existing.Conditions = conditions.Upsert(existing.Conditions, metav1.Condition{
-			Type: acceptedType, Status: metav1.ConditionTrue,
-			ObservedGeneration: route.generation(), LastTransitionTime: now,
-			Reason: string(gatewayv1.RouteReasonAccepted), Message: acceptedMsg,
-		})
-		existing.Conditions = conditions.Upsert(existing.Conditions, metav1.Condition{
-			Type: resolvedRefsType, Status: rc.resolvedRefsStatus,
-			ObservedGeneration: route.generation(), LastTransitionTime: now,
-			Reason: rc.resolvedRefsReason, Message: rc.resolvedRefsMsg,
-		})
-
+		desired := []metav1.Condition{
+			{
+				Type: acceptedType, Status: metav1.ConditionTrue,
+				ObservedGeneration: route.generation(), LastTransitionTime: now,
+				Reason: string(gatewayv1.RouteReasonAccepted), Message: acceptedMsg,
+			},
+			{
+				Type: resolvedRefsType, Status: rc.resolvedRefsStatus,
+				ObservedGeneration: route.generation(), LastTransitionTime: now,
+				Reason: rc.resolvedRefsReason, Message: rc.resolvedRefsMsg,
+			},
+		}
 		if rc.dnsEnabled {
-			existing.Conditions = conditions.Upsert(existing.Conditions, metav1.Condition{
+			desired = append(desired, metav1.Condition{
 				Type: apiv1.ConditionDNSRecordsApplied, Status: rc.dnsStatus,
 				ObservedGeneration: route.generation(), LastTransitionTime: now,
 				Reason: rc.dnsReason, Message: rc.dnsMessage,
 			})
-		} else {
-			existing.Conditions = conditions.Remove(existing.Conditions, apiv1.ConditionDNSRecordsApplied)
 		}
-
-		existing.Conditions = conditions.Upsert(existing.Conditions, metav1.Condition{
+		desired = append(desired, metav1.Condition{
 			Type: apiv1.ConditionReady, Status: rc.readyStatus,
 			ObservedGeneration: route.generation(), LastTransitionTime: now,
 			Reason: rc.readyReason, Message: rc.readyMsg,
 		})
+		existing.Conditions = conditions.Set(existing.Conditions, desired)
 
 		patched = true
 		return r.Status().Patch(ctx, route.obj(), patch)
