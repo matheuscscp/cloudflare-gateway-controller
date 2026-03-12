@@ -24,20 +24,20 @@ and protocol, with per-request load balancing through kube-proxy.
 ```mermaid
 flowchart LR
     C((Client))
-    C -->|app.example.com| CNA
-    C -->|api.example.com| CNB
-    subgraph cfe[Cloudflare edge]
-        CNA["CNAME app · L7 proxy"]
-        CNB["CNAME api · L7 proxy"]
+    C -->|Host: app.example.com| CNA
+    C -->|Host: api.example.com| CNB
+    subgraph cfe[Cloudflare edge · L7 proxy]
+        CNA[CNAME app.example.com]
+        CNB[CNAME api.example.com]
     end
-    CNA -->|"tunnel-uuid.cfargotunnel.com"| T
-    CNB -->|"tunnel-uuid.cfargotunnel.com"| T
+    CNA -->|uuid.cfargotunnel.com| T
+    CNB -->|uuid.cfargotunnel.com| T
     subgraph Kubernetes
-        T[Tunnel client]
-        T -->|app.example.com| SA[Service app]
-        T -->|api.example.com| SB[Service api]
+        T[Tunnel replica]
+        T -->|Host: app.example.com| SA[Service app]
+        T -->|Host: api.example.com| SB[Service api]
     end
-    T -->|four HTTP/2 connections per replica| cfe
+    T -->|four HTTP/2 connections| cfe
 ```
 
 The diagram above illustrates the topology for a single Gateway resource. A cluster can
