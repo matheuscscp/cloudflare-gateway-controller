@@ -4294,6 +4294,55 @@ func TestGatewayReconciler_InvalidRotationSchedule(t *testing.T) {
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 
+func TestGatewayReconciler_OnDemandTokenRotation(t *testing.T) {
+	g := NewWithT(t)
+	resetMockErrors(t)
+
+	ns := createTestNamespace(g)
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, ns.Name+"-gc", ns.Name)
+	waitForGatewayClassReady(g, gc)
+	gw := createTestGateway(g, "on-demand-rot", ns.Name, gc.Name)
+	waitForGatewayProgrammed(g, gw)
+
+	// Capture initial CGS token hash.
+	var initialHash string
+	g.Eventually(func(g Gomega) {
+		var cgs apiv1.CloudflareGatewayStatus
+		g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &cgs)).To(Succeed())
+		g.Expect(cgs.Status.Tunnel).NotTo(BeNil())
+		g.Expect(cgs.Status.Tunnel.Token).NotTo(BeNil())
+		g.Expect(cgs.Status.Tunnel.Token.Hash).NotTo(BeEmpty())
+		initialHash = cgs.Status.Tunnel.Token.Hash
+	}).WithTimeout(30 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Trigger on-demand rotation via annotation.
+	var latest gatewayv1.Gateway
+	g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest)).To(Succeed())
+	if latest.Annotations == nil {
+		latest.Annotations = map[string]string{}
+	}
+	latest.Annotations[apiv1.AnnotationRotateTokenRequestedAt] = time.Now().Format(time.RFC3339Nano)
+	g.Expect(testClient.Update(testCtx, &latest)).To(Succeed())
+
+	// Wait for rotation to complete and CGS hash to change.
+	g.Eventually(func(g Gomega) {
+		g.Expect(testMock.rotateTunnelSecretCalls).To(BeNumerically(">", 0))
+		var cgs apiv1.CloudflareGatewayStatus
+		g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &cgs)).To(Succeed())
+		g.Expect(cgs.Status.Tunnel.Token.Hash).NotTo(Equal(initialHash))
+	}).WithTimeout(30 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	// Gateway should return to Ready after the Deployment rolls out.
+	waitForGatewayProgrammed(g, gw)
+
+	// Clean up.
+	g.Expect(testClient.Delete(testCtx, gw)).To(Succeed())
+	g.Eventually(func(g Gomega) {
+		g.Expect(apierrors.IsNotFound(testClient.Get(testCtx, client.ObjectKeyFromObject(gw), gw))).To(BeTrue())
+	}).WithTimeout(30 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
 func TestGatewayReconciler_StartupProbe(t *testing.T) {
 	g := NewWithT(t)
 

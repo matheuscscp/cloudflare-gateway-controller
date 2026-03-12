@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
 )
 
@@ -26,6 +27,22 @@ type dnsPolicy struct {
 
 // allZones returns true when DNS is enabled for all hostnames (no zone filter).
 func (d dnsPolicy) allZones() bool { return d.enabled && len(d.zones) == 0 }
+
+// buildDNSPolicy constructs the DNS policy from parameters. When params or
+// params.Spec.DNS is nil, DNS management is enabled for all zones.
+func buildDNSPolicy(params *apiv1.CloudflareGatewayParameters) dnsPolicy {
+	if params == nil || params.Spec.DNS == nil {
+		return dnsPolicy{enabled: true}
+	}
+	if len(params.Spec.DNS.Zones) > 0 {
+		zones := make([]string, len(params.Spec.DNS.Zones))
+		for i, z := range params.Spec.DNS.Zones {
+			zones[i] = z.Name
+		}
+		return dnsPolicy{enabled: true, zones: zones}
+	}
+	return dnsPolicy{}
+}
 
 // reconcileDNS reconciles DNS CNAME records for the Gateway. It lists all
 // records pointing to the tunnel across all account zones, computes the

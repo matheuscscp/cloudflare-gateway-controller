@@ -439,6 +439,9 @@ func (m *mockCloudflareClient) RotateTunnelSecret(_ context.Context, _ string, n
 	}
 	m.rotateTunnelSecretCalls++
 	m.lastRotatedSecret = newSecret
+	// Simulate the real Cloudflare behavior: after rotation, GetTunnelToken
+	// returns a different token that embeds the new secret.
+	m.tunnelToken = fmt.Sprintf("rotated-token-%x", newSecret)
 	return nil
 }
 
@@ -696,6 +699,7 @@ func resetMockErrors(t *testing.T) {
 		testMock.rotateTunnelSecretErr = nil
 		testMock.rotateTunnelSecretCalls = 0
 		testMock.lastRotatedSecret = nil
+		testMock.tunnelToken = "test-tunnel-token"
 		testMock.listTunnelsErr = nil
 		testMock.listZoneIDsErr = nil
 		testMock.findZoneIDErr = nil

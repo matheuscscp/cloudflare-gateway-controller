@@ -110,6 +110,19 @@ and predicates to efficiently map watch events to reconcile requests.
 Indexes can and should also be used if they can make the reconciliation faster. We do not
 need to use them only for mapping watch events to reconcile requests.
 
+## Error Handling
+
+Never discard errors with `_`. Every error from a fallible operation must be either propagated
+or explicitly handled. Silently swallowing an error can mask transient infrastructure failures,
+skip critical operations (e.g. finalizer removal), or degrade reconciliation logic that depends
+on the result.
+
+The only acceptable exception is in explicitly best-effort code paths — for example, patching
+an observability-only status field inside an error handler that is already returning the
+original error to controller-runtime. In that case the intent is clear: the original error
+takes priority, and failing the best-effort patch must not override it. Even then, the
+swallowed error should be logged.
+
 ## Logging
 
 We log all errors. If we are going to return an error to controller-runtime in

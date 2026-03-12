@@ -322,7 +322,10 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	changes = append(changes, tunnelChanges...)
 
 	// Fetch CGS early so token rotation can read the last rotation timestamps.
-	cgs, _ := r.getCGS(ctx, gw)
+	cgs, err := r.getCGS(ctx, gw)
+	if err != nil {
+		return r.reconcileError(ctx, gw, fmt.Errorf("fetching CloudflareGatewayStatus: %w", err))
+	}
 
 	// Reconcile the tunnel token Secret (includes token rotation).
 	tokenResult, err := r.reconcileTunnelTokenSecret(ctx, gw, tc, tunnel, cgs, params)
@@ -330,6 +333,14 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 		return r.reconcileError(ctx, gw, err)
 	}
 	changes = append(changes, tokenResult.changes...)
+
+	// When the token is rotated, immediately patch the CGS token hash before
+	// updating any Deployments. This closes a race window where cfgwctl could
+	// read the stale CGS hash and a fresh Deployment hash, causing it to
+	// misidentify the rotation direction.
+	if cgs, err = r.patchCGSTokenHash(ctx, cgs, tokenResult); err != nil {
+		return r.reconcileError(ctx, gw, err)
+	}
 
 	// Reconcile route ConfigMap.
 	var routeDeniedRefs map[types.NamespacedName][]string
@@ -385,16 +396,7 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	desiredListeners := buildListenerStatuses(gw, countAttachedRoutes(validRoutes, gw))
 
 	// Build DNS policy from parameters.
-	var dns dnsPolicy
-	if params == nil || params.Spec.DNS == nil {
-		dns = dnsPolicy{enabled: true}
-	} else if len(params.Spec.DNS.Zones) > 0 {
-		zones := make([]string, len(params.Spec.DNS.Zones))
-		for i, z := range params.Spec.DNS.Zones {
-			zones[i] = z.Name
-		}
-		dns = dnsPolicy{enabled: true, zones: zones}
-	}
+	dns := buildDNSPolicy(params)
 
 	// Extract hostnames from all valid routes for DNS reconciliation.
 	var routeHostnames []gatewayv1.Hostname
@@ -725,7 +727,9 @@ func (r *GatewayReconciler) reconcileError(ctx context.Context, gw *gatewayv1.Ga
 	// Best-effort: copy annotation values to CGS status and mirror conditions
 	// so the CLI wait logic can detect that the controller handled the request
 	// even when reconciliation fails before reconcileCGS runs.
-	if cgs, _ := r.getCGS(ctx, gw); cgs != nil {
+	if cgs, err := r.getCGS(ctx, gw); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to fetch CloudflareGatewayStatus in error path")
+	} else if cgs != nil {
 		cgsPatch := client.MergeFrom(cgs.DeepCopy())
 		cgs.Status.LastHandledReconcileAt = gw.Annotations[apiv1.AnnotationReconcileRequestedAt]
 		for _, c := range desiredConds {
@@ -950,7 +954,10 @@ func (r *GatewayReconciler) finalizeEnabled(ctx context.Context, gw *gatewayv1.G
 
 	// Remove the CGS finalizer so it can be garbage-collected after the
 	// Gateway is fully deleted (owner reference cascade).
-	cgs, _ := r.getCGS(ctx, gw)
+	cgs, err := r.getCGS(ctx, gw)
+	if err != nil {
+		return changes, fmt.Errorf("fetching CloudflareGatewayStatus: %w", err)
+	}
 	if cgs != nil && controllerutil.ContainsFinalizer(cgs, apiv1.Finalizer) {
 		cgsPatch := client.MergeFrom(cgs.DeepCopy())
 		controllerutil.RemoveFinalizer(cgs, apiv1.Finalizer)
