@@ -218,6 +218,37 @@ func (r *GatewayReconciler) getCGS(ctx context.Context, gw *gatewayv1.Gateway) (
 	return &cgs, nil
 }
 
+// patchCGSTokenHash patches the CGS Token.Hash field immediately after a
+// token rotation, before any Deployment specs are updated. This ensures that
+// cfgwctl always sees the up-to-date token hash in the CGS when detecting
+// an ongoing rotation, closing a race window that could cause it to
+// misidentify the hash direction.
+func (r *GatewayReconciler) patchCGSTokenHash(
+	ctx context.Context,
+	cgs *apiv1.CloudflareGatewayStatus,
+	tokenResult *tokenRotationResult,
+) (*apiv1.CloudflareGatewayStatus, error) {
+	if tokenResult.lastRotatedAt == "" || cgs == nil || !cgs.DeletionTimestamp.IsZero() {
+		return cgs, nil
+	}
+	if cgs.Status.Tunnel != nil && cgs.Status.Tunnel.Token != nil && cgs.Status.Tunnel.Token.Hash == tokenResult.tokenHash {
+		return cgs, nil
+	}
+	cgsPatch := client.MergeFrom(cgs.DeepCopy())
+	if cgs.Status.Tunnel == nil {
+		cgs.Status.Tunnel = &apiv1.TunnelStatus{}
+	}
+	if cgs.Status.Tunnel.Token == nil {
+		cgs.Status.Tunnel.Token = &apiv1.TokenStatus{}
+	}
+	cgs.Status.Tunnel.Token.Hash = tokenResult.tokenHash
+	if err := r.Status().Patch(ctx, cgs, cgsPatch); err != nil {
+		return cgs, fmt.Errorf("patching CGS token hash after rotation: %w", err)
+	}
+	log.FromContext(ctx).V(1).Info("Patched CloudflareGatewayStatus token hash")
+	return cgs, nil
+}
+
 // reconcileCGS creates or updates the CloudflareGatewayStatus resource state
 // (tunnel, DNS, token rotation timestamps). Conditions are patched separately
 // in patchGatewayStatus. Returns the CGS pointer (which may be newly created)
