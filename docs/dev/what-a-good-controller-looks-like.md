@@ -110,6 +110,22 @@ and predicates to efficiently map watch events to reconcile requests.
 Indexes can and should also be used if they can make the reconciliation faster. We do not
 need to use them only for mapping watch events to reconcile requests.
 
+## Testing
+
+Controller tests do not use controller-runtime's fake client by default. For controller
+behavior, we want tests to exercise real API-server semantics through `envtest` (or a
+higher-fidelity integration path such as E2E tests), including status subresources,
+optimistic locking, defaulting, validation, and reconciliation triggered from real
+persisted state.
+
+If a test is about a reconciler, status patching, finalizers, watches, conflict handling,
+or any behavior that depends on how objects are stored and updated, it must first be tried
+without a fake client. Only if that non-fake approach proves impossible for the specific
+case do we make an exception and allow a fake client in the controller package.
+
+Fake clients remain acceptable for code that is not controller behavior itself, such as
+small pure helpers that do not rely on Kubernetes API semantics.
+
 ## Error Handling
 
 Never discard errors with `_`. Every error from a fallible operation must be either propagated

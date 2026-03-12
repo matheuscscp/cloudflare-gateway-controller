@@ -4,19 +4,24 @@
 package controller_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"github.com/fluxcd/pkg/ssa"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	apiv1 "github.com/matheuscscp/cloudflare-gateway-controller/api/v1"
+	"github.com/matheuscscp/cloudflare-gateway-controller/internal/cloudflare"
 	"github.com/matheuscscp/cloudflare-gateway-controller/internal/conditions"
+	"github.com/matheuscscp/cloudflare-gateway-controller/internal/controller"
 )
 
 func TestGatewayReconciler_HTTPRouteAccepted(t *testing.T) {
@@ -121,6 +126,180 @@ func TestGatewayReconciler_HTTPRouteAccepted(t *testing.T) {
 		g.Expect(testClient.Get(testCtx, gwKey, &result)).To(Succeed())
 		g.Expect(result.Status.Listeners).To(HaveLen(1))
 		g.Expect(result.Status.Listeners[0].AttachedRoutes).To(Equal(int32(1)))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+}
+
+func TestGatewayReconciler_HTTPRouteRemovesLegacyConditionOnReconcile(t *testing.T) {
+	g := NewWithT(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-legacy-cond", ns.Name)
+	t.Cleanup(func() {
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	waitForGatewayClassReady(g, gc)
+
+	params := createTestParameters(g, "test-gw-legacy-cond-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		DNS: &apiv1.DNSConfig{Zones: []apiv1.DNSZoneConfig{}},
+	})
+	gw := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-gw-legacy-cond",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure: &gatewayv1.GatewayInfrastructure{
+				ParametersRef: parametersRef(params.Name),
+			},
+			Listeners: []gatewayv1.Listener{{
+				Name:     "https",
+				Protocol: gatewayv1.HTTPSProtocolType,
+				Port:     443,
+			}},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, gw)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gw), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+	waitForGatewayProgrammed(g, gw)
+
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-httproute-legacy-cond",
+			Namespace: ns.Name,
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{{
+					Name: gatewayv1.ObjectName(gw.Name),
+				}},
+			},
+			Hostnames: []gatewayv1.Hostname{"app.example.com"},
+			Rules: []gatewayv1.HTTPRouteRule{{
+				BackendRefs: []gatewayv1.HTTPBackendRef{{
+					BackendRef: gatewayv1.BackendRef{
+						BackendObjectReference: gatewayv1.BackendObjectReference{
+							Name: "my-service",
+							Port: new(gatewayv1.PortNumber(8080)),
+						},
+					},
+				}},
+			}},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, route)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.HTTPRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(route), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	routeKey := client.ObjectKeyFromObject(route)
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.HTTPRoute
+		g.Expect(testClient.Get(testCtx, routeKey, &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(HaveLen(1))
+		g.Expect(result.Status.Parents[0].Conditions).To(HaveLen(3))
+		g.Expect(conditions.Find(result.Status.Parents[0].Conditions, apiv1.ConditionDNSRecordsApplied)).To(BeNil())
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	g.Eventually(func(g Gomega) {
+		var latest gatewayv1.HTTPRoute
+		g.Expect(testClient.Get(testCtx, routeKey, &latest)).To(Succeed())
+		g.Expect(latest.Status.Parents).To(HaveLen(1))
+		latest.Status.Parents[0].Conditions = append(latest.Status.Parents[0].Conditions, metav1.Condition{
+			Type:               "LegacyCondition",
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: latest.Generation,
+			LastTransitionTime: metav1.Now(),
+			Reason:             "Legacy",
+			Message:            "legacy condition should be removed",
+		})
+		g.Expect(testClient.Status().Update(testCtx, &latest)).To(Succeed())
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	r := &controller.GatewayReconciler{
+		Client: &faultClient{
+			Client: testClient,
+			listHandler: func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+				switch out := list.(type) {
+				case *gatewayv1.GatewayClassList:
+					return testClient.List(ctx, out)
+				case *gatewayv1.HTTPRouteList:
+					var all gatewayv1.HTTPRouteList
+					if err := testClient.List(ctx, &all); err != nil {
+						return err
+					}
+					out.Items = nil
+					for i := range all.Items {
+						route := all.Items[i]
+						for _, ref := range route.Spec.ParentRefs {
+							if ref.Name != gatewayv1.ObjectName(gw.Name) {
+								continue
+							}
+							if ref.Namespace != nil && string(*ref.Namespace) != gw.Namespace {
+								continue
+							}
+							out.Items = append(out.Items, route)
+							break
+						}
+					}
+					return nil
+				case *gatewayv1.GRPCRouteList:
+					out.Items = nil
+					return nil
+				default:
+					return testClient.List(ctx, list, opts...)
+				}
+			},
+		},
+		EventRecorder: noopEventRecorder{},
+		ResourceManager: ssa.NewResourceManager(testClient, nil, ssa.Owner{
+			Field: apiv1.ShortControllerName,
+		}),
+		NewCloudflareClient: func(cfg cloudflare.ClientConfig) (cloudflare.Client, error) {
+			testMock.lastClientConfig = cfg
+			if testMock.newClientErr != nil {
+				return nil, testMock.newClientErr
+			}
+			return testMock, nil
+		},
+		TunnelImage: "test-tunnel-image:latest",
+	}
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: client.ObjectKeyFromObject(gw),
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(BeNumerically(">", 0))
+
+	g.Eventually(func(g Gomega) {
+		var updated gatewayv1.HTTPRoute
+		g.Expect(testClient.Get(testCtx, routeKey, &updated)).To(Succeed())
+		g.Expect(updated.Status.Parents).To(HaveLen(1))
+		g.Expect(updated.Status.Parents[0].Conditions).To(HaveLen(3))
+		g.Expect(conditions.Find(updated.Status.Parents[0].Conditions, "LegacyCondition")).To(BeNil())
+
+		accepted := conditions.Find(updated.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
+
+		ready := conditions.Find(updated.Status.Parents[0].Conditions, apiv1.ConditionReady)
+		g.Expect(ready).NotTo(BeNil())
+		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 }
 

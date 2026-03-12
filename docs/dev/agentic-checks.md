@@ -26,12 +26,12 @@ good state, meeting all the necessary requirements and quality standards.
   for the packages listed in the `make test` output, except the `api/v1`
   package which has mostly generated code (the non-generated code in this
   package should still be covered well!). When performing this check, the
+  agent must run tests via `make test`, not `go test` directly. If the
+  agent needs to narrow the test selection while iterating, it should do so
+  with `GO_TEST_ARGS`, e.g. `make test GO_TEST_ARGS='-run TestName'`. The
   agent should look at the uncovered lines and determine if they can bring
   the coverage up. No need to touch `preflight.go` or `preflight_test.go`.
   VPA unit tests are not needed, we already have an E2E test for VPA.
-  When iterating on the tests, remember to use `GO_TEST_ARGS` with the
-  `make test` command to only run the tests that you are currently working
-  on, to save time.
 - **`make`**: The `make` command runs successfully without any errors.
 - **Good Controller Requirements**: The controller always meets the
   requirements outlined in the good controller guide at `docs/dev/`.
