@@ -20,6 +20,7 @@ const (
 	indexGatewayGatewayClassName            = ".gateway.gatewayClassName"
 	indexGatewayInfrastructureParametersRef = ".gateway.infrastructureParametersRef"
 	indexGatewayNamespaceSelector           = ".gateway.namespaceSelector"
+	indexGatewayTunnelHost                  = ".gateway.tunnelHost"
 	indexGatewayClassControllerName         = ".gatewayClass.controllerName"
 	indexGatewayClassParametersRef          = ".gatewayClass.parametersRef"
 	indexGatewayClassGatewayFinalizer       = ".gatewayClass.gatewayFinalizer"
@@ -81,6 +82,15 @@ func setupGatewayIndexes(ctx context.Context, mgr ctrl.Manager) {
 			return nil
 		}); err != nil {
 		panic(fmt.Sprintf("failed to setup index %s: %v", indexGatewayNamespaceSelector, err))
+	}
+
+	// Index Gateways by their programmed tunnel host so DNS reconciliation can
+	// detect when a hostname already points at another Gateway's tunnel.
+	if err := mgr.GetCache().IndexField(ctx, &gatewayv1.Gateway{}, indexGatewayTunnelHost,
+		func(obj client.Object) []string {
+			return gatewayTunnelHosts(obj.(*gatewayv1.Gateway))
+		}); err != nil {
+		panic(fmt.Sprintf("failed to setup index %s: %v", indexGatewayTunnelHost, err))
 	}
 }
 

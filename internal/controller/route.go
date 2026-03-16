@@ -74,6 +74,7 @@ func (h *httpRouteObject) hostnamePathKeys() []hostnamePathKey {
 
 func (h *httpRouteObject) buildProxyRoutes(ctx context.Context, r client.Reader) ([]proxy.Route, []string, error) {
 	owner := h.route.Namespace + "/" + h.route.Name
+	ownerKind := h.routeKind()
 	var routes []proxy.Route
 	var allDeniedRefs []string
 	for _, rule := range h.route.Spec.Rules {
@@ -104,6 +105,7 @@ func (h *httpRouteObject) buildProxyRoutes(ctx context.Context, r client.Reader)
 				Hostname:           string(hostname),
 				PathPrefix:         pathPrefix,
 				Owner:              owner,
+				OwnerKind:          ownerKind,
 				Backends:           backends,
 				SessionPersistence: sp,
 			})
@@ -141,6 +143,7 @@ func (g *grpcRouteObject) hostnamePathKeys() []hostnamePathKey {
 
 func (g *grpcRouteObject) buildProxyRoutes(ctx context.Context, r client.Reader) ([]proxy.Route, []string, error) {
 	owner := g.route.Namespace + "/" + g.route.Name
+	ownerKind := g.routeKind()
 	var routes []proxy.Route
 	var allDeniedRefs []string
 	for _, rule := range g.route.Spec.Rules {
@@ -170,6 +173,7 @@ func (g *grpcRouteObject) buildProxyRoutes(ctx context.Context, r client.Reader)
 				Hostname:           string(hostname),
 				Protocol:           proxy.ProtocolGRPC,
 				Owner:              owner,
+				OwnerKind:          ownerKind,
 				Backends:           backends,
 				SessionPersistence: sp,
 			})

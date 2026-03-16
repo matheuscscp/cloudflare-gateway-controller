@@ -154,6 +154,26 @@ func (r *retryClient) FindZoneIDByHostname(ctx context.Context, hostname string)
 	})
 }
 
+func (r *retryClient) GetDNSCNAMETarget(ctx context.Context, zoneID, hostname string) (string, bool, error) {
+	var (
+		target  string
+		exists  bool
+		lastErr error
+	)
+	for attempt := 0; attempt <= r.maxRetries; attempt++ {
+		target, exists, lastErr = r.inner.GetDNSCNAMETarget(ctx, zoneID, hostname)
+		if lastErr == nil || !IsTransient(lastErr) {
+			return target, exists, lastErr
+		}
+		if attempt < r.maxRetries {
+			if !waitRetry(ctx, attempt) {
+				return "", false, ctx.Err()
+			}
+		}
+	}
+	return "", false, lastErr
+}
+
 func (r *retryClient) EnsureDNSCNAME(ctx context.Context, zoneID, hostname, target string) error {
 	return retry0(ctx, r.maxRetries, func() error {
 		return r.inner.EnsureDNSCNAME(ctx, zoneID, hostname, target)

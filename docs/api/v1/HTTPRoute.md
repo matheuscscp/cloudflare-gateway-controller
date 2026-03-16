@@ -166,7 +166,9 @@ Reasons for rejection:
 - `NotAllowedByListeners`: The HTTPRoute is in a namespace not allowed by the
   Gateway's listener `allowedRoutes`.
 - `UnsupportedValue`: The HTTPRoute uses unsupported features (e.g. unsupported
-  match types, filters, or backendRef kinds).
+  match types, filters, or backendRef kinds), has hostname/path conflicts with
+  another route on the same Gateway, or has a managed DNS hostname whose CNAME
+  already points to another Gateway's tunnel.
 
 #### Resolved refs
 

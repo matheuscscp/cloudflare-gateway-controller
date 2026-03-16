@@ -305,9 +305,10 @@ type mockCloudflareClient struct {
 	// HTTPRoute-related tracking
 	ensureDNSCalls        []mockDNSCall
 	deleteDNSCalls        []mockDNSCall
-	zones                 map[string]string // hostname -> zoneID
-	zoneIDs               []string          // zone IDs returned by ListZoneIDs
-	listDNSCNAMEsByTarget []string          // hostnames returned by ListDNSCNAMEsByTarget
+	dnsRecords            map[string]mockDNSCall // hostname -> current record
+	zones                 map[string]string      // hostname -> zoneID
+	zoneIDs               []string               // zone IDs returned by ListZoneIDs
+	listDNSCNAMEsByTarget []string               // hostnames returned by ListDNSCNAMEsByTarget
 
 	// Token rotation tracking.
 	rotateTunnelSecretCalls int
@@ -465,11 +466,25 @@ func (m *mockCloudflareClient) FindZoneIDByHostname(_ context.Context, hostname 
 	return "test-zone-id", nil
 }
 
+func (m *mockCloudflareClient) GetDNSCNAMETarget(_ context.Context, _, hostname string) (string, bool, error) {
+	if m.dnsRecords != nil {
+		if call, ok := m.dnsRecords[hostname]; ok {
+			return call.Target, true, nil
+		}
+	}
+	return "", false, nil
+}
+
 func (m *mockCloudflareClient) EnsureDNSCNAME(_ context.Context, zoneID, hostname, target string) error {
 	if m.ensureDNSErr != nil {
 		return m.ensureDNSErr
 	}
-	m.ensureDNSCalls = append(m.ensureDNSCalls, mockDNSCall{ZoneID: zoneID, Hostname: hostname, Target: target})
+	call := mockDNSCall{ZoneID: zoneID, Hostname: hostname, Target: target}
+	m.ensureDNSCalls = append(m.ensureDNSCalls, call)
+	if m.dnsRecords == nil {
+		m.dnsRecords = make(map[string]mockDNSCall)
+	}
+	m.dnsRecords[hostname] = call
 	return nil
 }
 
@@ -478,14 +493,24 @@ func (m *mockCloudflareClient) DeleteDNSCNAME(_ context.Context, zoneID, hostnam
 		return m.deleteDNSErr
 	}
 	m.deleteDNSCalls = append(m.deleteDNSCalls, mockDNSCall{ZoneID: zoneID, Hostname: hostname})
+	delete(m.dnsRecords, hostname)
 	return nil
 }
 
-func (m *mockCloudflareClient) ListDNSCNAMEsByTarget(_ context.Context, _, _ string) ([]string, error) {
+func (m *mockCloudflareClient) ListDNSCNAMEsByTarget(_ context.Context, _, target string) ([]string, error) {
 	if m.listDNSCNAMEsByTargetErr != nil {
 		return nil, m.listDNSCNAMEsByTargetErr
 	}
-	return m.listDNSCNAMEsByTarget, nil
+	if m.listDNSCNAMEsByTarget != nil {
+		return m.listDNSCNAMEsByTarget, nil
+	}
+	var hostnames []string
+	for _, call := range m.dnsRecords {
+		if call.Target == target {
+			hostnames = append(hostnames, call.Hostname)
+		}
+	}
+	return hostnames, nil
 }
 
 // faultClient wraps a real client.Client and allows tests to inject errors
@@ -706,6 +731,9 @@ func resetMockErrors(t *testing.T) {
 		testMock.ensureDNSErr = nil
 		testMock.deleteDNSErr = nil
 		testMock.listDNSCNAMEsByTargetErr = nil
+		testMock.ensureDNSCalls = nil
+		testMock.deleteDNSCalls = nil
+		testMock.dnsRecords = nil
 		testMock.deleteCalled = false
 		testMock.deletedID = ""
 		testMock.tunnels = nil

@@ -158,6 +158,8 @@ all options.
 **DNS:** The controller creates a CNAME record for each hostname declared in the attached
 routes (HTTPRoute and GRPCRoute). Each CNAME points directly to the tunnel address
 (`<tunnelID>.cfargotunnel.com`). When a route hostname is removed, its CNAME is deleted.
+If a hostname's CNAME already points to another Gateway's tunnel, the route is rejected
+with `Accepted=False` to prevent DNS conflicts across Gateways.
 
 **Cloudflare resources:** 1 tunnel, 1 CNAME record per route hostname.
 

@@ -321,6 +321,15 @@ func (r *GatewayReconciler) reconcile(ctx context.Context, gw *gatewayv1.Gateway
 	}
 	changes = append(changes, tunnelChanges...)
 
+	// Reject routes whose managed DNS hostnames are already claimed by another
+	// Gateway's tunnel host, reusing the same Accepted=False conflict path used
+	// for in-Gateway hostname/path conflicts.
+	validRoutes, conflictErrs, err = r.filterManagedDNSHostnameConflicts(ctx, gw, tc, tunnel.id, buildDNSPolicy(params), validRoutes)
+	if err != nil {
+		return r.reconcileError(ctx, gw, err)
+	}
+	errs = append(errs, conflictErrs...)
+
 	// Fetch CGS early so token rotation can read the last rotation timestamps.
 	cgs, err := r.getCGS(ctx, gw)
 	if err != nil {

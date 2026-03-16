@@ -303,6 +303,175 @@ func TestGatewayReconciler_DNSSkippedHostnames(t *testing.T) {
 	}).WithTimeout(2 * time.Second).WithPolling(100 * time.Millisecond).Should(BeFalse())
 }
 
+func TestGatewayReconciler_DNSHostnameConflictAcrossGateways(t *testing.T) {
+	g := NewWithT(t)
+	resetMockErrors(t)
+
+	ns := createTestNamespace(g)
+	t.Cleanup(func() { _ = testClient.Delete(testCtx, ns) })
+
+	createTestSecret(g, ns.Name)
+	gc := createTestGatewayClass(g, "test-gw-class-dns-cross-conflict", ns.Name)
+	t.Cleanup(func() {
+		testMock.tunnelIDFunc = nil
+		var latest gatewayv1.GatewayClass
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(gc), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+	waitForGatewayClassReady(g, gc)
+
+	params := createTestParameters(g, "test-gw-dns-cross-conflict-params", ns.Name, apiv1.CloudflareGatewayParametersSpec{
+		DNS: &apiv1.DNSConfig{Zones: []apiv1.DNSZoneConfig{{Name: "example.com"}}},
+	})
+	testMock.tunnelIDFunc = func(name string) string {
+		switch {
+		case name == apiv1.TunnelName(&gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Name: "first-gw", Namespace: ns.Name}}):
+			return "first-tunnel-id"
+		case name == apiv1.TunnelName(&gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Name: "second-gw", Namespace: ns.Name}}):
+			return "second-tunnel-id"
+		default:
+			return "unexpected-tunnel-id"
+		}
+	}
+
+	firstGW := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "first-gw", Namespace: ns.Name},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure:   &gatewayv1.GatewayInfrastructure{ParametersRef: parametersRef(params.Name)},
+			Listeners: []gatewayv1.Listener{{
+				Name:     "https",
+				Protocol: gatewayv1.HTTPSProtocolType,
+				Port:     443,
+			}},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, firstGW)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(firstGW), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(firstGW), &result)).To(Succeed())
+		g.Expect(result.Status.Addresses).To(HaveLen(1))
+		g.Expect(result.Status.Addresses[0].Value).To(Equal(cloudflare.TunnelTarget("first-tunnel-id")))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	firstRoute := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{Name: "first-route", Namespace: ns.Name},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{{Name: gatewayv1.ObjectName(firstGW.Name)}},
+			},
+			Hostnames: []gatewayv1.Hostname{"conflict.example.com"},
+			Rules: []gatewayv1.HTTPRouteRule{{
+				BackendRefs: []gatewayv1.HTTPBackendRef{{
+					BackendRef: gatewayv1.BackendRef{
+						BackendObjectReference: gatewayv1.BackendObjectReference{
+							Name: "my-service", Port: new(gatewayv1.PortNumber(8080)),
+						},
+					},
+				}},
+			}},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, firstRoute)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.HTTPRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(firstRoute), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.HTTPRoute
+		g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(firstRoute), &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(HaveLen(1))
+		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionTrue))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	testMock.ensureDNSCalls = nil
+
+	secondGW := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "second-gw", Namespace: ns.Name},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayv1.ObjectName(gc.Name),
+			Infrastructure:   &gatewayv1.GatewayInfrastructure{ParametersRef: parametersRef(params.Name)},
+			Listeners: []gatewayv1.Listener{{
+				Name:     "https",
+				Protocol: gatewayv1.HTTPSProtocolType,
+				Port:     443,
+			}},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, secondGW)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.Gateway
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(secondGW), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.Gateway
+		g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(secondGW), &result)).To(Succeed())
+		g.Expect(result.Status.Addresses).To(HaveLen(1))
+		g.Expect(result.Status.Addresses[0].Value).To(Equal(cloudflare.TunnelTarget("second-tunnel-id")))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	secondRoute := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{Name: "second-route", Namespace: ns.Name},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{{Name: gatewayv1.ObjectName(secondGW.Name)}},
+			},
+			Hostnames: []gatewayv1.Hostname{"conflict.example.com"},
+			Rules: []gatewayv1.HTTPRouteRule{{
+				BackendRefs: []gatewayv1.HTTPBackendRef{{
+					BackendRef: gatewayv1.BackendRef{
+						BackendObjectReference: gatewayv1.BackendObjectReference{
+							Name: "my-service", Port: new(gatewayv1.PortNumber(8080)),
+						},
+					},
+				}},
+			}},
+		},
+	}
+	g.Expect(testClient.Create(testCtx, secondRoute)).To(Succeed())
+	t.Cleanup(func() {
+		var latest gatewayv1.HTTPRoute
+		if err := testClient.Get(testCtx, client.ObjectKeyFromObject(secondRoute), &latest); err == nil {
+			_ = testClient.Delete(testCtx, &latest)
+		}
+	})
+
+	g.Eventually(func(g Gomega) {
+		var result gatewayv1.HTTPRoute
+		g.Expect(testClient.Get(testCtx, client.ObjectKeyFromObject(secondRoute), &result)).To(Succeed())
+		g.Expect(result.Status.Parents).To(HaveLen(1))
+		accepted := conditions.Find(result.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
+		g.Expect(accepted).NotTo(BeNil())
+		g.Expect(accepted.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(accepted.Reason).To(Equal(string(gatewayv1.RouteReasonUnsupportedValue)))
+		g.Expect(accepted.Message).To(ContainSubstring("Conflicting hostname"))
+		g.Expect(accepted.Message).To(ContainSubstring(apiv1.KindHTTPRoute + " " + ns.Name + "/first-route"))
+		g.Expect(accepted.Message).To(ContainSubstring("Gateway " + ns.Name + "/first-gw"))
+	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
+
+	g.Consistently(func() bool {
+		for _, call := range testMock.ensureDNSCalls {
+			if call.Hostname == "conflict.example.com" && call.Target == cloudflare.TunnelTarget("second-tunnel-id") {
+				return true
+			}
+		}
+		return false
+	}).WithTimeout(2 * time.Second).WithPolling(100 * time.Millisecond).Should(BeFalse())
+}
+
 func TestGatewayReconciler_DNSZoneRemovalCleanup(t *testing.T) {
 	g := NewWithT(t)
 

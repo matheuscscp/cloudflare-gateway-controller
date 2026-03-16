@@ -729,6 +729,27 @@ func (r *GatewayReconciler) filterConflictingRoutes(ctx context.Context, gw *gat
 	return filtered, errs, nil
 }
 
+type routeOwner struct {
+	namespace string
+	name      string
+	kind      string
+}
+
+func parseRouteOwner(kind, owner string) (routeOwner, bool) {
+	parts := strings.SplitN(owner, "/", 2)
+	if owner == "" || len(parts) != 2 {
+		return routeOwner{}, false
+	}
+	return routeOwner{namespace: parts[0], name: parts[1], kind: kind}, true
+}
+
+func formatRouteOwner(owner routeOwner) string {
+	if owner.kind != "" {
+		return fmt.Sprintf("%s %s/%s", owner.kind, owner.namespace, owner.name)
+	}
+	return fmt.Sprintf("%s/%s", owner.namespace, owner.name)
+}
+
 // hostnamePathKey is a (hostname, pathPrefix, protocol) tuple used to detect
 // conflicting routes. HTTP and gRPC routes on the same hostname don't conflict
 // because the proxy routes them separately based on Content-Type.
@@ -746,27 +767,21 @@ type hostnamePathKey struct {
 //
 // The existing route ConfigMap is used as source of truth: entries with a non-empty
 // Owner field pre-claim their (hostname, pathPrefix) keys, protecting existing traffic
-// from rogue/malicious tenants. Among routes with the same priority, the first one
-// encountered in the input order claims the key.
+// from rogue/malicious tenants. OwnerKind is used when available so conflicts can
+// identify the owning route kind; pre-upgrade entries without OwnerKind still work.
+// Among routes with the same priority, the first one encountered in the input order
+// claims the key.
 func findConflictingRoutes(existingConfig *proxy.Config, routes []routeObject) map[types.NamespacedName][]string {
-	type owner struct {
-		namespace string
-		name      string
-	}
-
 	// Pre-populate claimed map from existingConfig routes.
-	claimed := make(map[hostnamePathKey]owner)
+	claimed := make(map[hostnamePathKey]routeOwner)
 	if existingConfig != nil {
 		for _, r := range existingConfig.Routes {
-			if r.Owner == "" {
+			owner, ok := parseRouteOwner(r.OwnerKind, r.Owner)
+			if !ok {
 				continue // skip pre-upgrade entries without Owner
 			}
-			parts := strings.SplitN(r.Owner, "/", 2)
-			if len(parts) != 2 {
-				continue
-			}
 			key := hostnamePathKey{hostname: r.Hostname, path: r.PathPrefix, protocol: r.Protocol}
-			claimed[key] = owner{namespace: parts[0], name: parts[1]}
+			claimed[key] = owner
 		}
 	}
 
@@ -783,10 +798,10 @@ func findConflictingRoutes(existingConfig *proxy.Config, routes []routeObject) m
 						desc += hpk.path
 					}
 					conflicts[routeKey] = append(conflicts[routeKey],
-						fmt.Sprintf("%s (claimed by %s/%s)", desc, first.namespace, first.name))
+						fmt.Sprintf("%s (claimed by %s)", desc, formatRouteOwner(first)))
 				}
 			} else {
-				claimed[hpk] = owner{namespace: routeKey.Namespace, name: routeKey.Name}
+				claimed[hpk] = routeOwner{namespace: routeKey.Namespace, name: routeKey.Name, kind: route.routeKind()}
 			}
 		}
 	}

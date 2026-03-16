@@ -459,6 +459,55 @@ func TestFindZoneIDByHostname(t *testing.T) {
 	})
 }
 
+func TestGetDNSCNAMETarget(t *testing.T) {
+	t.Run("returns target when record exists", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /zones/{zoneID}/dns_records", func(w http.ResponseWriter, r *http.Request) {
+			page := r.URL.Query().Get("page")
+			if page == "2" {
+				writeJSON(w, http.StatusOK, emptyPage())
+				return
+			}
+			writeJSON(w, http.StatusOK, paginatedEnvelope([]map[string]any{
+				{"id": "r1", "name": "app.example.com", "content": "tunnel.cfargotunnel.com", "type": "CNAME"},
+			}))
+		})
+		c := newTestClient(t, mux)
+
+		target, exists, err := c.GetDNSCNAMETarget(context.Background(), "zone-1", "app.example.com")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(exists).To(BeTrue())
+		g.Expect(target).To(Equal("tunnel.cfargotunnel.com"))
+	})
+
+	t.Run("returns false when no record exists", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /zones/{zoneID}/dns_records", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, emptyPage())
+		})
+		c := newTestClient(t, mux)
+
+		target, exists, err := c.GetDNSCNAMETarget(context.Background(), "zone-1", "app.example.com")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(exists).To(BeFalse())
+		g.Expect(target).To(BeEmpty())
+	})
+
+	t.Run("API error", func(t *testing.T) {
+		g := NewWithT(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /zones/{zoneID}/dns_records", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusBadRequest, apiError(http.StatusBadRequest))
+		})
+		c := newTestClient(t, mux)
+
+		_, _, err := c.GetDNSCNAMETarget(context.Background(), "zone-1", "app.example.com")
+		g.Expect(err).To(HaveOccurred())
+	})
+}
+
 func TestEnsureDNSCNAME(t *testing.T) {
 	t.Run("creates when not found", func(t *testing.T) {
 		g := NewWithT(t)
