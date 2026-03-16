@@ -15,6 +15,10 @@ services — no public IPs or `LoadBalancer`-type Services required.
 
 ## How It Works
 
+The diagram below illustrates the topology for a single Gateway resource. A cluster can
+have multiple independent Gateways, each will have its own Cloudflare tunnel and set of
+tunnel replicas in the namespace of the Gateway.
+
 A single Cloudflare tunnel handles all traffic, and proxied CNAME records point each hostname
 directly to the tunnel. Multiple HTTPRoutes and GRPCRoutes can attach to the same
 Gateway — each hostname gets its own CNAME. The tunnel container embeds both cloudflared
@@ -40,8 +44,7 @@ flowchart LR
     T -->|four HTTP/2 connections| cfe
 ```
 
-The diagram above illustrates the topology for a single Gateway resource. A cluster can
-have multiple Gateways, each will have its own tunnel client.
+## Usage
 
 A minimal setup needs a credentials Secret, a GatewayClass, a Gateway, and an HTTPRoute —
 no CloudflareGatewayParameters required. Credentials come from the GatewayClass
@@ -149,6 +152,8 @@ spec:
 
 See the [CloudflareGatewayParameters](docs/api/v1/CloudflareGatewayParameters.md) docs for
 all options.
+
+## Features
 
 **DNS:** The controller creates a CNAME record for each hostname declared in the attached
 routes (HTTPRoute and GRPCRoute). Each CNAME points directly to the tunnel address
