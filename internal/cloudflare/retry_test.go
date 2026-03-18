@@ -77,21 +77,56 @@ func TestWithRetry_RetriesTransientErrors(t *testing.T) {
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(calls).To(Equal(2))
 	})
+	t.Run("GetDNSCNAMETarget", func(t *testing.T) {
+		t.Parallel()
+		g := NewWithT(t)
+		calls := 0
+		inner := newMockRetryClient()
+		inner.getDNSCNAMETargetFn = func() (string, bool, error) {
+			calls++
+			if calls <= 1 {
+				return "", false, io.ErrUnexpectedEOF
+			}
+			return "tunnel.cfargotunnel.com", true, nil
+		}
+		c := cloudflare.WithRetryMaxRetries(inner, 1)
+		target, exists, err := c.GetDNSCNAMETarget(context.Background(), "zone-1", "app.example.com")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(exists).To(BeTrue())
+		g.Expect(target).To(Equal("tunnel.cfargotunnel.com"))
+		g.Expect(calls).To(Equal(2))
+	})
 }
 
 func TestWithRetry_DoesNotRetryPermanentErrors(t *testing.T) {
-	g := NewWithT(t)
-	calls := 0
-	inner := newMockRetryClient()
-	inner.listZoneIDsFn = func() ([]string, error) {
-		calls++
-		return nil, fmt.Errorf("invalid API token")
-	}
-	c := cloudflare.WithRetry(inner)
-	_, err := c.ListZoneIDs(context.Background())
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("invalid API token"))
-	g.Expect(calls).To(Equal(1))
+	t.Run("retry1", func(t *testing.T) {
+		g := NewWithT(t)
+		calls := 0
+		inner := newMockRetryClient()
+		inner.listZoneIDsFn = func() ([]string, error) {
+			calls++
+			return nil, fmt.Errorf("invalid API token")
+		}
+		c := cloudflare.WithRetry(inner)
+		_, err := c.ListZoneIDs(context.Background())
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("invalid API token"))
+		g.Expect(calls).To(Equal(1))
+	})
+	t.Run("GetDNSCNAMETarget", func(t *testing.T) {
+		g := NewWithT(t)
+		calls := 0
+		inner := newMockRetryClient()
+		inner.getDNSCNAMETargetFn = func() (string, bool, error) {
+			calls++
+			return "", false, fmt.Errorf("invalid API token")
+		}
+		c := cloudflare.WithRetry(inner)
+		_, _, err := c.GetDNSCNAMETarget(context.Background(), "zone-1", "app.example.com")
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("invalid API token"))
+		g.Expect(calls).To(Equal(1))
+	})
 }
 
 func TestWithRetry_RespectsContextCancellation(t *testing.T) {
@@ -125,6 +160,21 @@ func TestWithRetry_RespectsContextCancellation(t *testing.T) {
 		g.Expect(err).To(MatchError(context.Canceled))
 		g.Expect(calls).To(Equal(1))
 	})
+	t.Run("GetDNSCNAMETarget", func(t *testing.T) {
+		g := NewWithT(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		calls := 0
+		inner := newMockRetryClient()
+		inner.getDNSCNAMETargetFn = func() (string, bool, error) {
+			calls++
+			return "", false, io.ErrUnexpectedEOF
+		}
+		c := cloudflare.WithRetry(inner)
+		_, _, err := c.GetDNSCNAMETarget(ctx, "zone-1", "app.example.com")
+		g.Expect(err).To(MatchError(context.Canceled))
+		g.Expect(calls).To(Equal(1))
+	})
 }
 
 func TestWithRetry_ExhaustsRetries(t *testing.T) {
@@ -147,6 +197,16 @@ func TestWithRetry_ExhaustsRetries(t *testing.T) {
 		}
 		c := cloudflare.WithRetryMaxRetries(inner, 0)
 		err := c.DeleteTunnel(context.Background(), "tunnel-id")
+		g.Expect(err).To(MatchError(io.ErrUnexpectedEOF))
+	})
+	t.Run("GetDNSCNAMETarget", func(t *testing.T) {
+		g := NewWithT(t)
+		inner := newMockRetryClient()
+		inner.getDNSCNAMETargetFn = func() (string, bool, error) {
+			return "", false, io.ErrUnexpectedEOF
+		}
+		c := cloudflare.WithRetryMaxRetries(inner, 0)
+		_, _, err := c.GetDNSCNAMETarget(context.Background(), "zone-1", "app.example.com")
 		g.Expect(err).To(MatchError(io.ErrUnexpectedEOF))
 	})
 }
@@ -197,6 +257,12 @@ func TestWithRetry_DelegatesAllMethods(t *testing.T) {
 	g.Expect(zoneID).To(Equal("zone-1"))
 	g.Expect(inner.calls["FindZoneIDByHostname"]).To(Equal(1))
 
+	target, exists, err := c.GetDNSCNAMETarget(ctx, "zone-1", "app.example.com")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(exists).To(BeTrue())
+	g.Expect(target).To(Equal("tunnel.cfargotunnel.com"))
+	g.Expect(inner.calls["GetDNSCNAMETarget"]).To(Equal(1))
+
 	err = c.EnsureDNSCNAME(ctx, "zone-1", "app.example.com", "target.example.com")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(inner.calls["EnsureDNSCNAME"]).To(Equal(1))
@@ -221,8 +287,9 @@ type mockRetryClient struct {
 	calls map[string]int
 
 	// Overrides for retry behavior tests (nil = use default).
-	deleteTunnelFn func() error
-	listZoneIDsFn  func() ([]string, error)
+	deleteTunnelFn      func() error
+	listZoneIDsFn       func() ([]string, error)
+	getDNSCNAMETargetFn func() (string, bool, error)
 }
 
 func newMockRetryClient() *mockRetryClient {
@@ -273,6 +340,14 @@ func (m *mockRetryClient) ListZoneIDs(_ context.Context) ([]string, error) {
 func (m *mockRetryClient) FindZoneIDByHostname(_ context.Context, _ string) (string, error) {
 	m.calls["FindZoneIDByHostname"]++
 	return "zone-1", nil
+}
+
+func (m *mockRetryClient) GetDNSCNAMETarget(_ context.Context, _, _ string) (string, bool, error) {
+	m.calls["GetDNSCNAMETarget"]++
+	if m.getDNSCNAMETargetFn != nil {
+		return m.getDNSCNAMETargetFn()
+	}
+	return "tunnel.cfargotunnel.com", true, nil
 }
 
 func (m *mockRetryClient) EnsureDNSCNAME(_ context.Context, _, _, _ string) error {

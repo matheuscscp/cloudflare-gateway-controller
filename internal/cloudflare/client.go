@@ -45,6 +45,7 @@ type Client interface {
 	// Zone/DNS operations.
 	ListZoneIDs(ctx context.Context) ([]string, error)
 	FindZoneIDByHostname(ctx context.Context, hostname string) (string, error)
+	GetDNSCNAMETarget(ctx context.Context, zoneID, hostname string) (target string, exists bool, err error)
 	EnsureDNSCNAME(ctx context.Context, zoneID, hostname, target string) error
 	DeleteDNSCNAME(ctx context.Context, zoneID, hostname string) error
 	ListDNSCNAMEsByTarget(ctx context.Context, zoneID, target string) ([]string, error)
@@ -204,6 +205,26 @@ func (c *client) FindZoneIDByHostname(ctx context.Context, hostname string) (str
 		}
 	}
 	return "", fmt.Errorf("no zone found for hostname %q", hostname)
+}
+
+// GetDNSCNAMETarget returns the current CNAME target for hostname in zoneID.
+// The exists result is false when no CNAME exists for that hostname.
+func (c *client) GetDNSCNAMETarget(ctx context.Context, zoneID, hostname string) (string, bool, error) {
+	pager := c.client.DNS.Records.ListAutoPaging(ctx, dns.RecordListParams{
+		ZoneID: cloudflare.F(zoneID),
+		Name:   cloudflare.F(dns.RecordListParamsName{Exact: cloudflare.F(hostname)}),
+		Type:   cloudflare.F(dns.RecordListParamsTypeCNAME),
+	})
+	for pager.Next() {
+		record := pager.Current()
+		if record.Name == hostname {
+			return record.Content, true, nil
+		}
+	}
+	if err := pager.Err(); err != nil {
+		return "", false, fmt.Errorf("listing DNS records for %q: %w", hostname, err)
+	}
+	return "", false, nil
 }
 
 func (c *client) EnsureDNSCNAME(ctx context.Context, zoneID, hostname, target string) error {

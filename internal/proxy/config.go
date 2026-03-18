@@ -95,7 +95,8 @@ type Route struct {
 	Hostname           string              `json:"hostname"`             // e.g. "app.example.com"
 	PathPrefix         string              `json:"pathPrefix,omitempty"` // e.g. "/api" (match only, forwarded as-is)
 	Protocol           string              `json:"protocol,omitempty"`   // "" for HTTP, "grpc" for gRPC
-	Owner              string              `json:"owner,omitempty"`      // "namespace/name" of the owning HTTPRoute
+	Owner              string              `json:"owner,omitempty"`      // "namespace/name" of the owning route
+	OwnerKind          string              `json:"ownerKind,omitempty"`  // "HTTPRoute" or "GRPCRoute"
 	Backends           []Backend           `json:"backends"`
 	SessionPersistence *SessionPersistence `json:"sessionPersistence,omitempty"`
 

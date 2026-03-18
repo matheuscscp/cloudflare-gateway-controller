@@ -114,6 +114,7 @@ func TestGatewayReconciler_HTTPRouteAccepted(t *testing.T) {
 		g.Expect(cfg.Routes).To(HaveLen(1))
 		g.Expect(cfg.Routes[0].Hostname).To(Equal("app.example.com"))
 		g.Expect(cfg.Routes[0].Owner).To(Equal(ns.Name + "/test-httproute"))
+		g.Expect(cfg.Routes[0].OwnerKind).To(Equal(apiv1.KindHTTPRoute))
 		g.Expect(cfg.Routes[0].Backends).To(HaveLen(1))
 		g.Expect(cfg.Routes[0].Backends[0].Service).To(Equal("http://my-service." + ns.Name + ".svc.cluster.local:8080"))
 		g.Expect(cfg.Routes[0].Backends[0].Weight).To(Equal(int32(1)))
@@ -2253,7 +2254,7 @@ func TestGatewayReconciler_HTTPRouteConflictingHostnamePath(t *testing.T) {
 		g.Expect(accepted.Message).To(ContainSubstring("conflict.example.com"))
 		g.Expect(accepted.Message).To(ContainSubstring("Conflicting hostname/path"))
 		g.Expect(accepted.Message).To(ContainSubstring("claimed by"))
-		g.Expect(accepted.Message).To(ContainSubstring("route-a"))
+		g.Expect(accepted.Message).To(ContainSubstring(apiv1.KindHTTPRoute + " " + ns.Name + "/route-a"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
 
 	// Verify route-a is still accepted.
@@ -2450,6 +2451,7 @@ func TestGatewayReconciler_GRPCRouteAccepted(t *testing.T) {
 		g.Expect(cfg.Routes[0].Hostname).To(Equal("grpc.example.com"))
 		g.Expect(cfg.Routes[0].Protocol).To(Equal("grpc"))
 		g.Expect(cfg.Routes[0].Owner).To(Equal(ns.Name + "/test-grpcroute"))
+		g.Expect(cfg.Routes[0].OwnerKind).To(Equal(apiv1.KindGRPCRoute))
 		g.Expect(cfg.Routes[0].Backends).To(HaveLen(1))
 		g.Expect(cfg.Routes[0].Backends[0].Service).To(Equal("http://my-grpc-service." + ns.Name + ".svc.cluster.local:9090"))
 	}).WithTimeout(10 * time.Second).WithPolling(100 * time.Millisecond).Should(Succeed())
