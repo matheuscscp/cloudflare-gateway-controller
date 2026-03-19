@@ -175,6 +175,15 @@ func TestMain(m *testing.M) {
 		Metrics: metricsserver.Options{
 			BindAddress: "0",
 		},
+		Client: ctrlclient.Options{
+			Cache: &ctrlclient.CacheOptions{
+				DisableFor: []ctrlclient.Object{
+					&corev1.Secret{},
+					&corev1.ConfigMap{},
+					&apiextensionsv1.CustomResourceDefinition{},
+				},
+			},
+		},
 	})
 	if err != nil {
 		panic(fmt.Sprintf("failed to create manager: %v", err))
