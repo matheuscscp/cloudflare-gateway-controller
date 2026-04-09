@@ -24,7 +24,7 @@ replace github.com/quic-go/quic-go => github.com/chungthuang/quic-go v0.45.1-0.2
 
 require (
 	github.com/Masterminds/semver/v3 v3.4.0
-	github.com/cloudflare/cloudflare-go/v6 v6.8.0
+	github.com/cloudflare/cloudflare-go/v6 v6.9.0
 	github.com/cloudflare/cloudflared v0.0.0-20260206142132-66587173e2cd
 	github.com/evanphx/json-patch/v5 v5.9.11
 	github.com/fluxcd/pkg/runtime v0.103.0
