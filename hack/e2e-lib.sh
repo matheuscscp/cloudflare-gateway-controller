@@ -73,6 +73,46 @@ fail() {
     kubectl get cloudflaregatewayparameters -A -o yaml 2>/dev/null || true
     echo "--- CloudflareGatewayStatus ---"
     kubectl get cloudflaregatewaystatuses -A -o yaml 2>/dev/null || true
+    echo "--- Route ConfigMaps (gateway-*) in $TEST_NS ---"
+    kubectl get configmap -n "$TEST_NS" -o name 2>/dev/null \
+        | grep '^configmap/gateway-' \
+        | xargs -r -I{} sh -c 'echo "=== {} ==="; kubectl get -n '"$TEST_NS"' {} -o yaml' 2>/dev/null || true
+    echo "--- Controller logs snapshot (kubectl logs --tail=-1) ---"
+    kubectl logs -n "$CONTROLLER_NS" -l app.kubernetes.io/name="$RELEASE_NAME" \
+        --tail=-1 --all-containers --prefix 2>/dev/null || true
+    echo "--- Controller goroutine dump (SIGQUIT via kubectl debug + previous logs) ---"
+    # The controller image is distroless and has no shell, so we attach an
+    # ephemeral busybox container that joins the target's PID namespace to
+    # send SIGQUIT to PID 1. Go's runtime prints all goroutine stacks then
+    # exits; --previous fetches the dump after kubelet restarts the container.
+    local _ctrl_pod _ctrl_container
+    _ctrl_pod=$(kubectl get pod -n "$CONTROLLER_NS" \
+        -l app.kubernetes.io/name="$RELEASE_NAME" \
+        -o jsonpath='{.items[0].metadata.name}' 2>&1 || true)
+    _ctrl_container=$(kubectl get pod -n "$CONTROLLER_NS" "$_ctrl_pod" \
+        -o jsonpath='{.spec.containers[0].name}' 2>&1 || true)
+    echo "controller pod: $_ctrl_pod, container: $_ctrl_container"
+    if [ -n "$_ctrl_pod" ] && [ -n "$_ctrl_container" ]; then
+        # NOTE: kubectl debug --target shares the PID namespace via the pod's
+        # pause container, which becomes PID 1 — so `kill -QUIT 1` would
+        # signal pause, not the controller. Use pkill to target the binary.
+        # We attach (default) to capture ps output and pkill's stderr.
+        kubectl debug -n "$CONTROLLER_NS" "$_ctrl_pod" \
+            --image=busybox:stable --target="$_ctrl_container" \
+            -- sh -c 'ps -ef; echo "---"; pkill -QUIT cfgwctl; echo "pkill exit=$?"' \
+            || echo "kubectl debug exit=$?"
+        # Wait for the container to actually restart, polling restart count.
+        local _i _restarts
+        for _i in $(seq 1 30); do
+            _restarts=$(kubectl get pod -n "$CONTROLLER_NS" "$_ctrl_pod" \
+                -o jsonpath="{.status.containerStatuses[?(@.name=='$_ctrl_container')].restartCount}" 2>&1 || echo 0)
+            [ "${_restarts:-0}" -gt 0 ] && break
+            sleep 1
+        done
+        echo "container restartCount after wait: ${_restarts:-?}"
+        kubectl logs -n "$CONTROLLER_NS" "$_ctrl_pod" -c "$_ctrl_container" \
+            --previous --tail=-1 || echo "kubectl logs --previous exit=$?"
+    fi
     exit 1
 }
 
