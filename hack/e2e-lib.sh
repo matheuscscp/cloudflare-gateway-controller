@@ -93,14 +93,24 @@ fail() {
         -o jsonpath='{.spec.containers[0].name}' 2>&1 || true)
     echo "controller pod: $_ctrl_pod, container: $_ctrl_container"
     if [ -n "$_ctrl_pod" ] && [ -n "$_ctrl_container" ]; then
-        # NOTE: kubectl debug --target shares the PID namespace via the pod's
-        # pause container, which becomes PID 1 — so `kill -QUIT 1` would
-        # signal pause, not the controller. Use pkill to target the binary.
-        # We attach (default) to capture ps output and pkill's stderr.
+        # NOTE: --profile=general is required to share the PID namespace.
+        # The default legacy profile does NOT, so the debug container can't
+        # see (or signal) the controller process. We also can't kill PID 1
+        # (the pod's pause container), so use pkill against the binary name.
+        # Run detached and fetch logs explicitly so output is captured even
+        # when stdout streaming races with container exit.
+        local _dbg_container
+        _dbg_container="cfgw-quit-$RANDOM"
         kubectl debug -n "$CONTROLLER_NS" "$_ctrl_pod" \
             --image=busybox:stable --target="$_ctrl_container" \
+            --container="$_dbg_container" --profile=general --attach=false \
             -- sh -c 'ps -ef; echo "---"; pkill -QUIT cfgwctl; echo "pkill exit=$?"' \
             || echo "kubectl debug exit=$?"
+        # Wait briefly for the debug container to run and exit, then fetch logs.
+        sleep 3
+        echo "[debug container '$_dbg_container' logs]"
+        kubectl logs -n "$CONTROLLER_NS" "$_ctrl_pod" -c "$_dbg_container" \
+            || echo "kubectl logs (debug container) exit=$?"
         # Wait for the container to actually restart, polling restart count.
         local _i _restarts
         for _i in $(seq 1 30); do
