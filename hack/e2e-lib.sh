@@ -106,13 +106,21 @@ fail() {
             --container="$_dbg_container" --profile=general --attach=false \
             -- sh -c 'ps -ef; echo "---"; pkill -QUIT cfgwctl; echo "pkill exit=$?"' \
             || echo "kubectl debug exit=$?"
-        # Wait briefly for the debug container to run and exit, then fetch logs.
-        sleep 3
+        # Wait for the debug container to finish (busybox image needs pulling
+        # on first run, which can take >3s). Poll its terminated state.
+        local _i _dbg_state
+        for _i in $(seq 1 30); do
+            _dbg_state=$(kubectl get pod -n "$CONTROLLER_NS" "$_ctrl_pod" \
+                -o jsonpath="{.status.ephemeralContainerStatuses[?(@.name=='$_dbg_container')].state}" 2>/dev/null || true)
+            case "$_dbg_state" in *terminated*) break;; esac
+            sleep 1
+        done
+        echo "[debug container '$_dbg_container' state: ${_dbg_state:-unknown}]"
         echo "[debug container '$_dbg_container' logs]"
         kubectl logs -n "$CONTROLLER_NS" "$_ctrl_pod" -c "$_dbg_container" \
             || echo "kubectl logs (debug container) exit=$?"
         # Wait for the container to actually restart, polling restart count.
-        local _i _restarts
+        local _restarts
         for _i in $(seq 1 30); do
             _restarts=$(kubectl get pod -n "$CONTROLLER_NS" "$_ctrl_pod" \
                 -o jsonpath="{.status.containerStatuses[?(@.name=='$_ctrl_container')].restartCount}" 2>&1 || echo 0)
