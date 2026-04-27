@@ -99,13 +99,22 @@ fail() {
         # (the pod's pause container), so use pkill against the binary name.
         # Run detached and fetch logs explicitly so output is captured even
         # when stdout streaming races with container exit.
-        local _dbg_container
+        local _dbg_container _dbg_custom
         _dbg_container="cfgw-quit-$RANDOM"
+        # The pod sets runAsNonRoot=true, so busybox (root by default) is
+        # rejected with CreateContainerConfigError. --custom merges a
+        # securityContext that pins runAsUser to the distroless nonroot UID.
+        _dbg_custom=$(mktemp)
+        cat >"$_dbg_custom" <<'EOF'
+{"securityContext":{"runAsUser":65532,"runAsNonRoot":true,"allowPrivilegeEscalation":false}}
+EOF
         kubectl debug -n "$CONTROLLER_NS" "$_ctrl_pod" \
             --image=busybox:stable --target="$_ctrl_container" \
             --container="$_dbg_container" --profile=general --attach=false \
+            --custom="$_dbg_custom" \
             -- sh -c 'ps -ef; echo "---"; pkill -QUIT cfgwctl; echo "pkill exit=$?"' \
             || echo "kubectl debug exit=$?"
+        rm -f "$_dbg_custom"
         # Wait for the debug container to finish (busybox image needs pulling
         # on first run, which can take >3s). Poll its terminated state.
         local _i _dbg_state
