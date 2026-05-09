@@ -6,15 +6,16 @@
 package v1
 
 import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"sigs.k8s.io/controller-runtime/pkg/scheme"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
 // Controller names.
 const (
 	// ControllerName is the identifier used in GatewayClass.spec.controllerName.
-	ControllerName = gatewayv1.GatewayController(ShortControllerName + ".io/controller")
+	ControllerName = gatewayv1.GatewayController(Group + "/controller")
 
 	// ShortControllerName is a shorter identifier used in events and conditions.
 	ShortControllerName = "cloudflare-gateway-controller"
@@ -38,16 +39,18 @@ var (
 	GroupVersion = schema.GroupVersion{Group: Group, Version: "v1"}
 
 	// SchemeBuilder is used to add go types to the GroupVersionResource scheme.
-	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion}
+	SchemeBuilder = runtime.NewSchemeBuilder(addKnownTypes)
 
 	// Install adds the types in this group-version to the given scheme.
 	Install = SchemeBuilder.AddToScheme
 )
 
-func init() {
-	SchemeBuilder.Register(
+func addKnownTypes(scheme *runtime.Scheme) error {
+	scheme.AddKnownTypes(GroupVersion,
 		&CloudflareGatewayParameters{},
 		&CloudflareGatewayParametersList{},
 		&CloudflareGatewayStatus{},
 		&CloudflareGatewayStatusList{})
+	metav1.AddToGroupVersion(scheme, GroupVersion)
+	return nil
 }
