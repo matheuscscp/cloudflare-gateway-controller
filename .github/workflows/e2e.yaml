@@ -15,11 +15,30 @@ concurrency:
 
 permissions:
   contents: read
+  statuses: write
 
 env:
   IMAGE: ghcr.io/matheuscscp/cloudflare-gateway-controller/test
 
 jobs:
+  # Post a pending commit status so that workflow_dispatch runs (used by the
+  # upgrade workflows to trigger CI on bot-created PR branches) show up as a
+  # check on the PR. Default GITHUB_TOKEN-created PRs do not auto-fire
+  # workflows, so we dispatch manually and surface results via the statuses
+  # API.
+  e2e-pending:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set pending status on PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api "repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            -f state=pending \
+            -f context="e2e" \
+            -f description="End-to-end tests running" \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
   # Build and push the controller image, then clean up orphaned Cloudflare
   # resources from previous failed runs. On fork PRs, only the build runs
   # (no push, no cleanup) to validate compilation.
@@ -158,15 +177,31 @@ jobs:
         run: rm -f api.token
 
   # Gate job for branch protection rules. Always runs, but fails if any
-  # matrix job did not succeed.
+  # matrix job did not succeed. Also posts a final commit status so
+  # workflow_dispatch runs (from the upgrade workflows) surface as a PR check.
   e2e:
     if: always()
-    needs: [e2e-matrix]
+    needs: [e2e-pending, e2e-matrix]
     runs-on: ubuntu-latest
     steps:
-      - run: |
+      - name: Update status on PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
           result="${{ needs.e2e-matrix.result }}"
-          [ "$result" = "success" ] || [ "$result" = "skipped" ] || exit 1
+          if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
+            gh api "repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+              -f state=failure \
+              -f context="e2e" \
+              -f description="End-to-end tests failed" \
+              -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            exit 1
+          fi
+          gh api "repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            -f state=success \
+            -f context="e2e" \
+            -f description="End-to-end tests passed" \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
   # Clean up Cloudflare resources created during e2e tests.
   # Runs even if e2e jobs fail to avoid leaving orphaned resources.
