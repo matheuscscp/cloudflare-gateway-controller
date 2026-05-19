@@ -220,8 +220,7 @@ func RunTunnel(ctx context.Context, handler http.Handler, rt http.RoundTripper, 
 	protocolSelector, err := connection.NewProtocolSelector(
 		connection.HTTP2.String(),
 		creds.AccountTag,
-		true,  // tunnelTokenProvided
-		false, // needPQ
+		true, // tunnelTokenProvided
 		edgediscovery.ProtocolPercentage,
 		connection.ResolveTTL,
 		zlog,
