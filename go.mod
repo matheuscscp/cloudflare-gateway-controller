@@ -27,14 +27,14 @@ require (
 	github.com/cloudflare/cloudflare-go/v6 v6.10.0
 	github.com/cloudflare/cloudflared v0.0.0-20260206142132-66587173e2cd
 	github.com/evanphx/json-patch/v5 v5.9.11
-	github.com/fluxcd/pkg/runtime v0.106.0
+	github.com/fluxcd/pkg/runtime v0.107.0
 	github.com/fluxcd/pkg/ssa v0.74.0
 	github.com/onsi/gomega v1.41.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/rs/zerolog v1.35.1
 	github.com/spf13/cobra v1.10.2
-	golang.org/x/net v0.54.0
+	golang.org/x/net v0.55.0
 	k8s.io/api v0.36.1
 	k8s.io/apiextensions-apiserver v0.36.1
 	k8s.io/apimachinery v0.36.1
@@ -158,7 +158,7 @@ require (
 	golang.org/x/mod v0.35.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.44.0 // indirect
+	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/term v0.43.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
