@@ -12,8 +12,27 @@ on:
 
 permissions:
   contents: read
+  statuses: write
 
 jobs:
+  # Post a pending commit status so that workflow_dispatch runs (used by the
+  # upgrade workflows to trigger CI on bot-created PR branches) show up as a
+  # check on the PR. Default GITHUB_TOKEN-created PRs do not auto-fire
+  # workflows, so we dispatch manually and surface results via the statuses
+  # API.
+  ci-checks-pending:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set pending status on PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api "repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            -f state=pending \
+            -f context="ci-checks" \
+            -f description="CI checks running" \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
   tidy:
     runs-on: ubuntu-latest
     steps:
@@ -82,3 +101,32 @@ jobs:
 
       - name: Build
         run: make build
+
+  # Gate job for branch protection rules. Always runs, but fails if any
+  # check job did not succeed. Also posts a final commit status so
+  # workflow_dispatch runs (from the upgrade workflows) surface as a PR check.
+  ci-checks:
+    if: always()
+    needs: [ci-checks-pending, tidy, lint, test, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update status on PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          results="${{ needs.tidy.result }} ${{ needs.lint.result }} ${{ needs.test.result }} ${{ needs.build.result }}"
+          for result in $results; do
+            if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
+              gh api "repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+                -f state=failure \
+                -f context="ci-checks" \
+                -f description="CI checks failed" \
+                -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+              exit 1
+            fi
+          done
+          gh api "repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            -f state=success \
+            -f context="ci-checks" \
+            -f description="CI checks passed" \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
