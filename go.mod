@@ -5,7 +5,7 @@ go 1.26.0
 // Fork exposes internal packages needed to embed cloudflared in-process.
 // The upgrade-cloudflared workflow keeps this pin in sync with the fork's
 // latest release.
-replace github.com/cloudflare/cloudflared => github.com/matheuscscp/cloudflared v0.0.0-20260601094326-62daab9aed0f
+replace github.com/cloudflare/cloudflared => github.com/matheuscscp/cloudflared v0.0.0-20260615100039-6d38d88bae85
 
 // Go only honours replace directives in the top-level module, so we must
 // repeat cloudflared's here. The upgrade-cloudflared workflow keeps this
@@ -164,9 +164,9 @@ require (
 	golang.org/x/time v0.15.0 // indirect
 	golang.org/x/tools v0.45.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.5.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20260209200024-4cfbd4190f57 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260209200024-4cfbd4190f57 // indirect
-	google.golang.org/grpc v1.79.3 // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20260226221140-a57be14db171 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260226221140-a57be14db171 // indirect
+	google.golang.org/grpc v1.81.1 // indirect
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
