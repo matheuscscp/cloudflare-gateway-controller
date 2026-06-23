@@ -211,8 +211,8 @@ github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 h1:6E+4a0GO5zZEnZ
 github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0/go.mod h1:zJYVVT2jmtg6P3p1VtQj7WsuWi/y4VnjVBn7F8KPB3I=
 github.com/maruel/natural v1.1.1 h1:Hja7XhhmvEFhcByqDoHz9QZbkWey+COd9xWfCfn1ioo=
 github.com/maruel/natural v1.1.1/go.mod h1:v+Rfd79xlw1AgVBjbO0BEQmptqb5HvL/k9GRHB7ZKEg=
-github.com/matheuscscp/cloudflared v0.0.0-20260615100039-6d38d88bae85 h1:DuD5/At9kL+Wn8G+nQ/Klb/VQ7QuAGXcZFYENDiZRRU=
-github.com/matheuscscp/cloudflared v0.0.0-20260615100039-6d38d88bae85/go.mod h1:dOt9B59uf4e2IIB7Pwo2CRcF6gQpUaWll2HUU9Mhq3g=
+github.com/matheuscscp/cloudflared v0.0.0-20260622095425-511cf45af001 h1:UfMaDPjZWHKi4V8p6esvcVRDU5SlS5hUkhGs1AEbBgk=
+github.com/matheuscscp/cloudflared v0.0.0-20260622095425-511cf45af001/go.mod h1:dOt9B59uf4e2IIB7Pwo2CRcF6gQpUaWll2HUU9Mhq3g=
 github.com/mattn/go-colorable v0.1.14 h1:9A9LHSqF/7dyVVX6g0U9cwm9pG3kP9gSzcuIPHPsaIE=
 github.com/mattn/go-colorable v0.1.14/go.mod h1:6LmQG8QLFO4G5z1gPvYEzlUgJ2wF+stgPZH1UqBm1s8=
 github.com/mattn/go-isatty v0.0.12/go.mod h1:cbi8OIDigv2wuxKPP5vlRcQ1OAZbq2CE4Kysco4FUpU=
