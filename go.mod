@@ -29,7 +29,7 @@ require (
 	github.com/evanphx/json-patch/v5 v5.9.11
 	github.com/fluxcd/pkg/runtime v0.110.0
 	github.com/fluxcd/pkg/ssa v0.76.0
-	github.com/onsi/gomega v1.42.0
+	github.com/onsi/gomega v1.42.1
 	github.com/prometheus/client_golang v1.23.2
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/rs/zerolog v1.35.1
