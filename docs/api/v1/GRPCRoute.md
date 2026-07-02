@@ -70,8 +70,8 @@ The following fields are not supported and must not be set:
 Session persistence pins a client to the same backend across requests. The
 configuration is the same as for [HTTPRoute](HTTPRoute.md#session-persistence).
 
-`idleTimeout` is **not supported** for header-based sessions and is rejected
-if configured with `type: Header`.
+Gateway API v1.6 removed `sessionPersistence.idleTimeout`; the controller no
+longer exposes idle timeout through GRPCRoute.
 
 ### Namespace restrictions
 

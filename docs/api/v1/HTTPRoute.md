@@ -81,7 +81,6 @@ rules:
       type: Cookie
       sessionName: my-session          # optional, default "cgw-session"
       absoluteTimeout: 1h              # optional
-      idleTimeout: 10m                 # optional
       cookieConfig:
         lifetimeType: Permanent        # "Session" (default) or "Permanent"
     backendRefs:
@@ -111,21 +110,12 @@ rules:
 - `Session` (default): Browser session cookie (no `Max-Age`). If
   `absoluteTimeout` is set, the proxy enforces it server-side by checking
   the timestamp encoded in the cookie value.
-- `Permanent`: Sets `Max-Age` on the cookie. When only `absoluteTimeout` is
-  set, `Max-Age` equals `absoluteTimeout`. When only `idleTimeout` is set,
-  `Max-Age` equals `idleTimeout`. When both are set, `Max-Age` is the minimum
-  of the remaining absolute timeout and `idleTimeout`.
+- `Permanent`: Sets `Max-Age` on the cookie from `absoluteTimeout`.
+  Gateway API v1.6 requires `absoluteTimeout` when `lifetimeType: Permanent`.
 
-**Idle timeout** (`idleTimeout`): Supported for cookie-based sessions only. When
-configured, the proxy re-issues the cookie on every response with an updated
-last-activity timestamp. If the time since the last activity exceeds
-`idleTimeout`, the session expires and a new backend is selected. When both
-`absoluteTimeout` and `idleTimeout` are set, both are enforced independently —
-the session expires if either timeout is exceeded.
-
-`idleTimeout` is **not supported** for header-based sessions (no mechanism to
-push updated timestamps to the client) and is rejected if configured with
-`type: Header`.
+**Idle timeout**: Gateway API v1.6 removed `sessionPersistence.idleTimeout`.
+The controller no longer exposes idle timeout through HTTPRoute or GRPCRoute;
+the internal proxy configuration still supports it for non-Gateway API sources.
 
 ### Namespace restrictions
 
