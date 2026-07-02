@@ -1,7 +1,7 @@
 # Copyright 2026 Matheus Pimenta.
 # SPDX-License-Identifier: AGPL-3.0
 
-FROM golang:1.26@sha256:32c0e6e5c4f6707717051091b4d0b077464a679eaab563e11474efc5328e2aa5 AS builder
+FROM golang:1.26@sha256:f96cc555eb8db430159a3aa6797cd5bae561945b7b0fe7d0e284c63a3b291609 AS builder
 WORKDIR /workspace
 COPY go.mod go.sum ./
 RUN go mod download

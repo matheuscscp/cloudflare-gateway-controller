@@ -196,12 +196,6 @@ func validateGRPCRoute(route *gatewayv1.GRPCRoute) []string {
 		if len(rule.Filters) > 0 {
 			issues = append(issues, fmt.Sprintf("spec.rules[%d].filters is not supported", i))
 		}
-		if sp := rule.SessionPersistence; sp != nil {
-			if sp.IdleTimeout != nil && sp.Type != nil && *sp.Type == gatewayv1.HeaderBasedSessionPersistence {
-				issues = append(issues, fmt.Sprintf(
-					"spec.rules[%d].sessionPersistence.idleTimeout is not supported for header-based sessions", i))
-			}
-		}
 		if len(rule.BackendRefs) == 0 {
 			issues = append(issues, fmt.Sprintf("spec.rules[%d].backendRefs: at least one backend is required", i))
 		}
@@ -283,9 +277,6 @@ func buildSessionPersistence(sp *gatewayv1.SessionPersistence) *proxy.SessionPer
 	}
 	if sp.AbsoluteTimeout != nil {
 		result.AbsoluteTimeout = string(*sp.AbsoluteTimeout)
-	}
-	if sp.IdleTimeout != nil {
-		result.IdleTimeout = string(*sp.IdleTimeout)
 	}
 	if sp.CookieConfig != nil && sp.CookieConfig.LifetimeType != nil {
 		result.CookieLifetimeType = string(*sp.CookieConfig.LifetimeType)

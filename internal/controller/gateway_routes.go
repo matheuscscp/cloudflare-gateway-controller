@@ -659,12 +659,6 @@ func validateHTTPRoute(route *gatewayv1.HTTPRoute) []string {
 		if rule.Retry != nil {
 			issues = append(issues, fmt.Sprintf("spec.rules[%d].retry is not supported", i))
 		}
-		if sp := rule.SessionPersistence; sp != nil {
-			if sp.IdleTimeout != nil && sp.Type != nil && *sp.Type == gatewayv1.HeaderBasedSessionPersistence {
-				issues = append(issues, fmt.Sprintf(
-					"spec.rules[%d].sessionPersistence.idleTimeout is not supported for header-based sessions", i))
-			}
-		}
 		if len(rule.BackendRefs) == 0 {
 			issues = append(issues, fmt.Sprintf("spec.rules[%d].backendRefs: at least one backend is required", i))
 		}
