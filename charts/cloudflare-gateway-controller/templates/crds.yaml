@@ -6,7 +6,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.20.0
+    controller-gen.kubebuilder.io/version: v0.21.0
   name: cloudflaregatewayparameters.cloudflare-gateway-controller.io
 spec:
   group: cloudflare-gateway-controller.io
@@ -1282,7 +1282,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.20.0
+    controller-gen.kubebuilder.io/version: v0.21.0
   name: cloudflaregatewaystatuses.cloudflare-gateway-controller.io
 spec:
   group: cloudflare-gateway-controller.io
