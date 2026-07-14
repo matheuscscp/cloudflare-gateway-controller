@@ -5,7 +5,7 @@ go 1.26.0
 // Fork exposes internal packages needed to embed cloudflared in-process.
 // The upgrade-cloudflared workflow keeps this pin in sync with the fork's
 // latest release.
-replace github.com/cloudflare/cloudflared => github.com/matheuscscp/cloudflared v0.0.0-20260622095425-511cf45af001
+replace github.com/cloudflare/cloudflared => github.com/matheuscscp/cloudflared v0.0.0-20260713090012-6b94901e1c24
 
 // Go only honours replace directives in the top-level module, so we must
 // repeat cloudflared's here. The upgrade-cloudflared workflow keeps this
@@ -67,7 +67,7 @@ require (
 	github.com/fxamacker/cbor/v2 v2.9.2 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.13 // indirect
 	github.com/getsentry/sentry-go v0.43.0 // indirect
-	github.com/go-chi/chi/v5 v5.3.0 // indirect
+	github.com/go-chi/chi/v5 v5.3.1 // indirect
 	github.com/go-chi/cors v1.2.1 // indirect
 	github.com/go-errors/errors v1.5.1 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
