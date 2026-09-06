@@ -8,10 +8,7 @@ RUN go mod download
 COPY cmd/ cmd/
 COPY api/ api/
 COPY internal/ internal/
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
-RUN CGO_ENABLED=0 GOFIPS140=latest GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -o /cfgwctl ./cmd/cfgwctl
+RUN CGO_ENABLED=0 GOFIPS140=latest go build -o /cfgwctl ./cmd/cfgwctl
 
 FROM gcr.io/distroless/static:nonroot@sha256:1c2c046bc09ed40fad370b599a0b1ae7987f55b01e247cf27a7c27cd97e5bbc7
 COPY --from=builder /cfgwctl /cfgwctl
