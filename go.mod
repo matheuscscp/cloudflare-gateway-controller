@@ -41,7 +41,7 @@ require (
 	k8s.io/autoscaler/vertical-pod-autoscaler v1.7.1
 	k8s.io/client-go v0.36.4
 	sigs.k8s.io/controller-runtime v0.24.1
-	sigs.k8s.io/gateway-api v1.6.1
+	sigs.k8s.io/gateway-api v1.6.2
 	sigs.k8s.io/yaml v1.6.0
 )
 
