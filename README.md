@@ -1,5 +1,6 @@
 # cloudflare-gateway-controller
 
+[![GitHub](https://img.shields.io/badge/GitHub-View_source-181717?logo=github&logoColor=white)](https://github.com/matheuscscp/cloudflare-gateway-controller)
 ![release](https://img.shields.io/github/v/release/matheuscscp/cloudflare-gateway-controller?style=flat&color=blue)
 [![SLSA 3](https://slsa.dev/images/gh-badge-level3.svg)](https://slsa.dev)
 ![FIPS 140-3 compliant](https://img.shields.io/badge/FIPS_140--3-compliant-brightgreen)
@@ -24,6 +25,9 @@ directly to the tunnel. Multiple HTTPRoutes and GRPCRoutes can attach to the sam
 Gateway — each hostname gets its own CNAME. The tunnel container embeds both cloudflared
 and a reverse proxy to route requests to the correct backend Service by hostname, path,
 and protocol, with per-request load balancing through kube-proxy.
+
+> **Note:** The diagram below is a Mermaid diagram. If it doesn't render here,
+> [view it on GitHub](https://github.com/matheuscscp/cloudflare-gateway-controller#how-it-works).
 
 ```mermaid
 flowchart LR
